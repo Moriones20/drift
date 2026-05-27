@@ -1,0 +1,7 @@
+MetaTrader5>=5.0.45
+python-telegram-bot>=20.0,<22.0
+pandas>=2.0
+pandas-ta>=0.3.14
+Backtesting>=0.3.3
+PyYAML>=6.0
+ruff>=0.4.0

@@ -1,0 +1,48 @@
+# Drift — Configuration
+# Copy this file to config.yaml and fill in your credentials
+
+broker:
+  server: "ICMarketsSC-MT5-Demo"  # Verify exact name in MT5 → File → Open an Account
+  login: 12345678                  # Your MT5 account number
+  password: "your_password_here"
+
+strategy:
+  timeframe_trend: "D1"
+  timeframe_entry: "H4"
+  ema_fast: 50
+  ema_slow: 200
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  atr_period: 14
+
+risk:
+  percent_per_trade: 1.0           # % of current balance risked per trade
+  max_open_trades: 4               # Maximum simultaneous trades
+  max_same_currency_direction: 2   # Max trades in same direction for one currency
+  max_drawdown_percent: 10.0       # Pause bot if drawdown exceeds this %
+  trailing_stop_atr_multiplier: 1.5
+  take_profit_ratio: 2.0           # TP = SL * this value (1:2 ratio)
+
+pairs:
+  - EURUSD
+  - GBPUSD
+  - USDJPY
+  - AUDUSD
+  - USDCAD
+  - EURGBP
+
+telegram:
+  bot_token: "your_bot_token_here"   # Get from @BotFather
+  chat_id: "your_chat_id_here"       # Your personal chat ID
+
+reports:
+  timezone: "UTC-5"
+  weekly_report_day: "sunday"
+  weekly_report_hour: 20             # 8pm UTC-5
+
+system:
+  loop_check_interval_seconds: 30    # How often to check trailing stops and health
+  mt5_reconnect_interval_seconds: 300  # 5 minutes between reconnection attempts
+  magic_number: 234000               # Identifies Drift orders in MT5
+  friday_close_hour_utc: 20          # Close losing trades at 8pm UTC Friday (3pm UTC-5)

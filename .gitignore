@@ -1,0 +1,41 @@
+# Credentials & local config (never commit real config)
+config.yaml
+
+# Database files
+data/*.db
+
+# Logs
+logs/*.log
+
+# Backtest output
+backtest/results/*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
