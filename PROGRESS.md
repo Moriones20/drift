@@ -11,7 +11,7 @@
 ### Session 2: Strategy + Validation (Steps 5-7)
 - [x] 5. Módulo de indicadores — EMA 50/200, MACD, ATR
 - [x] 6. Backtest de validación — backtest rápido en EURUSD y GBPUSD para confirmar mérito de la estrategia
-- [ ] 7. Módulo de estrategia — lógica trend following D1+H4
+- [x] 7. Módulo de estrategia — lógica trend following D1+H4
 
 ### Session 3: Risk + Execution (Steps 8-10)
 - [ ] 8. Módulo de riesgo — position sizing, límites (4 trades, 2 por moneda), drawdown, comisiones
