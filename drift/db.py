@@ -243,9 +243,20 @@ def log_signal(
     conn: sqlite3.Connection,
     signal: Signal,
     trade_id: int | None = None,
+    rejection_reason: str | None = None,
 ) -> int:
-    """Insert a signal record derived from a Signal dataclass. Returns signal ID."""
-    decision = "accepted" if signal.action != "none" else "rejected"
+    """Insert a signal record derived from a Signal dataclass. Returns signal ID.
+
+    Pass rejection_reason when a risk check (not the strategy) caused the signal to be
+    discarded — it overrides the decision to 'rejected' and replaces the reason string.
+    """
+    if rejection_reason is not None:
+        decision = "rejected"
+        reason = rejection_reason
+    else:
+        decision = "accepted" if signal.action != "none" else "rejected"
+        reason = signal.reason
+
     analyzed_at = signal.timestamp.isoformat()
     h4_candle_time = signal.h4_candle_time.isoformat()
 
@@ -270,7 +281,7 @@ def log_signal(
             signal.macd_histogram,
             signal.atr_value,
             decision,
-            signal.reason,
+            reason,
             trade_id,
         ),
     )

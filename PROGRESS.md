@@ -24,7 +24,7 @@
 - [x] 13. Loop principal — orquestador H4, ciclo completo
 
 ### Session 5: Safety + Testing (Steps 14-16)
-- [ ] 14. Sistemas de seguridad — drawdown, max trades, correlación, cierre de viernes, reconexión, error handling
+- [x] 14. Sistemas de seguridad — drawdown, max trades, correlación, cierre de viernes, reconexión, error handling
 - [ ] 15. Reporte semanal — generación automática domingos 8pm UTC-5
 - [ ] 16. Testing en demo — flujo completo: señal → trade → notificación → logging
 
@@ -67,4 +67,10 @@
   1. SL/TP calculated with entry_price=0.0 then sent to MT5 → now get tick price first, compute SL/TP, then open_trade
   2. close_reason inferred from P&L sign → now uses MT5 DEAL_REASON_SL/DEAL_REASON_TP
   3. duration_minutes=0 in all close notifications → now reads actual duration from DB after close_trade_record
-- Next session starts at Step 14 (safety systems).
+- Step 14 complete. Safety systems audit + hardening:
+  - Most systems were already correctly wired (drawdown+/resume, Telegram error guards, MT5 reconnect, per-pair error isolation).
+  - Fixed: risk-rejected signals now logged as decision=rejected with "risk: <reason>" instead of incorrectly using the strategy reason string. Added rejection_reason param to log_signal() in db.py.
+  - Fixed: Friday close now also closes trades opened within the last 4 hours (per D026), not only losing ones. Uses time_open from get_open_positions().
+  - Added: _validate_pairs() called at startup — logs warnings for any configured pair that is missing or not visible in MT5.
+  - Added: inner try/except in main loop — unexpected exceptions pause the bot, send a Telegram alert, and retry after 60s instead of crashing.
+- Next session: Step 15 (weekly report) and Step 16 (demo testing).

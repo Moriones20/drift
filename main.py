@@ -117,6 +117,25 @@ def _pip_value(pair: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Startup validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_pairs(pairs: list[str]) -> None:
+    """Warn about configured pairs that are unavailable or not tradeable in MT5."""
+    import MetaTrader5 as mt5
+
+    for pair in pairs:
+        info = mt5.symbol_info(pair)
+        if info is None:
+            logger.warning("Pair %s not found in MT5 — it will be skipped", pair)
+        elif not info.visible:
+            logger.warning("Pair %s exists but is not visible/tradeable in MT5", pair)
+        else:
+            logger.debug("Pair %s OK (digits=%d)", pair, info.digits)
+
+
+# ---------------------------------------------------------------------------
 # Analysis cycle (runs once per H4 candle close)
 # ---------------------------------------------------------------------------
 
@@ -182,7 +201,7 @@ def _analyse_pair(
             )
             if not risk_ok:
                 logger.info("%s | risk check failed: %s", pair, risk_reason)
-                log_signal(db_conn, signal, trade_id=None)
+                log_signal(db_conn, signal, trade_id=None, rejection_reason=f"risk: {risk_reason}")
                 return
 
             import MetaTrader5 as mt5
@@ -451,12 +470,20 @@ def _check_friday_close(
     if now.weekday() != 4 or now.hour < config.system.friday_close_hour_utc:
         return
 
-    losing_positions = [p for p in mt5_positions if p.get("profit", 0) < 0]
-    if not losing_positions:
+    recent_threshold = now - timedelta(hours=4)
+    positions_to_close = [
+        p
+        for p in mt5_positions
+        if p.get("profit", 0) < 0 or p.get("time_open", now) >= recent_threshold
+    ]
+    if not positions_to_close:
         return
 
-    logger.info("Friday close: closing %d losing trades", len(losing_positions))
-    for pos in losing_positions:
+    logger.info(
+        "Friday close: closing %d trades (losing or recently opened)",
+        len(positions_to_close),
+    )
+    for pos in positions_to_close:
         success = close_trade(
             ticket=pos["ticket"],
             pair=pos["pair"],
@@ -581,6 +608,8 @@ def main() -> None:
         logger.critical("Cannot connect to MT5 — aborting")
         sys.exit(1)
 
+    _validate_pairs(config.pairs)
+
     try:
         balance = get_balance()
     except RuntimeError:
@@ -651,23 +680,37 @@ def main() -> None:
 
     try:
         while not state.stop_requested:
-            now = datetime.now(timezone.utc)
-            next_close = _next_h4_close(now)
-            wait_secs = _seconds_until(next_close) + CANDLE_CLOSE_DELAY_SECONDS
-            logger.info(
-                "Next H4 close at %s UTC — sleeping %.0fs",
-                next_close.strftime("%H:%M"),
-                wait_secs,
-            )
+            try:
+                now = datetime.now(timezone.utc)
+                next_close = _next_h4_close(now)
+                wait_secs = _seconds_until(next_close) + CANDLE_CLOSE_DELAY_SECONDS
+                logger.info(
+                    "Next H4 close at %s UTC — sleeping %.0fs",
+                    next_close.strftime("%H:%M"),
+                    wait_secs,
+                )
 
-            deadline = time.monotonic() + wait_secs
-            while time.monotonic() < deadline and not state.stop_requested:
-                time.sleep(min(10.0, deadline - time.monotonic()))
+                deadline = time.monotonic() + wait_secs
+                while time.monotonic() < deadline and not state.stop_requested:
+                    time.sleep(min(10.0, deadline - time.monotonic()))
 
-            if state.stop_requested:
-                break
+                if state.stop_requested:
+                    break
 
-            peak_balance_ref[0] = _run_analysis_cycle(config, state, peak_balance_ref[0], bot_app)
+                peak_balance_ref[0] = _run_analysis_cycle(
+                    config, state, peak_balance_ref[0], bot_app
+                )
+            except Exception:
+                logger.exception("Unexpected error in main loop — pausing bot and retrying")
+                state.paused = True
+                _fire_and_forget(
+                    notify_error(
+                        bot_app.bot,
+                        config.telegram.chat_id,
+                        "Unexpected error in main loop — bot paused. Use /resume after investigation.",  # noqa: E501
+                    )
+                )
+                time.sleep(60)
     finally:
         _shutdown(config, state, bot_app, shutdown_event)
 
