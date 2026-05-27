@@ -9,7 +9,7 @@
 - [x] 4. Módulo de datos — obtener velas D1 y H4 de MT5
 
 ### Session 2: Strategy + Validation (Steps 5-7)
-- [ ] 5. Módulo de indicadores — EMA 50/200, MACD, ATR
+- [x] 5. Módulo de indicadores — EMA 50/200, MACD, ATR
 - [ ] 6. Backtest de validación — backtest rápido en EURUSD y GBPUSD para confirmar mérito de la estrategia
 - [ ] 7. Módulo de estrategia — lógica trend following D1+H4
 
@@ -54,4 +54,5 @@
 
 - Session 1 (Steps 1-4) complete. Foundation: scaffolding, config, MT5 connection, data fetching.
 - Quality review done after Step 4: fixed fragile default_factory access in config.py, switched main.py from print to logging.
-- Next session starts at Step 5 (indicators module).
+- Step 5 complete. drift/indicators.py implements compute_ema, compute_macd, compute_atr, compute_all. Note: pandas_ta requires Python <3.14 (numba constraint) — smoke test skipped due to system Python 3.14; will verify in MT5 environment (Windows with Python 3.10).
+- Next session starts at Step 6 (backtest validation).
