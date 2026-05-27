@@ -62,5 +62,9 @@
 - Step 9 complete. drift/executor.py implements open_trade, close_trade, modify_sl, get_open_positions. Uses mt5.order_send with TRADE_ACTION_DEAL for open/close and TRADE_ACTION_SLTP for SL modification. get_open_positions filters by magic number and returns UTC datetimes.
 - Session 3 (Steps 8-10) complete. Risk, execution, trailing stop.
 - Quality review after Step 10: fixed close_trade magic=0 bug (now passes magic through), unified _count_selling/_count_buying into single _count_currency_exposure helper.
-- Next session starts at Step 11 (database module).
-- Step 12 complete. drift/telegram_bot.py implements BotState (shared paused/stop_requested flags), all 5 notifier functions (send_notification, notify_trade_opened, notify_trade_closed, notify_error, notify_bot_status), all 8 command handlers (/status /trades /history /balance /pause /resume /stop /report), and setup_bot() that builds and returns the Application. HTML parse mode throughout. All times displayed in UTC-5.
+- Session 4 (Steps 11-13) complete. Database, Telegram, main loop.
+- Quality review after Step 13 (integration milestone): fixed 3 bugs in main.py:
+  1. SL/TP calculated with entry_price=0.0 then sent to MT5 → now get tick price first, compute SL/TP, then open_trade
+  2. close_reason inferred from P&L sign → now uses MT5 DEAL_REASON_SL/DEAL_REASON_TP
+  3. duration_minutes=0 in all close notifications → now reads actual duration from DB after close_trade_record
+- Next session starts at Step 14 (safety systems).

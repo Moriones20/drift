@@ -185,13 +185,7 @@ def _analyse_pair(
                 log_signal(db_conn, signal, trade_id=None)
                 return
 
-            stop_loss, take_profit = calculate_sl_tp(
-                entry_price=0.0,  # placeholder; actual entry determined at open
-                direction=signal.action,
-                atr_value=signal.atr_value,
-                atr_multiplier=config.risk.trailing_stop_atr_multiplier,
-                tp_ratio=config.risk.take_profit_ratio,
-            )
+            import MetaTrader5 as mt5
 
             pip_mult = _pip_multiplier(pair)
             pip_val = _pip_value(pair)
@@ -209,6 +203,22 @@ def _analyse_pair(
                 log_signal(db_conn, signal, trade_id=None)
                 return
 
+            tick = mt5.symbol_info_tick(pair)
+            if tick is None:
+                logger.error("%s | cannot get tick price — skipping trade", pair)
+                log_signal(db_conn, signal, trade_id=None)
+                return
+
+            entry_price = tick.ask if signal.action == "buy" else tick.bid
+
+            stop_loss, take_profit = calculate_sl_tp(
+                entry_price=entry_price,
+                direction=signal.action,
+                atr_value=signal.atr_value,
+                atr_multiplier=config.risk.trailing_stop_atr_multiplier,
+                tp_ratio=config.risk.take_profit_ratio,
+            )
+
             ticket = open_trade(
                 pair=pair,
                 direction=signal.action,
@@ -223,20 +233,9 @@ def _analyse_pair(
                 log_signal(db_conn, signal, trade_id=None)
                 return
 
-            # Fetch the actual fill price from MT5 so we can store it correctly.
-            import MetaTrader5 as mt5  # local import — Windows only dependency
-
             positions = mt5.positions_get(ticket=ticket)
-            entry_price = positions[0].price_open if positions else 0.0
-
-            # Recalculate SL/TP around the actual fill price.
-            stop_loss, take_profit = calculate_sl_tp(
-                entry_price=entry_price,
-                direction=signal.action,
-                atr_value=signal.atr_value,
-                atr_multiplier=config.risk.trailing_stop_atr_multiplier,
-                tp_ratio=config.risk.take_profit_ratio,
-            )
+            if positions:
+                entry_price = positions[0].price_open
 
             trade_id = log_trade(
                 db_conn,
@@ -406,12 +405,21 @@ def _detect_closed_trades(
                 close_deal = deals[-1]
                 exit_price = close_deal.price
                 pnl = close_deal.profit
+                if close_deal.reason == mt5.DEAL_REASON_SL:
+                    close_reason = "stop_loss"
+                elif close_deal.reason == mt5.DEAL_REASON_TP:
+                    close_reason = "take_profit"
+                else:
+                    close_reason = "trailing_stop" if pnl > 0 else "stop_loss"
             else:
                 exit_price = 0.0
                 pnl = 0.0
+                close_reason = "stop_loss"
 
-            close_reason = "stop_loss" if pnl < 0 else "take_profit"
             close_trade_record(db_conn, trade["id"], exit_price, pnl, balance, close_reason)
+
+            updated_trade = get_trade_by_ticket(db_conn, ticket)
+            duration = updated_trade["duration_minutes"] if updated_trade else 0
 
             trade_info = {
                 "pair": trade["pair"],
@@ -420,7 +428,7 @@ def _detect_closed_trades(
                 "exit_price": exit_price,
                 "profit_loss": pnl,
                 "close_reason": close_reason,
-                "duration_minutes": 0,
+                "duration_minutes": duration or 0,
             }
             _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
             logger.info(
@@ -457,6 +465,7 @@ def _check_friday_close(
             magic=config.system.magic_number,
         )
         if success:
+            duration = 0
             with get_connection() as db_conn:
                 trade = get_trade_by_ticket(db_conn, pos["ticket"])
                 if trade and trade.get("closed_at") is None:
@@ -468,6 +477,8 @@ def _check_friday_close(
                         balance_at_close=balance,
                         close_reason="friday_close",
                     )
+                    updated = get_trade_by_ticket(db_conn, pos["ticket"])
+                    duration = (updated["duration_minutes"] or 0) if updated else 0
             trade_info = {
                 "pair": pos["pair"],
                 "direction": pos["direction"],
@@ -475,7 +486,7 @@ def _check_friday_close(
                 "exit_price": 0.0,
                 "profit_loss": pos.get("profit", 0.0),
                 "close_reason": "friday_close",
-                "duration_minutes": 0,
+                "duration_minutes": duration,
             }
             _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
 
