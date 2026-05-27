@@ -36,8 +36,8 @@
 - [x] 19. Backtest masivo de los 6 pares
 
 ### Session 7: Analysis (Steps 20-21)
-- [ ] 20. Comparación y ranking de pares
-- [ ] 21. Optimización de parámetros (sin overfitting)
+- [x] 20. Comparación y ranking de pares
+- [x] 21. Optimización de parámetros (sin overfitting)
 
 ## Phase 3 — Live
 
@@ -80,4 +80,8 @@
 - Session 6 (Steps 17-19) complete. Backtesting engine, historical data download, massive 6-pair backtest.
 - Quality review: extracted shared indicator functions to backtest/_indicators.py, refactored validate_strategy.py to reuse engine.py's DriftBacktestStrategy and prepare_backtest_data.
 - Backtest results with synthetic data show strategy needs real MT5 data for meaningful evaluation.
-- Next session starts at Step 20 (Phase 2: Pair comparison and parameter optimization).
+- Session 7 (Steps 20-21) complete. Pair comparison + parameter optimization.
+- compare_pairs.py: composite scoring (PF/WR/Sharpe/DD/trades weighted), correlation matrix, KEEP/REVIEW/DROP verdicts.
+- optimize.py: walk-forward 70/30 split, grid search SL [1.0-2.0] and TP [1.5-3.0], overfitting detection (Sharpe drop, negative OOS).
+- **Phase 2 complete.** Backtesting infrastructure ready for real MT5 data.
+- Next session starts at Step 22 (Phase 3: Go Live).
