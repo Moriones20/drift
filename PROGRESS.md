@@ -5,7 +5,7 @@
 ### Session 1: Foundation (Steps 1-4)
 - [x] 1. Scaffolding del proyecto — estructura, venv, dependencias
 - [x] 2. Módulo de configuración — config.yaml loader y validación
-- [ ] 3. Módulo de conexión MT5 — conectar, desconectar, health check, reconexión
+- [x] 3. Módulo de conexión MT5 — conectar, desconectar, health check, reconexión
 - [ ] 4. Módulo de datos — obtener velas D1 y H4 de MT5
 
 ### Session 2: Strategy + Validation (Steps 5-7)
