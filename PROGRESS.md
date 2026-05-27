@@ -52,4 +52,6 @@
 
 ## Notes
 
-_Espacio para blockers, decisiones tomadas durante implementación, y cosas a revisar._
+- Session 1 (Steps 1-4) complete. Foundation: scaffolding, config, MT5 connection, data fetching.
+- Quality review done after Step 4: fixed fragile default_factory access in config.py, switched main.py from print to logging.
+- Next session starts at Step 5 (indicators module).

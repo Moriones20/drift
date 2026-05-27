@@ -56,6 +56,9 @@ class SystemConfig:
     friday_close_hour_utc: int = 20
 
 
+DEFAULT_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP"]
+
+
 @dataclass
 class DriftConfig:
     broker: BrokerConfig
@@ -64,9 +67,7 @@ class DriftConfig:
     telegram: TelegramConfig
     reports: ReportsConfig
     system: SystemConfig
-    pairs: list[str] = field(
-        default_factory=lambda: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP"]
-    )
+    pairs: list[str] = field(default_factory=lambda: list(DEFAULT_PAIRS))
 
 
 def _resolve_path(path: str | Path | None) -> Path:
@@ -189,13 +190,7 @@ def load_config(path: str | Path | None = None) -> DriftConfig:
         telegram=_parse_telegram(raw.get("telegram", {})),
         reports=_parse_reports(raw.get("reports", {})),
         system=_parse_system(raw.get("system", {})),
-        pairs=[
-            str(p)
-            for p in raw.get(
-                "pairs",
-                DriftConfig.__dataclass_fields__["pairs"].default_factory(),
-            )
-        ],
+        pairs=[str(p) for p in raw.get("pairs", DEFAULT_PAIRS)],
     )
 
     _validate(config)
