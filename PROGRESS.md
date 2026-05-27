@@ -14,7 +14,7 @@
 - [x] 7. Módulo de estrategia — lógica trend following D1+H4
 
 ### Session 3: Risk + Execution (Steps 8-10)
-- [ ] 8. Módulo de riesgo — position sizing, límites (4 trades, 2 por moneda), drawdown, comisiones
+- [x] 8. Módulo de riesgo — position sizing, límites (4 trades, 2 por moneda), drawdown, comisiones
 - [ ] 9. Módulo de ejecución — abrir/cerrar trades, SL/TP
 - [ ] 10. Módulo de trailing stop — monitoreo y actualización
 
