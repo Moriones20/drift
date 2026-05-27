@@ -10,33 +10,15 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from drift.formatting import UTC_MINUS_5, format_duration, pnl_str
+
 logger = logging.getLogger(__name__)
-
-_UTC_MINUS_5 = timezone(timedelta(hours=-5))
-
-
-def _format_duration(minutes: int) -> str:
-    days = minutes // 1440
-    hours = (minutes % 1440) // 60
-    mins = minutes % 60
-    parts: list[str] = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if mins or not parts:
-        parts.append(f"{mins}m")
-    return " ".join(parts)
-
-
-def _pnl_str(value: float) -> str:
-    return f"+${value:.2f}" if value >= 0 else f"-${abs(value):.2f}"
 
 
 def _period_label(since: datetime) -> str:
     """Return 'May 19 - May 25, 2026' style label in UTC-5."""
-    now_local = datetime.now(_UTC_MINUS_5)
-    since_local = since.astimezone(_UTC_MINUS_5)
+    now_local = datetime.now(UTC_MINUS_5)
+    since_local = since.astimezone(UTC_MINUS_5)
     end_local = now_local - timedelta(days=1)
 
     if since_local.year == now_local.year:
@@ -123,11 +105,11 @@ def generate_weekly_report(
 
     best_pnl = best["profit_loss"] or 0.0
     worst_pnl = worst["profit_loss"] or 0.0
-    best_line = f"{best['pair']} {best['direction'].upper()} {_pnl_str(best_pnl)}"
-    worst_line = f"{worst['pair']} {worst['direction'].upper()} {_pnl_str(worst_pnl)}"
+    best_line = f"{best['pair']} {best['direction'].upper()} {pnl_str(best_pnl)}"
+    worst_line = f"{worst['pair']} {worst['direction'].upper()} {pnl_str(worst_pnl)}"
 
     pairs_lines = "\n".join(
-        f"{row['pair']}: {_pnl_str(row['pair_pnl'] or 0.0)} ({row['pair_count']} trades)"
+        f"{row['pair']}: {pnl_str(row['pair_pnl'] or 0.0)} ({row['pair_count']} trades)"
         for row in pairs_rows
     )
 
@@ -139,13 +121,13 @@ def generate_weekly_report(
         f"Win Rate: {win_rate:.1f}%\n"
         f"Profit Factor: {profit_factor:.2f}\n\n"
         "<b>P&amp;L</b>\n"
-        f"Gross Profit: {_pnl_str(gross_profit)}\n"
+        f"Gross Profit: {pnl_str(gross_profit)}\n"
         f"Gross Loss: -${gross_loss:.2f}\n"
-        f"Net P&amp;L: {_pnl_str(net_pnl)}\n\n"
+        f"Net P&amp;L: {pnl_str(net_pnl)}\n\n"
         "<b>TRADES</b>\n"
         f"Best: {best_line}\n"
         f"Worst: {worst_line}\n"
-        f"Avg Duration: {_format_duration(avg_duration_mins)}\n\n"
+        f"Avg Duration: {format_duration(avg_duration_mins)}\n\n"
         "<b>PAIRS</b>\n"
         f"{pairs_lines}\n\n"
         "<b>ACCOUNT</b>\n"

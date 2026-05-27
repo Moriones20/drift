@@ -73,5 +73,8 @@
   - Fixed: Friday close now also closes trades opened within the last 4 hours (per D026), not only losing ones. Uses time_open from get_open_positions().
   - Added: _validate_pairs() called at startup — logs warnings for any configured pair that is missing or not visible in MT5.
   - Added: inner try/except in main loop — unexpected exceptions pause the bot, send a Telegram alert, and retry after 60s instead of crashing.
-- Next session: Step 15 (weekly report) and Step 16 (demo testing).
-- Step 16 complete. tests/test_e2e.py: 46 tests across 10 classes covering risk, correlation, drawdown, trailing stop, DB CRUD, weekly report, signal logging, Friday close, and position sizing. On this Python 3.14 machine 39 pass and 7 are skipped (TestFullSignalToTradeFlow requires a working pandas_ta — will run on the MT5 Python 3.10 environment). A lightweight pandas_ta stub (plain EMA/MACD/ATR via pandas ewm) is injected into sys.modules when the real package fails to import, so trailing.py and indicators.py can be imported without MT5 or pandas_ta.
+- Session 5 (Steps 14-16) complete. Safety hardening, weekly report, E2E tests.
+- Final quality review: extracted duplicated _format_duration/_pnl_str into drift/formatting.py (shared by telegram_bot.py and report.py).
+- User docs (docs/user/) fully written: getting-started, configuration, commands.
+- **Phase 1 MVP complete.** 16 steps, 46 tests (39 pass, 7 skip on Python 3.14).
+- Next session starts at Step 17 (Phase 2: Backtesting setup).

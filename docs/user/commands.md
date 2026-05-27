@@ -1,63 +1,139 @@
 # Comandos de Telegram
 
-## Comandos disponibles
+El bot acepta comandos unicamente desde el chat configurado en `telegram.chat_id`. Cualquier otro chat es ignorado silenciosamente.
 
-### /status
-Muestra el estado actual del bot.
-- ¿Está corriendo o pausado?
-- Tiempo activo
-- Conexión con MT5
+---
 
-### /trades
-Lista los trades abiertos actualmente.
-- Par, dirección (compra/venta)
-- Precio de entrada
-- P&L actual
-- Stop loss y take profit
+## /status
 
-### /history
-Muestra los últimos trades cerrados.
-- Resultado (ganancia/pérdida)
-- Motivo de cierre
-- Duración
+Muestra el estado actual del bot en tiempo real.
 
-### /balance
-Información financiera actual.
-- Balance actual
-- Rendimiento total ($ y %)
-- Drawdown actual
+**Informacion que devuelve:**
+- Estado del bot: corriendo o pausado.
+- Conexion con MT5: conectado o desconectado.
+- Tiempo activo desde el inicio (uptime).
+- Cantidad de trades abiertos actualmente.
 
-### /pause
-Pausa el bot.
-- No abre nuevos trades
-- Mantiene los trades abiertos (con sus SL/TP)
-- El bot sigue monitoreando trades existentes
+**Cuando usarlo:** para verificar rapidamente que el bot esta operando normalmente, especialmente despues de reiniciarlo o tras una pausa.
 
-### /resume
-Reanuda el bot después de una pausa.
-- Vuelve a buscar señales
-- Se usa después de un `/pause` manual o una pausa por drawdown
+---
 
-### /stop
-Cierra todo y apaga el bot.
-- Cierra todos los trades abiertos al precio actual
-- Detiene el bot completamente
-- Requiere reiniciar manualmente
+## /trades
 
-### /report
-Genera un reporte de rendimiento bajo demanda.
-- Trades del período
-- Ganadores vs perdedores
-- P&L
-- Balance actual
-- Drawdown
+Lista todos los trades abiertos en este momento.
 
-## Notificaciones automáticas
+**Informacion por trade:**
+- Par y direccion (BUY o SELL).
+- Precio de entrada.
+- Stop loss y take profit.
+- Tamaño en lotes.
+- P&L flotante actual (si esta disponible).
+- Hora de apertura.
 
-El bot envía notificaciones automáticamente cuando:
-- Se abre un trade
-- Se cierra un trade (por SL, TP, trailing, o manual)
-- El bot se inicia o se apaga
-- Ocurre un error
-- Se activa la pausa por drawdown
-- Reporte semanal (domingos 8pm UTC-5)
+**Cuando usarlo:** para revisar las posiciones activas y sus niveles de riesgo.
+
+---
+
+## /history
+
+Muestra los ultimos 5 trades cerrados.
+
+**Informacion por trade:**
+- Par y direccion.
+- Precio de entrada y salida.
+- P&L realizado.
+- Motivo de cierre: `stop_loss`, `take_profit`, `trailing_stop`, `friday_close`, o manual via `/stop`.
+- Duracion del trade.
+- Hora de cierre.
+
+**Cuando usarlo:** para revisar el desempeno reciente y entender por que se cerraron los ultimos trades.
+
+---
+
+## /balance
+
+Muestra el estado financiero de la cuenta.
+
+**Informacion que devuelve:**
+- Balance actual de la cuenta (obtenido en tiempo real desde MT5).
+- Balance pico historico desde que el bot inicio.
+- Drawdown actual en porcentaje respecto al pico.
+- P&L total acumulado de todos los trades cerrados.
+
+**Cuando usarlo:** para monitorear la salud financiera de la cuenta y el drawdown.
+
+---
+
+## /pause
+
+Pausa el bot: deja de buscar nuevas señales y no abre nuevos trades.
+
+**Comportamiento:**
+- Los trades abiertos se mantienen con sus stop loss y take profit activos.
+- El hilo de monitoreo sigue corriendo: se actualizan trailing stops y se detectan cierres por SL/TP.
+- El bot responde a comandos de Telegram normalmente.
+- Si el bot ya esta pausado, informa que ya lo esta.
+
+**Cuando usarlo:** ante noticias economicas importantes, condiciones de mercado inusuales, o cuando se quiere revisar algo sin apagar el bot completamente.
+
+Para reanudar, usar `/resume`.
+
+---
+
+## /resume
+
+Reanuda el bot despues de una pausa.
+
+**Comportamiento:**
+- El bot vuelve a analizar señales en el siguiente cierre de vela H4.
+- Funciona tanto para pausas manuales (via `/pause`) como para pausas automaticas por drawdown.
+- Si el bot no esta pausado, informa que ya esta corriendo.
+
+**Cuando usarlo:** despues de un `/pause` manual, o despues de revisar y aceptar la situacion tras una pausa automatica por drawdown.
+
+---
+
+## /stop
+
+Cierra todos los trades abiertos y apaga el bot completamente.
+
+**Comportamiento:**
+- Cierra todas las posiciones abiertas al precio de mercado actual.
+- Detiene el loop principal, el hilo de monitoreo y el bot de Telegram.
+- El proceso termina. Se debe reiniciar manualmente con `python main.py`.
+
+**Cuando usarlo:** para apagar el bot de forma controlada, especialmente antes de hacer cambios en la configuracion o actualizar el codigo. No usarlo como pausa — para eso esta `/pause`.
+
+---
+
+## /report
+
+Genera un reporte de rendimiento completo bajo demanda.
+
+**Informacion que devuelve:**
+- Trades abiertos en este momento.
+- Total de trades cerrados.
+- Ganadores y perdedores.
+- Win rate (porcentaje de trades ganadores).
+- Profit factor (ganancia bruta / perdida bruta).
+- P&L total acumulado.
+- Duracion promedio de los trades.
+
+**Cuando usarlo:** para evaluar el desempeno historico del bot en cualquier momento. El reporte cubre todos los trades registrados en la base de datos desde el inicio.
+
+---
+
+## Notificaciones automaticas
+
+Ademas de los comandos, el bot envia notificaciones de forma automatica en los siguientes eventos:
+
+| Evento | Descripcion |
+|---|---|
+| Inicio del bot | Confirma que el bot arranco, con el balance inicial. |
+| Trade abierto | Par, direccion, precio de entrada, SL, TP, tamaño en lotes y riesgo en USD. |
+| Trade cerrado | Par, direccion, precio de entrada y salida, P&L, motivo de cierre y duracion. |
+| Pausa por drawdown | Avisa cuando el drawdown supero el limite configurado y el bot se pauso automaticamente. |
+| Error en el loop | Si ocurre un error inesperado en el loop principal, el bot se pausa y notifica para que se investigue. |
+| Reconexion a MT5 | Si se pierde y se recupera la conexion con MT5. |
+| Cierre del bot | Confirma que el bot se apago correctamente. |
+| Reporte semanal | Enviado automaticamente el lunes a la 01:00 UTC (domingo 8pm UTC-5), con el mismo contenido que `/report`. |

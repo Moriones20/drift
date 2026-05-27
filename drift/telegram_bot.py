@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from drift.db import get_connection, get_open_trades, get_recent_trades, get_stats
+from drift.formatting import format_duration, format_time, pnl_str
 from drift.mt5_client import get_balance, health_check
 
 logger = logging.getLogger(__name__)
-
-_UTC_MINUS_5 = timezone(timedelta(hours=-5))
 
 
 class BotState:
@@ -27,35 +26,9 @@ class BotState:
 # ---------------------------------------------------------------------------
 
 
-def _format_time(dt: datetime) -> str:
-    """Convert a UTC datetime to UTC-5 and format as 'YYYY-MM-DD HH:MM'."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    local = dt.astimezone(_UTC_MINUS_5)
-    return local.strftime("%Y-%m-%d %H:%M")
-
-
-def _format_duration(minutes: int) -> str:
-    days = minutes // 1440
-    hours = (minutes % 1440) // 60
-    mins = minutes % 60
-    parts: list[str] = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if mins or not parts:
-        parts.append(f"{mins}m")
-    return " ".join(parts)
-
-
 def _uptime(start_time: datetime) -> str:
     delta = datetime.now(timezone.utc) - start_time
-    return _format_duration(int(delta.total_seconds() // 60))
-
-
-def _pnl_sign(value: float) -> str:
-    return f"+${value:.2f}" if value >= 0 else f"-${abs(value):.2f}"
+    return format_duration(int(delta.total_seconds() // 60))
 
 
 def _pips(entry: float, level: float) -> str:
@@ -113,15 +86,15 @@ async def notify_trade_closed(bot: Bot, chat_id: str, trade_info: dict) -> None:
         f"Direction: {direction}\n"
         f"Entry: {entry:.5f}\n"
         f"Exit: {exit_price:.5f}\n"
-        f"P&amp;L: {_pnl_sign(pnl)}\n"
+        f"P&amp;L: {pnl_str(pnl)}\n"
         f"Reason: {reason}\n"
-        f"Duration: {_format_duration(duration_minutes)}"
+        f"Duration: {format_duration(duration_minutes)}"
     )
     await send_notification(bot, chat_id, text)
 
 
 async def notify_error(bot: Bot, chat_id: str, error_msg: str) -> None:
-    now = _format_time(datetime.now(timezone.utc))
+    now = format_time(datetime.now(timezone.utc))
     text = f"⚠️ <b>ERROR</b>\n{error_msg}\nTime: {now}"
     await send_notification(bot, chat_id, text)
 
@@ -134,7 +107,7 @@ async def notify_bot_status(bot: Bot, chat_id: str, status: str, detail: str = "
         "resumed": "▶️",
     }
     icon = icons.get(status, "ℹ️")
-    now = _format_time(datetime.now(timezone.utc))
+    now = format_time(datetime.now(timezone.utc))
     text = f"{icon} <b>BOT {status.upper()}</b>"
     if detail:
         text += f"\n{detail}"
@@ -197,14 +170,14 @@ def _make_handlers(chat_id: str, state: BotState, db_path: str | Path | None):
         for t in trades:
             direction = t["direction"].upper()
             pnl = t.get("profit_loss")
-            pnl_str = _pnl_sign(pnl) if pnl is not None else "—"
+            pnl_label = pnl_str(pnl) if pnl is not None else "—"
             opened_dt = datetime.fromisoformat(t["opened_at"])
             lines.append(
                 f"\n{t['pair']} {direction}\n"
                 f"  Entry: {t['entry_price']:.5f}\n"
                 f"  SL: {t['stop_loss']:.5f}  TP: {t['take_profit']:.5f}\n"
-                f"  Size: {t['position_size']:.2f} lots  P&amp;L: {pnl_str}\n"
-                f"  Opened: {_format_time(opened_dt)}"
+                f"  Size: {t['position_size']:.2f} lots  P&amp;L: {pnl_label}\n"
+                f"  Opened: {format_time(opened_dt)}"
             )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -230,10 +203,10 @@ def _make_handlers(chat_id: str, state: BotState, db_path: str | Path | None):
             reason = t.get("close_reason", "?")
             closed_dt = datetime.fromisoformat(t["closed_at"])
             lines.append(
-                f"\n{t['pair']} {direction}  {_pnl_sign(pnl)}\n"
+                f"\n{t['pair']} {direction}  {pnl_str(pnl)}\n"
                 f"  Entry: {t['entry_price']:.5f} → Exit: {t['exit_price']:.5f}\n"
-                f"  Reason: {reason}  Duration: {_format_duration(t['duration_minutes'] or 0)}\n"
-                f"  Closed: {_format_time(closed_dt)}"
+                f"  Reason: {reason}  Duration: {format_duration(t['duration_minutes'] or 0)}\n"
+                f"  Closed: {format_time(closed_dt)}"
             )
         await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -262,7 +235,7 @@ def _make_handlers(chat_id: str, state: BotState, db_path: str | Path | None):
             f"Balance: {balance_str}\n"
             f"Peak: ${peak:.2f}\n"
             f"Drawdown: {drawdown_pct:.1f}%\n"
-            f"Total P&amp;L: {_pnl_sign(total_pnl)}"
+            f"Total P&amp;L: {pnl_str(total_pnl)}"
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
@@ -347,8 +320,8 @@ def _make_handlers(chat_id: str, state: BotState, db_path: str | Path | None):
             f"Winners: {winning}  Losers: {losing}\n"
             f"Win rate: {win_rate:.1f}%\n"
             f"Profit factor: {profit_factor:.2f}\n"
-            f"Total P&amp;L: {_pnl_sign(total_pnl)}\n"
-            f"Avg duration: {_format_duration(avg_dur)}"
+            f"Total P&amp;L: {pnl_str(total_pnl)}\n"
+            f"Avg duration: {format_duration(avg_dur)}"
         )
         await update.message.reply_text(text, parse_mode="HTML")
 
