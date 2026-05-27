@@ -33,7 +33,7 @@
 ### Session 6: Backtest Setup (Steps 17-19)
 - [x] 17. Integración completa con Backtesting.py
 - [x] 18. Descarga de datos históricos (mín 2 años)
-- [ ] 19. Backtest masivo de los 6 pares
+- [x] 19. Backtest masivo de los 6 pares
 
 ### Session 7: Analysis (Steps 20-21)
 - [ ] 20. Comparación y ranking de pares
