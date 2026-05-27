@@ -25,7 +25,7 @@
 
 ### Session 5: Safety + Testing (Steps 14-16)
 - [x] 14. Sistemas de seguridad — drawdown, max trades, correlación, cierre de viernes, reconexión, error handling
-- [ ] 15. Reporte semanal — generación automática domingos 8pm UTC-5
+- [x] 15. Reporte semanal — generación automática domingos 8pm UTC-5
 - [ ] 16. Testing en demo — flujo completo: señal → trade → notificación → logging
 
 ## Phase 2 — Backtesting completo

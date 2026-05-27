@@ -13,7 +13,7 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from drift.config import DriftConfig, load_config
@@ -30,6 +30,7 @@ from drift.db import (
 )
 from drift.executor import close_trade, get_open_positions, open_trade
 from drift.mt5_client import connect, disconnect, get_balance, get_candles, health_check, reconnect
+from drift.report import generate_weekly_report
 from drift.risk import calculate_position_size, calculate_sl_tp, check_all_risk
 from drift.strategy import Signal, analyze_pair
 from drift.telegram_bot import (
@@ -38,6 +39,7 @@ from drift.telegram_bot import (
     notify_error,
     notify_trade_closed,
     notify_trade_opened,
+    send_notification,
     setup_bot,
 )
 from drift.trailing import process_open_trades
@@ -50,6 +52,10 @@ H4_CANDLE_TIMES_UTC = [0, 4, 8, 12, 16, 20]
 CANDLE_CLOSE_DELAY_SECONDS = 5
 _LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 _PROJECT_ROOT = Path(__file__).parent
+
+# Weekly report: sent Monday 01:00 UTC (= Sunday 8pm UTC-5).
+# Tracks the date of the last sent report to avoid duplicate sends.
+_last_report_date: date | None = None
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -317,6 +323,33 @@ def _monitoring_loop(
         shutdown_event.wait(timeout=interval)
 
 
+def _check_weekly_report(
+    config: DriftConfig,
+    balance: float,
+    peak_balance: float,
+    bot_app,
+) -> None:
+    """Send the weekly report if it's Monday 01:xx UTC and not yet sent today."""
+    global _last_report_date
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    if now.weekday() != 0 or now.hour != 1:
+        return
+    if _last_report_date == today:
+        return
+
+    try:
+        with get_connection() as db_conn:
+            report_text = generate_weekly_report(db_conn, balance, peak_balance)
+        _fire_and_forget(send_notification(bot_app.bot, config.telegram.chat_id, report_text))
+        _last_report_date = today
+        logger.info("Weekly report sent")
+    except Exception:
+        logger.exception("Failed to generate or send weekly report")
+
+
 def _monitoring_tick(
     config: DriftConfig,
     state: BotState,
@@ -370,6 +403,7 @@ def _monitoring_tick(
         process_open_trades(mt5_positions, config.risk)
 
     _check_friday_close(config, state, mt5_positions, balance, bot_app)
+    _check_weekly_report(config, balance, peak_balance_ref[0], bot_app)
 
 
 def _check_drawdown_pause(
