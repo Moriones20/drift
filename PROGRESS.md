@@ -20,7 +20,7 @@
 
 ### Session 4: Database + Telegram (Steps 11-13)
 - [x] 11. Base de datos SQLite — schema, CRUD trades/señales/eventos
-- [ ] 12. Módulo de Telegram — bot, comandos, notificaciones
+- [x] 12. Módulo de Telegram — bot, comandos, notificaciones
 - [ ] 13. Loop principal — orquestador H4, ciclo completo
 
 ### Session 5: Safety + Testing (Steps 14-16)
@@ -63,3 +63,4 @@
 - Session 3 (Steps 8-10) complete. Risk, execution, trailing stop.
 - Quality review after Step 10: fixed close_trade magic=0 bug (now passes magic through), unified _count_selling/_count_buying into single _count_currency_exposure helper.
 - Next session starts at Step 11 (database module).
+- Step 12 complete. drift/telegram_bot.py implements BotState (shared paused/stop_requested flags), all 5 notifier functions (send_notification, notify_trade_opened, notify_trade_closed, notify_error, notify_bot_status), all 8 command handlers (/status /trades /history /balance /pause /resume /stop /report), and setup_bot() that builds and returns the Application. HTML parse mode throughout. All times displayed in UTC-5.
