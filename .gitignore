@@ -10,6 +10,9 @@ logs/*.log
 # Backtest output
 backtest/results/*.html
 
+# Historical data CSVs (generated locally, not committed)
+backtest/data/*.csv
+
 # Python
 __pycache__/
 *.py[cod]

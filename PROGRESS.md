@@ -31,8 +31,8 @@
 ## Phase 2 — Backtesting completo
 
 ### Session 6: Backtest Setup (Steps 17-19)
-- [ ] 17. Integración completa con Backtesting.py
-- [ ] 18. Descarga de datos históricos (mín 2 años)
+- [x] 17. Integración completa con Backtesting.py
+- [x] 18. Descarga de datos históricos (mín 2 años)
 - [ ] 19. Backtest masivo de los 6 pares
 
 ### Session 7: Analysis (Steps 20-21)
