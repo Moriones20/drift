@@ -12,7 +12,7 @@ from drift.indicators import compute_all
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Signal:
     pair: str
     timestamp: datetime
@@ -88,11 +88,8 @@ def analyze_pair(
 
     if entry == "none":
         reason = "no entry signal"
-    elif (entry == "buy" and trend == "bullish") or (entry == "sell" and trend == "bearish"):
-        reason = "trend + MACD confirmed"
     else:
-        entry = "none"
-        reason = "MACD against trend"
+        reason = "trend + MACD confirmed"
 
     action = entry
     logger.info("%s | trend=%s action=%s reason=%s", pair, trend, action, reason)

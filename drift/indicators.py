@@ -30,9 +30,10 @@ def compute_macd(
             f"Need at least {min_rows} rows for MACD({fast},{slow},{signal}), got {len(df)}"
         )
     result = ta.macd(df["close"], fast=fast, slow=slow, signal=signal)
-    macd_line = result.iloc[:, 0].rename("macd_line")
-    signal_line = result.iloc[:, 2].rename("macd_signal")
-    histogram = result.iloc[:, 1].rename("macd_histogram")
+    suffix = f"{fast}_{slow}_{signal}"
+    macd_line = result[f"MACD_{suffix}"].rename("macd_line")
+    signal_line = result[f"MACDs_{suffix}"].rename("macd_signal")
+    histogram = result[f"MACDh_{suffix}"].rename("macd_histogram")
     return macd_line, signal_line, histogram
 
 

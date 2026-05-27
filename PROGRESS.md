@@ -56,4 +56,6 @@
 - Quality review done after Step 4: fixed fragile default_factory access in config.py, switched main.py from print to logging.
 - Step 5 complete. drift/indicators.py implements compute_ema, compute_macd, compute_atr, compute_all. Note: pandas_ta requires Python <3.14 (numba constraint) — smoke test skipped due to system Python 3.14; will verify in MT5 environment (Windows with Python 3.10).
 - Step 6 complete. backtest/validate_strategy.py implements full validation backtest with dual mode (MT5 live data or synthetic fallback). Indicators inlined with plain pandas/numpy to avoid pandas_ta/numba import on Python 3.14. Passes thresholds are printed per-metric; verdict printed at end. Runs clean with ruff.
-- Next session starts at Step 7 (strategy module).
+- Session 2 (Steps 5-7) complete. Strategy core: indicators, validation backtest, strategy logic.
+- Quality review after Step 7: fixed fragile MACD column access in indicators.py (positional → named), removed dead code branch in strategy.py, added frozen=True to Signal dataclass.
+- Next session starts at Step 8 (risk module).
