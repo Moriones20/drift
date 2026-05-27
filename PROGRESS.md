@@ -6,7 +6,7 @@
 - [x] 1. Scaffolding del proyecto — estructura, venv, dependencias
 - [x] 2. Módulo de configuración — config.yaml loader y validación
 - [x] 3. Módulo de conexión MT5 — conectar, desconectar, health check, reconexión
-- [ ] 4. Módulo de datos — obtener velas D1 y H4 de MT5
+- [x] 4. Módulo de datos — obtener velas D1 y H4 de MT5
 
 ### Session 2: Strategy + Validation (Steps 5-7)
 - [ ] 5. Módulo de indicadores — EMA 50/200, MACD, ATR
