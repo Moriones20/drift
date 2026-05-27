@@ -77,4 +77,7 @@
 - Final quality review: extracted duplicated _format_duration/_pnl_str into drift/formatting.py (shared by telegram_bot.py and report.py).
 - User docs (docs/user/) fully written: getting-started, configuration, commands.
 - **Phase 1 MVP complete.** 16 steps, 46 tests (39 pass, 7 skip on Python 3.14).
-- Next session starts at Step 17 (Phase 2: Backtesting setup).
+- Session 6 (Steps 17-19) complete. Backtesting engine, historical data download, massive 6-pair backtest.
+- Quality review: extracted shared indicator functions to backtest/_indicators.py, refactored validate_strategy.py to reuse engine.py's DriftBacktestStrategy and prepare_backtest_data.
+- Backtest results with synthetic data show strategy needs real MT5 data for meaningful evaluation.
+- Next session starts at Step 20 (Phase 2: Pair comparison and parameter optimization).

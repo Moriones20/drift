@@ -12,10 +12,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from backtesting import Backtest, Strategy
+from backtesting import Backtest
 
 # Make project root importable when run as a script
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from backtest.engine import DriftBacktestStrategy, prepare_backtest_data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,32 +32,6 @@ H4_COUNT = 3000
 COMMISSION = 0.00007  # ~$7/lot round trip for ICMarkets
 INITIAL_CASH = 10_000
 EQUITY_FRACTION = 0.10  # proxy for 1% risk at typical leverage
-
-
-# ---------------------------------------------------------------------------
-# Inline indicator functions (avoid pandas_ta import in backtest context)
-# ---------------------------------------------------------------------------
-
-
-def _ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def _macd_histogram(
-    series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
-) -> pd.Series:
-    macd_line = _ema(series, fast) - _ema(series, slow)
-    signal_line = _ema(macd_line, signal)
-    return macd_line - signal_line
-
-
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(span=period, adjust=False).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -155,107 +131,6 @@ def _get_data(symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 # ---------------------------------------------------------------------------
-# DataFrame preparation — precompute and merge indicators into H4
-# ---------------------------------------------------------------------------
-
-
-def _build_backtest_df(df_d1: pd.DataFrame, df_h4: pd.DataFrame) -> pd.DataFrame:
-    """Return an H4 DataFrame enriched with D1 EMA columns and H4 indicators.
-
-    Backtesting.py requires: Open, High, Low, Close, Volume.
-    Extra columns are accessible via self.data.<Column>.
-    """
-    # D1 EMAs — forward-fill onto H4 index
-    df_d1 = df_d1.copy()
-    df_d1["ema50_d1"] = _ema(df_d1["close"], 50)
-    df_d1["ema200_d1"] = _ema(df_d1["close"], 200)
-
-    df_merged = df_h4.copy()
-    df_merged = df_merged.join(
-        df_d1[["ema50_d1", "ema200_d1"]].resample("4h").last().ffill(),
-        how="left",
-    )
-    df_merged["ema50_d1"] = df_merged["ema50_d1"].ffill()
-    df_merged["ema200_d1"] = df_merged["ema200_d1"].ffill()
-
-    # H4 indicators
-    df_merged["macd_hist"] = _macd_histogram(df_h4["close"])
-    df_merged["atr"] = _atr(df_h4["high"], df_h4["low"], df_h4["close"])
-
-    # Backtesting.py requires capitalised OHLCV column names
-    df_merged = df_merged.rename(
-        columns={
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
-            "close": "Close",
-            "tick_volume": "Volume",
-        }
-    )
-
-    df_merged = df_merged.dropna(
-        subset=["ema50_d1", "ema200_d1", "macd_hist", "atr", "Open", "High", "Low", "Close"]
-    )
-
-    logger.info("Backtest DataFrame: %d rows after warmup drop", len(df_merged))
-    return df_merged
-
-
-# ---------------------------------------------------------------------------
-# Backtesting.py strategy
-# ---------------------------------------------------------------------------
-
-
-class DriftStrategy(Strategy):
-    """EMA 50/200 (D1) trend filter + MACD histogram crossover (H4) entry."""
-
-    sl_atr_mult: float = 1.5
-    tp_ratio: float = 2.0
-
-    def init(self) -> None:
-        self.ema50_d1 = self.I(lambda: self.data.ema50_d1, name="EMA50_D1")
-        self.ema200_d1 = self.I(lambda: self.data.ema200_d1, name="EMA200_D1")
-        self.macd_hist = self.I(lambda: self.data.macd_hist, name="MACD_Hist")
-        self.atr = self.I(lambda: self.data.atr, name="ATR")
-
-    def next(self) -> None:
-        if len(self.data) < 2:
-            return
-
-        atr_val: float = self.atr[-1]
-        if np.isnan(atr_val) or atr_val <= 0:
-            return
-
-        sl_dist = atr_val * self.sl_atr_mult
-        tp_dist = sl_dist * self.tp_ratio
-
-        bullish_trend = self.ema50_d1[-1] > self.ema200_d1[-1]
-        bearish_trend = self.ema50_d1[-1] < self.ema200_d1[-1]
-
-        hist_prev: float = self.macd_hist[-2]
-        hist_curr: float = self.macd_hist[-1]
-
-        if np.isnan(hist_prev) or np.isnan(hist_curr):
-            return
-
-        macd_crossed_up = hist_prev < 0 < hist_curr
-        macd_crossed_down = hist_prev > 0 > hist_curr
-
-        price = self.data.Close[-1]
-
-        if not self.position:
-            if bullish_trend and macd_crossed_up:
-                sl = price - sl_dist
-                tp = price + tp_dist
-                self.buy(sl=sl, tp=tp)
-
-            elif bearish_trend and macd_crossed_down:
-                sl = price + sl_dist
-                tp = price - tp_dist
-                self.sell(sl=sl, tp=tp)
-
-
-# ---------------------------------------------------------------------------
 # Metrics output
 # ---------------------------------------------------------------------------
 
@@ -325,11 +200,11 @@ def run_backtest(symbol: str) -> None:
     period_start = str(df_h4.index[0].date())
     period_end = str(df_h4.index[-1].date())
 
-    df_bt = _build_backtest_df(df_d1, df_h4)
+    df_bt = prepare_backtest_data(df_d1, df_h4)
 
     bt = Backtest(
         df_bt,
-        DriftStrategy,
+        DriftBacktestStrategy,
         cash=INITIAL_CASH,
         commission=COMMISSION,
         exclusive_orders=True,

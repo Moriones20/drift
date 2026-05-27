@@ -22,35 +22,13 @@ from backtesting import Backtest, Strategy
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backtest._indicators import atr as _atr
+from backtest._indicators import ema as _ema
+from backtest._indicators import macd_histogram as _macd_histogram
+
 logger = logging.getLogger(__name__)
 
 PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP"]
-
-
-# ---------------------------------------------------------------------------
-# Inline indicator functions
-# ---------------------------------------------------------------------------
-
-
-def _ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def _macd_histogram(
-    series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
-) -> pd.Series:
-    macd_line = _ema(series, fast) - _ema(series, slow)
-    signal_line = _ema(macd_line, signal)
-    return macd_line - signal_line
-
-
-def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(span=period, adjust=False).mean()
 
 
 # ---------------------------------------------------------------------------
