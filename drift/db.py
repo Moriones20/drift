@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS bot_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_at TEXT NOT NULL,
     event_type TEXT NOT NULL CHECK(event_type IN (
-        'start', 'stop', 'pause', 'resume', 'error', 'reconnect', 'drawdown_alert'
+        'start', 'stop', 'pause', 'resume', 'error', 'reconnect', 'drawdown_alert',
+        'peak_balance'
     )),
     detail TEXT,
     balance REAL
@@ -108,13 +110,17 @@ def init_db(db_path: str | Path | None = None) -> None:
         conn.close()
 
 
-def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
-    """Return a connection with row_factory set to sqlite3.Row."""
+@contextmanager
+def get_connection(db_path: str | Path | None = None):
+    """Context manager that yields a connection and closes it in a finally block."""
     path = _resolve_path(db_path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +331,17 @@ def log_event(
 # ---------------------------------------------------------------------------
 
 
+def log_peak_balance(conn: sqlite3.Connection, balance: float) -> None:
+    """Record a new peak balance in bot_events."""
+    event_at = _utc_now()
+    conn.execute(
+        "INSERT INTO bot_events (event_at, event_type, balance) VALUES (?, 'peak_balance', ?)",
+        (event_at, balance),
+    )
+    conn.commit()
+    logger.debug("Logged peak_balance=%.2f", balance)
+
+
 def get_stats(conn: sqlite3.Connection) -> dict:
     """Return aggregate statistics for all recorded trades."""
     row = conn.execute(
@@ -334,11 +351,17 @@ def get_stats(conn: sqlite3.Connection) -> dict:
             SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) AS winning_trades,
             SUM(CASE WHEN profit_loss <= 0 THEN 1 ELSE 0 END) AS losing_trades,
             SUM(profit_loss) AS total_pnl,
-            MAX(balance_at_open) AS peak_balance,
+            MAX(balance_at_open) AS peak_balance_trades,
             AVG(duration_minutes) AS avg_trade_duration_minutes
         FROM trades
         WHERE closed_at IS NOT NULL
         """
+    ).fetchone()
+
+    # Also consider recorded peak_balance events (captures peaks between trades).
+    event_row = conn.execute(
+        "SELECT MAX(balance) AS peak_balance_events FROM bot_events"
+        " WHERE event_type = 'peak_balance'"
     ).fetchone()
 
     total = row["total_trades"] or 0
@@ -346,12 +369,16 @@ def get_stats(conn: sqlite3.Connection) -> dict:
     losing = row["losing_trades"] or 0
     win_rate = (winning / total) if total > 0 else 0.0
 
+    peak_from_trades = row["peak_balance_trades"] or 0.0
+    peak_from_events = (event_row["peak_balance_events"] or 0.0) if event_row else 0.0
+    peak_balance = max(peak_from_trades, peak_from_events)
+
     return {
         "total_trades": total,
         "winning_trades": winning,
         "losing_trades": losing,
         "win_rate": win_rate,
         "total_pnl": row["total_pnl"] or 0.0,
-        "peak_balance": row["peak_balance"] or 0.0,
+        "peak_balance": peak_balance,
         "avg_trade_duration_minutes": row["avg_trade_duration_minutes"] or 0.0,
     }

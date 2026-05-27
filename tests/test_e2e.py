@@ -295,7 +295,8 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
         signal = analyze_pair("EURUSD", df_d1, df_h4, self.config.strategy)
 
         self.assertEqual(signal.pair, "EURUSD")
-        self.assertIn(signal.trend_direction, ("bullish", "bearish", "none"))
+        self.assertEqual(signal.action, "buy")
+        self.assertEqual(signal.trend_direction, "bullish")
         self.assertIsInstance(signal.ema_fast, float)
         self.assertIsInstance(signal.atr_value, float)
         self.assertGreater(signal.atr_value, 0)

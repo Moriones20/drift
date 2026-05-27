@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import MetaTrader5 as mt5
@@ -56,7 +57,17 @@ def get_balance() -> float:
     return float(account.balance)
 
 
-def reconnect(config: BrokerConfig, max_retries: int = 3, interval: int = 300) -> bool:
+def reconnect(
+    config: BrokerConfig,
+    max_retries: int = 3,
+    interval: int = 300,
+    shutdown_event: threading.Event | None = None,
+) -> bool:
+    """Attempt to reconnect to MT5.
+
+    Uses shutdown_event.wait() instead of time.sleep() so the monitoring thread
+    can be stopped cleanly without waiting for the full retry interval.
+    """
     disconnect()
 
     for attempt in range(1, max_retries + 1):
@@ -65,7 +76,12 @@ def reconnect(config: BrokerConfig, max_retries: int = 3, interval: int = 300) -
             return True
         if attempt < max_retries:
             logger.info("Waiting %ds before next attempt", interval)
-            time.sleep(interval)
+            if shutdown_event is not None:
+                if shutdown_event.wait(timeout=interval):
+                    logger.info("Shutdown requested — aborting reconnect")
+                    return False
+            else:
+                time.sleep(interval)
 
     logger.error("All %d reconnect attempts failed", max_retries)
     return False

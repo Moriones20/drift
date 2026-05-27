@@ -63,8 +63,10 @@ def prepare_backtest_data(
     df_d1["ema_fast"] = _ema(df_d1["close"], ema_fast)
     df_d1["ema_slow"] = _ema(df_d1["close"], ema_slow)
 
-    # Forward-fill D1 EMAs onto H4 timestamps
-    d1_emas = df_d1[["ema_fast", "ema_slow"]].resample("4h").last().ffill()
+    # Forward-fill D1 EMAs onto H4 timestamps.
+    # Shift by 1 day so each H4 bar only sees the EMA from the *previous* D1 close,
+    # eliminating look-ahead bias (D1 closes at 00:00 UTC the *next* day).
+    d1_emas = df_d1[["ema_fast", "ema_slow"]].shift(1).resample("4h").last().ffill()
     df_merged = df_h4.join(d1_emas, how="left")
     df_merged["ema_fast"] = df_merged["ema_fast"].ffill()
     df_merged["ema_slow"] = df_merged["ema_slow"].ffill()

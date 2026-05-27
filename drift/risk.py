@@ -22,15 +22,10 @@ def calculate_position_size(
 
     risk_amount = balance * (risk_percent / 100)
 
-    initial_lot_size = risk_amount / (stop_loss_pips * pip_value)
-    commission = COMMISSION_PER_LOT * initial_lot_size
-    adjusted_risk = risk_amount - commission
-
-    if adjusted_risk <= 0:
-        logger.warning("Risk amount %.2f cannot cover commission %.2f", risk_amount, commission)
-        return 0.0
-
-    lot_size = adjusted_risk / (stop_loss_pips * pip_value)
+    # Solve algebraically to avoid circular commission dependency:
+    # lot = risk_amount / (sl_pips * pip_value + COMMISSION_PER_LOT)
+    denominator = stop_loss_pips * pip_value + COMMISSION_PER_LOT
+    lot_size = risk_amount / denominator
     lot_size = math.floor(lot_size * 100) / 100
 
     if lot_size < 0.01:

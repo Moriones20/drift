@@ -21,4 +21,5 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> 
         [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
         axis=1,
     ).max(axis=1)
-    return tr.ewm(span=period, adjust=False).mean()
+    # Use Wilder's smoothing (alpha=1/period) to match the live ATR calculation.
+    return tr.ewm(alpha=1.0 / period, adjust=False).mean()

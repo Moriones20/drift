@@ -36,14 +36,6 @@ TRAIN_RATIO = 0.7
 COMMISSION = 0.00007
 
 
-def split_data(
-    df: pd.DataFrame, train_ratio: float = TRAIN_RATIO
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split DataFrame into train and test sets chronologically."""
-    cutoff = int(len(df) * train_ratio)
-    return df.iloc[:cutoff], df.iloc[cutoff:]
-
-
 def _extract_metrics(stats: pd.Series) -> dict:
     """Pull the metrics we care about from a backtesting.py stats Series."""
 
@@ -81,9 +73,16 @@ def optimize_pair(
     """Run walk-forward optimization for a single pair. Returns results dict."""
     logger.info("Optimizing %s...", symbol)
 
-    prepared = prepare_backtest_data(df_d1, df_h4)
+    # Split raw data BEFORE computing indicators to avoid look-ahead bias.
+    cutoff = int(len(df_h4) * TRAIN_RATIO)
+    h4_cutoff_time = df_h4.index[cutoff]
+    df_h4_train = df_h4.iloc[:cutoff]
+    df_h4_test = df_h4.iloc[cutoff:]
+    df_d1_train = df_d1[df_d1.index <= h4_cutoff_time]
+    df_d1_test = df_d1[df_d1.index > h4_cutoff_time]
 
-    df_train, df_test = split_data(prepared)
+    df_train = prepare_backtest_data(df_d1_train, df_h4_train)
+    df_test = prepare_backtest_data(df_d1_test, df_h4_test)
     logger.info(
         "%s split — train: %d bars, test: %d bars",
         symbol,

@@ -25,6 +25,7 @@ from drift.db import (
     get_trade_by_ticket,
     init_db,
     log_event,
+    log_peak_balance,
     log_signal,
     log_trade,
 )
@@ -56,6 +57,12 @@ _PROJECT_ROOT = Path(__file__).parent
 # Weekly report: sent Monday 01:00 UTC (= Sunday 8pm UTC-5).
 # Tracks the date of the last sent report to avoid duplicate sends.
 _last_report_date: date | None = None
+
+# Friday close: set True after first pass, reset False on Monday.
+_friday_closed: bool = False
+
+# Prevents race conditions between the main analysis cycle and the monitoring thread.
+_trade_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -164,16 +171,15 @@ def _run_analysis_cycle(
     if balance > peak_balance:
         peak_balance = balance
         logger.info("Peak balance updated: %.2f", peak_balance)
-
-    with get_connection() as db_conn:
-        open_trades_db = get_open_trades(db_conn)
+        with get_connection() as db_conn:
+            log_peak_balance(db_conn, peak_balance)
 
     for pair in config.pairs:
         if state.paused:
             logger.info("Bot paused — skipping analysis for %s", pair)
             continue
         try:
-            _analyse_pair(pair, balance, peak_balance, open_trades_db, config, state, bot_app)
+            _analyse_pair(pair, balance, peak_balance, config, state, bot_app)
         except Exception:
             logger.exception("Unhandled error analysing %s", pair)
 
@@ -185,7 +191,6 @@ def _analyse_pair(
     pair: str,
     balance: float,
     peak_balance: float,
-    open_trades_db: list[dict],
     config: DriftConfig,
     state: BotState,
     bot_app,
@@ -195,108 +200,114 @@ def _analyse_pair(
 
     signal: Signal = analyze_pair(pair, df_d1, df_h4, config.strategy)
 
-    with get_connection() as db_conn:
-        if signal.action in ("buy", "sell"):
-            risk_ok, risk_reason = check_all_risk(
-                balance=balance,
-                peak_balance=peak_balance,
-                open_trades=open_trades_db,
-                new_pair=pair,
-                new_direction=signal.action,
-                config=config.risk,
-            )
-            if not risk_ok:
-                logger.info("%s | risk check failed: %s", pair, risk_reason)
-                log_signal(db_conn, signal, trade_id=None, rejection_reason=f"risk: {risk_reason}")
-                return
+    with _trade_lock:
+        with get_connection() as db_conn:
+            if signal.action in ("buy", "sell"):
+                open_trades_db = get_open_trades(db_conn)
+                risk_ok, risk_reason = check_all_risk(
+                    balance=balance,
+                    peak_balance=peak_balance,
+                    open_trades=open_trades_db,
+                    new_pair=pair,
+                    new_direction=signal.action,
+                    config=config.risk,
+                )
+                if not risk_ok:
+                    logger.info("%s | risk check failed: %s", pair, risk_reason)
+                    log_signal(
+                        db_conn, signal, trade_id=None, rejection_reason=f"risk: {risk_reason}"
+                    )
+                    return
 
-            import MetaTrader5 as mt5
+                import MetaTrader5 as mt5
 
-            pip_mult = _pip_multiplier(pair)
-            pip_val = _pip_value(pair)
-            sl_pips = signal.atr_value * config.risk.trailing_stop_atr_multiplier * pip_mult
+                pip_mult = _pip_multiplier(pair)
+                pip_val = _pip_value(pair)
+                sl_pips = signal.atr_value * config.risk.trailing_stop_atr_multiplier * pip_mult
 
-            lot_size = calculate_position_size(
-                balance=balance,
-                risk_percent=config.risk.percent_per_trade,
-                stop_loss_pips=sl_pips,
-                pip_value=pip_val,
-            )
+                lot_size = calculate_position_size(
+                    balance=balance,
+                    risk_percent=config.risk.percent_per_trade,
+                    stop_loss_pips=sl_pips,
+                    pip_value=pip_val,
+                )
 
-            if lot_size <= 0:
-                logger.warning("%s | position size is 0 — skipping trade", pair)
+                if lot_size <= 0:
+                    logger.warning("%s | position size is 0 — skipping trade", pair)
+                    log_signal(db_conn, signal, trade_id=None, rejection_reason="lot_size_zero")
+                    return
+
+                tick = mt5.symbol_info_tick(pair)
+                if tick is None:
+                    logger.error("%s | cannot get tick price — skipping trade", pair)
+                    log_signal(db_conn, signal, trade_id=None, rejection_reason="tick_unavailable")
+                    return
+
+                entry_price = tick.ask if signal.action == "buy" else tick.bid
+
+                stop_loss, take_profit = calculate_sl_tp(
+                    entry_price=entry_price,
+                    direction=signal.action,
+                    atr_value=signal.atr_value,
+                    atr_multiplier=config.risk.trailing_stop_atr_multiplier,
+                    tp_ratio=config.risk.take_profit_ratio,
+                )
+
+                ticket = open_trade(
+                    pair=pair,
+                    direction=signal.action,
+                    lot_size=lot_size,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    magic=config.system.magic_number,
+                )
+
+                if ticket is None:
+                    logger.error("%s | open_trade failed", pair)
+                    log_signal(db_conn, signal, trade_id=None)
+                    return
+
+                positions = mt5.positions_get(ticket=ticket)
+                if positions:
+                    entry_price = positions[0].price_open
+
+                trade_id = log_trade(
+                    db_conn,
+                    pair=pair,
+                    direction=signal.action,
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    position_size=lot_size,
+                    balance_at_open=balance,
+                    mt5_ticket=ticket,
+                )
+
+                log_signal(db_conn, signal, trade_id=trade_id)
+
+                risk_usd = balance * config.risk.percent_per_trade / 100
+                trade_info = {
+                    "pair": pair,
+                    "direction": signal.action,
+                    "entry_price": entry_price,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "position_size": lot_size,
+                    "risk_usd": risk_usd,
+                    "risk_pct": config.risk.percent_per_trade,
+                }
+                _fire_and_forget(
+                    notify_trade_opened(bot_app.bot, config.telegram.chat_id, trade_info)
+                )
+                logger.info(
+                    "%s | trade opened ticket=%d direction=%s lot=%.2f",
+                    pair,
+                    ticket,
+                    signal.action,
+                    lot_size,
+                )
+            else:
                 log_signal(db_conn, signal, trade_id=None)
-                return
-
-            tick = mt5.symbol_info_tick(pair)
-            if tick is None:
-                logger.error("%s | cannot get tick price — skipping trade", pair)
-                log_signal(db_conn, signal, trade_id=None)
-                return
-
-            entry_price = tick.ask if signal.action == "buy" else tick.bid
-
-            stop_loss, take_profit = calculate_sl_tp(
-                entry_price=entry_price,
-                direction=signal.action,
-                atr_value=signal.atr_value,
-                atr_multiplier=config.risk.trailing_stop_atr_multiplier,
-                tp_ratio=config.risk.take_profit_ratio,
-            )
-
-            ticket = open_trade(
-                pair=pair,
-                direction=signal.action,
-                lot_size=lot_size,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                magic=config.system.magic_number,
-            )
-
-            if ticket is None:
-                logger.error("%s | open_trade failed", pair)
-                log_signal(db_conn, signal, trade_id=None)
-                return
-
-            positions = mt5.positions_get(ticket=ticket)
-            if positions:
-                entry_price = positions[0].price_open
-
-            trade_id = log_trade(
-                db_conn,
-                pair=pair,
-                direction=signal.action,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                position_size=lot_size,
-                balance_at_open=balance,
-                mt5_ticket=ticket,
-            )
-
-            log_signal(db_conn, signal, trade_id=trade_id)
-
-            risk_usd = balance * config.risk.percent_per_trade / 100
-            trade_info = {
-                "pair": pair,
-                "direction": signal.action,
-                "entry_price": entry_price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "position_size": lot_size,
-                "risk_usd": risk_usd,
-                "risk_pct": config.risk.percent_per_trade,
-            }
-            _fire_and_forget(notify_trade_opened(bot_app.bot, config.telegram.chat_id, trade_info))
-            logger.info(
-                "%s | trade opened ticket=%d direction=%s lot=%.2f",
-                pair,
-                ticket,
-                signal.action,
-                lot_size,
-            )
-        else:
-            log_signal(db_conn, signal, trade_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +328,9 @@ def _monitoring_loop(
 
     while not shutdown_event.is_set():
         try:
-            _monitoring_tick(config, state, peak_balance_ref, known_tickets, bot_app)
+            _monitoring_tick(
+                config, state, peak_balance_ref, known_tickets, bot_app, shutdown_event
+            )
         except Exception:
             logger.exception("Unhandled error in monitoring loop")
         shutdown_event.wait(timeout=interval)
@@ -356,10 +369,11 @@ def _monitoring_tick(
     peak_balance_ref: list[float],
     known_tickets: set[int],
     bot_app,
+    shutdown_event: threading.Event | None = None,
 ) -> None:
     if not health_check():
         logger.warning("MT5 health check failed — attempting reconnect")
-        ok = reconnect(config.broker)
+        ok = reconnect(config.broker, shutdown_event=shutdown_event)
         if ok:
             with get_connection() as db_conn:
                 log_event(db_conn, "reconnect", detail="MT5 reconnected")
@@ -382,27 +396,31 @@ def _monitoring_tick(
         logger.exception("Cannot get balance in monitoring tick")
         return
 
-    if balance > peak_balance_ref[0]:
-        peak_balance_ref[0] = balance
+    with _trade_lock:
+        if balance > peak_balance_ref[0]:
+            peak_balance_ref[0] = balance
+            with get_connection() as db_conn:
+                log_peak_balance(db_conn, peak_balance_ref[0])
 
-    drawdown_ok, dd_reason = _check_drawdown_pause(
-        balance, peak_balance_ref[0], config, state, bot_app
-    )
-    if not drawdown_ok:
-        return
+        drawdown_ok, dd_reason = _check_drawdown_pause(
+            balance, peak_balance_ref[0], config, state, bot_app
+        )
+        if not drawdown_ok:
+            return
 
-    mt5_positions = get_open_positions(config.system.magic_number)
-    mt5_tickets = {p["ticket"] for p in mt5_positions}
+        mt5_positions = get_open_positions(config.system.magic_number)
+        mt5_tickets = {p["ticket"] for p in mt5_positions}
 
-    _detect_closed_trades(known_tickets, mt5_tickets, config, balance, bot_app)
+        _detect_closed_trades(known_tickets, mt5_tickets, config, balance, bot_app)
 
-    known_tickets.clear()
-    known_tickets.update(mt5_tickets)
+        known_tickets.clear()
+        known_tickets.update(mt5_tickets)
 
-    if mt5_positions:
-        process_open_trades(mt5_positions, config.risk)
+        if mt5_positions:
+            process_open_trades(mt5_positions, config.risk)
 
-    _check_friday_close(config, state, mt5_positions, balance, bot_app)
+        _check_friday_close(config, state, mt5_positions, balance, bot_app)
+
     _check_weekly_report(config, balance, peak_balance_ref[0], bot_app)
 
 
@@ -500,8 +518,18 @@ def _check_friday_close(
     balance: float,
     bot_app,
 ) -> None:
+    global _friday_closed
+
     now = datetime.now(timezone.utc)
+
+    # Reset the flag on Monday so Friday close can fire again the following week.
+    if now.weekday() == 0 and _friday_closed:
+        _friday_closed = False
+
     if now.weekday() != 4 or now.hour < config.system.friday_close_hour_utc:
+        return
+
+    if _friday_closed:
         return
 
     recent_threshold = now - timedelta(hours=4)
@@ -512,6 +540,8 @@ def _check_friday_close(
     ]
     if not positions_to_close:
         return
+
+    _friday_closed = True
 
     logger.info(
         "Friday close: closing %d trades (losing or recently opened)",
@@ -526,6 +556,16 @@ def _check_friday_close(
             magic=config.system.magic_number,
         )
         if success:
+            import MetaTrader5 as mt5
+
+            exit_price = 0.0
+            pnl = pos.get("profit", 0.0)
+            deals = mt5.history_deals_get(position=pos["ticket"])
+            if deals:
+                close_deal = deals[-1]
+                exit_price = close_deal.price
+                pnl = close_deal.profit
+
             duration = 0
             with get_connection() as db_conn:
                 trade = get_trade_by_ticket(db_conn, pos["ticket"])
@@ -533,8 +573,8 @@ def _check_friday_close(
                     close_trade_record(
                         db_conn,
                         trade["id"],
-                        exit_price=0.0,
-                        profit_loss=pos.get("profit", 0.0),
+                        exit_price=exit_price,
+                        profit_loss=pnl,
                         balance_at_close=balance,
                         close_reason="friday_close",
                     )
@@ -544,8 +584,8 @@ def _check_friday_close(
                 "pair": pos["pair"],
                 "direction": pos["direction"],
                 "entry_price": pos["price_open"],
-                "exit_price": 0.0,
-                "profit_loss": pos.get("profit", 0.0),
+                "exit_price": exit_price,
+                "profit_loss": pnl,
                 "close_reason": "friday_close",
                 "duration_minutes": duration,
             }

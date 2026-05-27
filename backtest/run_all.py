@@ -58,7 +58,7 @@ def _safe_float(val: object) -> float:
 def _recommendation(profit_factor: float, win_rate: float, max_drawdown_pct: float) -> str:
     """Classify a pair based on three criteria."""
     keep_pf = profit_factor >= 1.2
-    keep_wr = win_rate >= 40.0
+    keep_wr = win_rate >= 35.0
     keep_dd = abs(max_drawdown_pct) <= 20.0
 
     fails = sum([not keep_pf, not keep_wr, not keep_dd])
