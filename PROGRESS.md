@@ -16,7 +16,7 @@
 ### Session 3: Risk + Execution (Steps 8-10)
 - [x] 8. Módulo de riesgo — position sizing, límites (4 trades, 2 por moneda), drawdown, comisiones
 - [x] 9. Módulo de ejecución — abrir/cerrar trades, SL/TP
-- [ ] 10. Módulo de trailing stop — monitoreo y actualización
+- [x] 10. Módulo de trailing stop — monitoreo y actualización
 
 ### Session 4: Database + Telegram (Steps 11-13)
 - [ ] 11. Base de datos SQLite — schema, CRUD trades/señales/eventos
