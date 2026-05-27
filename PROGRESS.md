@@ -15,7 +15,7 @@
 
 ### Session 3: Risk + Execution (Steps 8-10)
 - [x] 8. Módulo de riesgo — position sizing, límites (4 trades, 2 por moneda), drawdown, comisiones
-- [ ] 9. Módulo de ejecución — abrir/cerrar trades, SL/TP
+- [x] 9. Módulo de ejecución — abrir/cerrar trades, SL/TP
 - [ ] 10. Módulo de trailing stop — monitoreo y actualización
 
 ### Session 4: Database + Telegram (Steps 11-13)
@@ -58,4 +58,6 @@
 - Step 6 complete. backtest/validate_strategy.py implements full validation backtest with dual mode (MT5 live data or synthetic fallback). Indicators inlined with plain pandas/numpy to avoid pandas_ta/numba import on Python 3.14. Passes thresholds are printed per-metric; verdict printed at end. Runs clean with ruff.
 - Session 2 (Steps 5-7) complete. Strategy core: indicators, validation backtest, strategy logic.
 - Quality review after Step 7: fixed fragile MACD column access in indicators.py (positional → named), removed dead code branch in strategy.py, added frozen=True to Signal dataclass.
-- Next session starts at Step 8 (risk module).
+- Step 8 complete. drift/risk.py implements calculate_position_size, check_max_trades, check_correlation, check_drawdown, check_all_risk, calculate_sl_tp.
+- Step 9 complete. drift/executor.py implements open_trade, close_trade, modify_sl, get_open_positions. Uses mt5.order_send with TRADE_ACTION_DEAL for open/close and TRADE_ACTION_SLTP for SL modification. get_open_positions filters by magic number and returns UTC datetimes.
+- Next session starts at Step 10 (trailing stop module).
