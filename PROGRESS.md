@@ -60,4 +60,6 @@
 - Quality review after Step 7: fixed fragile MACD column access in indicators.py (positional → named), removed dead code branch in strategy.py, added frozen=True to Signal dataclass.
 - Step 8 complete. drift/risk.py implements calculate_position_size, check_max_trades, check_correlation, check_drawdown, check_all_risk, calculate_sl_tp.
 - Step 9 complete. drift/executor.py implements open_trade, close_trade, modify_sl, get_open_positions. Uses mt5.order_send with TRADE_ACTION_DEAL for open/close and TRADE_ACTION_SLTP for SL modification. get_open_positions filters by magic number and returns UTC datetimes.
-- Next session starts at Step 10 (trailing stop module).
+- Session 3 (Steps 8-10) complete. Risk, execution, trailing stop.
+- Quality review after Step 10: fixed close_trade magic=0 bug (now passes magic through), unified _count_selling/_count_buying into single _count_currency_exposure helper.
+- Next session starts at Step 11 (database module).

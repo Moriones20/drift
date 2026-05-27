@@ -76,39 +76,35 @@ def check_correlation(
         buying_new.add(new_quote)
 
     for currency in selling_new:
-        count = _count_selling(open_trades, currency)
+        count = _count_currency_exposure(open_trades, currency, "sell")
         if count >= max_same:
             return False, f"correlation limit: {count} trades already selling {currency}"
 
     for currency in buying_new:
-        count = _count_buying(open_trades, currency)
+        count = _count_currency_exposure(open_trades, currency, "buy")
         if count >= max_same:
             return False, f"correlation limit: {count} trades already buying {currency}"
 
     return True, ""
 
 
-def _count_selling(open_trades: list[dict], currency: str) -> int:
+def _count_currency_exposure(open_trades: list[dict], currency: str, side: str) -> int:
     count = 0
     for trade in open_trades:
         pair = trade["pair"].upper()
         direction = trade["direction"].lower()
         base = pair[:3]
         quote = pair[3:]
-        if (direction == "sell" and base == currency) or (direction == "buy" and quote == currency):
-            count += 1
-    return count
-
-
-def _count_buying(open_trades: list[dict], currency: str) -> int:
-    count = 0
-    for trade in open_trades:
-        pair = trade["pair"].upper()
-        direction = trade["direction"].lower()
-        base = pair[:3]
-        quote = pair[3:]
-        if (direction == "buy" and base == currency) or (direction == "sell" and quote == currency):
-            count += 1
+        if side == "buy":
+            if (direction == "buy" and base == currency) or (
+                direction == "sell" and quote == currency
+            ):
+                count += 1
+        elif side == "sell":
+            if (direction == "sell" and base == currency) or (
+                direction == "buy" and quote == currency
+            ):
+                count += 1
     return count
 
 

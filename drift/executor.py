@@ -80,7 +80,9 @@ def open_trade(
     return result.order
 
 
-def close_trade(ticket: int, pair: str, lot_size: float, direction: str) -> bool:
+def close_trade(
+    ticket: int, pair: str, lot_size: float, direction: str, magic: int = 234000
+) -> bool:
     tick = mt5.symbol_info_tick(pair)
     if tick is None:
         logger.error("close_trade: cannot get tick for %s", pair)
@@ -101,7 +103,7 @@ def close_trade(ticket: int, pair: str, lot_size: float, direction: str) -> bool
         "position": ticket,
         "price": price,
         "deviation": 20,
-        "magic": 0,
+        "magic": magic,
         "comment": "Drift",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
