@@ -19,7 +19,7 @@
 - [x] 10. Módulo de trailing stop — monitoreo y actualización
 
 ### Session 4: Database + Telegram (Steps 11-13)
-- [ ] 11. Base de datos SQLite — schema, CRUD trades/señales/eventos
+- [x] 11. Base de datos SQLite — schema, CRUD trades/señales/eventos
 - [ ] 12. Módulo de Telegram — bot, comandos, notificaciones
 - [ ] 13. Loop principal — orquestador H4, ciclo completo
 
