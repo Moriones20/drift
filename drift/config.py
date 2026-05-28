@@ -17,25 +17,16 @@ class BrokerConfig:
 class StrategyConfig:
     timeframe_trend: str = "D1"
     timeframe_entry: str = "H4"
-    # Bollinger Bands parameters (H4 entry signal)
-    bb_period: int = 20
-    bb_std_dev: float = 2.0
-    # RSI thresholds for mean reversion entries
-    rsi_oversold: float = 30.0
-    rsi_overbought: float = 70.0
+    # RSI thresholds for mean reversion / session scalper entries
+    rsi_oversold: float = 35.0
+    rsi_overbought: float = 65.0
     # ADX regime filter — trade ONLY when ADX < adx_max_threshold (ranging market)
     adx_period: int = 14
-    adx_max_threshold: float = 25.0
+    adx_max_threshold: float = 35.0
     # ATR and RSI periods
     atr_period: int = 14
     rsi_period: int = 14
-    # Max trade duration before forced time-stop
-    max_trade_duration_hours: int = 120
-    # MLP regime filter
-    mlp_model_path: str = "data/regime_model.pkl"
-    mlp_lookforward: int = 20
-    mlp_threshold: float = 0.4
-    # Legacy fields kept for indicator module compatibility (unused by mean reversion logic)
+    # Legacy fields kept for indicator module compatibility
     ema_fast: int = 50
     ema_slow: int = 200
     ema_entry: int = 20
@@ -44,6 +35,19 @@ class StrategyConfig:
     macd_signal: int = 9
     adx_threshold: float = 25.0
     ema_gap_threshold: float = 1.0
+    # Asian Session Scalper — session window (UTC hours)
+    session_start_hour: int = 21
+    range_definition_hours: int = 2
+    session_end_hour: int = 2
+    # Asian Session Scalper — range quality filter (multiples of ATR)
+    range_atr_min: float = 1.0
+    range_atr_max: float = 4.0
+    # Asian Session Scalper — risk parameters
+    sl_atr_mult: float = 2.5
+    # Asian Session Scalper — indicator periods
+    m15_rsi_period: int = 14
+    m15_atr_period: int = 14
+    h4_adx_period: int = 14
 
 
 @dataclass
@@ -117,20 +121,12 @@ def _parse_strategy(raw: dict) -> StrategyConfig:
     return StrategyConfig(
         timeframe_trend=str(raw.get("timeframe_trend", defaults.timeframe_trend)),
         timeframe_entry=str(raw.get("timeframe_entry", defaults.timeframe_entry)),
-        bb_period=int(raw.get("bb_period", defaults.bb_period)),
-        bb_std_dev=float(raw.get("bb_std_dev", defaults.bb_std_dev)),
         rsi_oversold=float(raw.get("rsi_oversold", defaults.rsi_oversold)),
         rsi_overbought=float(raw.get("rsi_overbought", defaults.rsi_overbought)),
         adx_period=int(raw.get("adx_period", defaults.adx_period)),
         adx_max_threshold=float(raw.get("adx_max_threshold", defaults.adx_max_threshold)),
         atr_period=int(raw.get("atr_period", defaults.atr_period)),
         rsi_period=int(raw.get("rsi_period", defaults.rsi_period)),
-        max_trade_duration_hours=int(
-            raw.get("max_trade_duration_hours", defaults.max_trade_duration_hours)
-        ),
-        mlp_model_path=str(raw.get("mlp_model_path", defaults.mlp_model_path)),
-        mlp_lookforward=int(raw.get("mlp_lookforward", defaults.mlp_lookforward)),
-        mlp_threshold=float(raw.get("mlp_threshold", defaults.mlp_threshold)),
         ema_fast=int(raw.get("ema_fast", defaults.ema_fast)),
         ema_slow=int(raw.get("ema_slow", defaults.ema_slow)),
         ema_entry=int(raw.get("ema_entry", defaults.ema_entry)),
@@ -139,6 +135,17 @@ def _parse_strategy(raw: dict) -> StrategyConfig:
         macd_signal=int(raw.get("macd_signal", defaults.macd_signal)),
         adx_threshold=float(raw.get("adx_threshold", defaults.adx_threshold)),
         ema_gap_threshold=float(raw.get("ema_gap_threshold", defaults.ema_gap_threshold)),
+        session_start_hour=int(raw.get("session_start_hour", defaults.session_start_hour)),
+        range_definition_hours=int(
+            raw.get("range_definition_hours", defaults.range_definition_hours)
+        ),
+        session_end_hour=int(raw.get("session_end_hour", defaults.session_end_hour)),
+        range_atr_min=float(raw.get("range_atr_min", defaults.range_atr_min)),
+        range_atr_max=float(raw.get("range_atr_max", defaults.range_atr_max)),
+        sl_atr_mult=float(raw.get("sl_atr_mult", defaults.sl_atr_mult)),
+        m15_rsi_period=int(raw.get("m15_rsi_period", defaults.m15_rsi_period)),
+        m15_atr_period=int(raw.get("m15_atr_period", defaults.m15_atr_period)),
+        h4_adx_period=int(raw.get("h4_adx_period", defaults.h4_adx_period)),
     )
 
 

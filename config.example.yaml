@@ -9,41 +9,39 @@ broker:
 strategy:
   timeframe_trend: "D1"
   timeframe_entry: "H4"
-  # Bollinger Bands (H4 entry signal)
-  bb_period: 20
-  bb_std_dev: 2.0
-  # RSI thresholds for mean reversion
-  rsi_oversold: 30.0
-  rsi_overbought: 70.0
-  # ADX regime filter: trade ONLY when ADX < adx_max_threshold (ranging market)
+  # RSI thresholds for session scalper entries
+  rsi_oversold: 35.0
+  rsi_overbought: 65.0
+  # ADX regime filter: trade ONLY when H4 ADX < adx_max_threshold (ranging market)
   adx_period: 14
-  adx_max_threshold: 25.0
-  # ATR/RSI periods
+  adx_max_threshold: 35.0
+  # ATR/RSI periods (generic)
   atr_period: 14
   rsi_period: 14
-  # Time-stop: close trade if open longer than this many hours
-  max_trade_duration_hours: 120
-  # MLP regime filter (replaces simple ADX < threshold filter)
-  mlp_model_path: "data/regime_model.pkl"  # path to trained model; falls back to ADX if missing
-  mlp_lookforward: 20                       # bars to look forward for efficiency-ratio labeling
-  mlp_threshold: 0.4                        # efficiency ratio threshold (below = ranging)
+  # Asian Session Scalper — session window (UTC hours)
+  session_start_hour: 21       # begin observing range at 21:00 UTC
+  range_definition_hours: 2    # 21:00-23:00 UTC: define range, no entries
+  session_end_hour: 2          # close all session trades at 02:00 UTC
+  # Asian Session Scalper — range quality filter (multiples of ATR)
+  range_atr_min: 1.0           # minimum session range width (ATR units); below = too quiet
+  range_atr_max: 4.0           # maximum session range width (ATR units); above = too volatile
+  # Asian Session Scalper — risk parameters
+  sl_atr_mult: 2.5             # stop loss distance as ATR multiple
+  # Asian Session Scalper — indicator periods
+  m15_rsi_period: 14           # RSI period on M15 bars
+  m15_atr_period: 14           # ATR period on M15 bars
+  h4_adx_period: 14            # ADX period on H4 bars (regime filter)
 
 risk:
   percent_per_trade: 1.0           # % of current balance risked per trade
   max_open_trades: 4               # Maximum simultaneous trades
   max_same_currency_direction: 2   # Max trades in same direction for one currency
   max_drawdown_percent: 10.0       # Pause bot if drawdown exceeds this %
-  stop_loss_atr_multiplier: 2.0    # Wider SL for counter-trend mean reversion
+  stop_loss_atr_multiplier: 2.0    # Generic SL multiplier used by risk.py position sizing
   trailing_stop_atr_multiplier: 1.5
-  use_trailing_stop: false         # Mean reversion: no trailing stop (price targets middle BB)
-  take_profit_mode: "middle_bb"    # TP at middle Bollinger Band (the mean we revert to)
+  use_trailing_stop: false         # Asian Scalper: no trailing stop (fixed TP at range midpoint)
 
-pairs:
-  - AUDCAD                         # Commodity cross — naturally ranges
-  - NZDCAD
-  - AUDNZD
-  - EURCHF                         # Historically range-bound
-  - EURGBP
+pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see D029 / optimization results
 
 telegram:
   bot_token: "your_bot_token_here"   # Get from @BotFather
