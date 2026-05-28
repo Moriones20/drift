@@ -88,6 +88,19 @@ def reconnect(
 
 
 def get_candles(symbol: str, timeframe: str, count: int = 250) -> pd.DataFrame:
+    """Fetch the most recent `count` closed candles for `symbol` at `timeframe`.
+
+    Supported timeframes: M1, M5, M15, M30, H1, H4, D1, W1, MN1.
+
+    Warmup guidance for indicator stability:
+    - M15: request at least 100 bars (ATR-14 and RSI-14 need ~14 bars of history
+      to stabilize; 200 is recommended for a comfortable buffer).
+    - H4: request at least 30 bars (ADX-14 needs ~28 bars). Default 250 covers
+      both timeframes.
+
+    Returns a DataFrame with a UTC-aware DatetimeIndex named 'time' and
+    lowercase OHLCV columns: open, high, low, close, tick_volume.
+    """
     if timeframe not in _TIMEFRAMES:
         raise ValueError(f"Unknown timeframe '{timeframe}'. Valid options: {list(_TIMEFRAMES)}")
 
