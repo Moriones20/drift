@@ -1,4 +1,4 @@
-"""Run Drift backtests across all 6 pairs and produce a comparison report.
+"""Run Drift mean reversion backtests across all pairs and produce a comparison report.
 
 Flow:
   1. Ensure CSV data exists in backtest/data/ — generates synthetic data if missing.
@@ -34,8 +34,8 @@ RESULTS_DIR = Path(__file__).parent / "results"
 
 CASH: float = 500.0
 COMMISSION: float = 0.00007
-SL_ATR_MULT: float = 1.5
-TP_RATIO: float = 2.0
+SL_ATR_MULT: float = 2.0
+ADX_MAX_THRESHOLD: float = 25.0
 
 
 def _data_complete(pairs: list[str], data_dir: Path) -> bool:
@@ -212,7 +212,7 @@ def main() -> None:
             cash=CASH,
             commission=COMMISSION,
             sl_atr_mult=SL_ATR_MULT,
-            tp_ratio=TP_RATIO,
+            adx_max_threshold=ADX_MAX_THRESHOLD,
         )
 
         print(format_results(symbol, stats))

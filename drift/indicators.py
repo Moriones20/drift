@@ -18,6 +18,24 @@ def compute_ema(df: pd.DataFrame, period: int) -> pd.Series:
     return result
 
 
+def compute_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    if len(df) < period + 1:
+        raise ValueError(f"Need at least {period + 1} rows for RSI({period}), got {len(df)}")
+    result = ta.rsi(df["close"], length=period)
+    result.name = f"rsi_{period}"
+    return result
+
+
+def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    min_rows = period * 2
+    if len(df) < min_rows:
+        raise ValueError(f"Need at least {min_rows} rows for ADX({period}), got {len(df)}")
+    result = ta.adx(df["high"], df["low"], df["close"], length=period)
+    adx_col = f"ADX_{period}"
+    adx = result[adx_col].rename(f"adx_{period}")
+    return adx
+
+
 def compute_macd(
     df: pd.DataFrame,
     fast: int = 12,
@@ -45,6 +63,30 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return result
 
 
+def compute_bollinger_bands(
+    df: pd.DataFrame,
+    period: int = 20,
+    std_dev: float = 2.0,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Compute Bollinger Bands (upper, middle/SMA, lower).
+
+    Returns (bb_upper, bb_middle, bb_lower) as pandas Series.
+    """
+    if len(df) < period:
+        raise ValueError(
+            f"Need at least {period} rows for Bollinger Bands({period}), got {len(df)}"
+        )
+    close = df["close"]
+    middle = close.rolling(window=period).mean()
+    std = close.rolling(window=period).std(ddof=1)
+    upper = middle + std_dev * std
+    lower = middle - std_dev * std
+    upper.name = f"bb_upper_{period}"
+    middle.name = f"bb_middle_{period}"
+    lower.name = f"bb_lower_{period}"
+    return upper, middle, lower
+
+
 def compute_all(df_d1: pd.DataFrame, df_h4: pd.DataFrame, config: StrategyConfig) -> dict:
     logger.debug(
         "Computing indicators — D1 rows: %d, H4 rows: %d",
@@ -52,21 +94,18 @@ def compute_all(df_d1: pd.DataFrame, df_h4: pd.DataFrame, config: StrategyConfig
         len(df_h4),
     )
 
-    ema_fast = compute_ema(df_d1, config.ema_fast)
-    ema_slow = compute_ema(df_d1, config.ema_slow)
-    macd_line, macd_signal, macd_histogram = compute_macd(
-        df_h4,
-        fast=config.macd_fast,
-        slow=config.macd_slow,
-        signal=config.macd_signal,
-    )
+    adx = compute_adx(df_d1, config.adx_period)
+    rsi = compute_rsi(df_h4, config.rsi_period)
     atr = compute_atr(df_h4, config.atr_period)
+    bb_upper, bb_middle, bb_lower = compute_bollinger_bands(
+        df_h4, config.bb_period, config.bb_std_dev
+    )
 
     return {
-        "ema_fast": ema_fast,
-        "ema_slow": ema_slow,
-        "macd_line": macd_line,
-        "macd_signal": macd_signal,
-        "macd_histogram": macd_histogram,
+        "adx": adx,
+        "rsi": rsi,
         "atr": atr,
+        "bb_upper": bb_upper,
+        "bb_middle": bb_middle,
+        "bb_lower": bb_lower,
     }

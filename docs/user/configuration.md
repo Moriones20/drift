@@ -22,14 +22,16 @@ Parametros de los indicadores tecnicos. Todos tienen valores por defecto y no es
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `timeframe_trend` | string | `"D1"` | Timeframe para el filtro de tendencia (cruce EMA 50/200). Solo se admiten valores validos de MT5: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN1`. |
-| `timeframe_entry` | string | `"H4"` | Timeframe para la señal de entrada (confirmacion MACD). |
+| `timeframe_trend` | string | `"D1"` | Timeframe para el filtro de tendencia (cruce EMA 50/200 + ADX). Solo se admiten valores validos de MT5: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN1`. |
+| `timeframe_entry` | string | `"H4"` | Timeframe para la señal de entrada (EMA-20 pullback + RSI hook). |
 | `ema_fast` | entero | `50` | Periodo de la EMA rapida usada en el filtro de tendencia D1. |
 | `ema_slow` | entero | `200` | Periodo de la EMA lenta. La tendencia es alcista cuando EMA fast > EMA slow. |
-| `macd_fast` | entero | `12` | Periodo rapido del MACD en H4. |
-| `macd_slow` | entero | `26` | Periodo lento del MACD en H4. |
-| `macd_signal` | entero | `9` | Periodo de la linea de señal del MACD. |
+| `ema_entry` | entero | `20` | Periodo de la EMA de entrada en H4. Se usa para detectar pullbacks. |
 | `atr_period` | entero | `14` | Periodo del ATR usado para calcular el stop loss y el take profit. |
+| `rsi_period` | entero | `14` | Periodo del RSI en H4. Se usa para confirmar el gancho de entrada. |
+| `adx_period` | entero | `14` | Periodo del ADX en D1. Filtro de regimen de tendencia. |
+| `adx_threshold` | decimal | `25.0` | Umbral minimo del ADX para considerar que hay una tendencia fuerte. Por debajo de este valor no se abren nuevos trades. |
+| `ema_gap_threshold` | decimal | `1.0` | Separacion minima entre EMA 50 y EMA 200 expresada como porcentaje del precio. Filtra mercados donde las EMAs estan muy juntas (tendencia debil). |
 
 ---
 
@@ -44,7 +46,7 @@ Parametros de gestion de riesgo. Son los mas importantes para proteger el capita
 | `max_same_currency_direction` | entero | `2` | — | Maximo de trades en la misma direccion para una misma divisa base o cotizada. Limita la exposicion correlacionada. |
 | `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | Si el drawdown desde el pico de balance supera este porcentaje, el bot se pausa automaticamente y notifica por Telegram. Requiere `/resume` manual para reactivar. |
 | `trailing_stop_atr_multiplier` | decimal | `1.5` | — | Multiplicador del ATR para calcular la distancia del stop loss inicial. Con ATR de 0.0010 y multiplicador 1.5, el SL queda a 0.0015 del precio de entrada. |
-| `take_profit_ratio` | decimal | `2.0` | — | Ratio riesgo/beneficio. Con `2.0`, el take profit se coloca a una distancia doble del stop loss (ratio 1:2). |
+| `take_profit_ratio` | decimal | `3.0` | — | Ratio riesgo/beneficio. Con `3.0`, el take profit se coloca a una distancia triple del stop loss (ratio 1:3). |
 
 ---
 

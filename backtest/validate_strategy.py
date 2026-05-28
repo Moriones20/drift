@@ -1,6 +1,7 @@
 """Validation backtest for Drift strategy — EURUSD and GBPUSD.
 
 Runs with MT5 if available; falls back to synthetic trending data otherwise.
+Uses new strategy: EMA-20 pullback + RSI hook + ADX regime filter.
 Usage: python backtest/validate_strategy.py
 """
 
@@ -79,7 +80,7 @@ def _fetch_mt5_data(symbol: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
 def _make_synthetic_data(symbol: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate synthetic OHLCV data with alternating trend regimes.
 
-    Regime alternation ensures the EMA crossover / MACD strategy sees both
+    Regime alternation ensures the EMA crossover strategy sees both
     bullish and bearish conditions, producing a realistic mix of signals.
     """
     logger.info("Generating synthetic data for %s", symbol)

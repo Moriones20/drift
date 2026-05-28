@@ -30,9 +30,10 @@ from drift.db import (
     log_trade,
 )
 from drift.executor import close_trade, get_open_positions, open_trade
+from drift.mlp_filter import RegimeFilter
 from drift.mt5_client import connect, disconnect, get_balance, get_candles, health_check, reconnect
 from drift.report import generate_weekly_report
-from drift.risk import calculate_position_size, calculate_sl_tp, check_all_risk
+from drift.risk import calculate_position_size, check_all_risk
 from drift.strategy import Signal, analyze_pair
 from drift.telegram_bot import (
     BotState,
@@ -158,6 +159,7 @@ def _run_analysis_cycle(
     state: BotState,
     peak_balance: float,
     bot_app,
+    regime_filter: RegimeFilter | None = None,
 ) -> float:
     """Analyse all pairs. Returns updated peak_balance."""
     logger.info("=== Analysis cycle start ===")
@@ -179,7 +181,7 @@ def _run_analysis_cycle(
             logger.info("Bot paused — skipping analysis for %s", pair)
             continue
         try:
-            _analyse_pair(pair, balance, peak_balance, config, state, bot_app)
+            _analyse_pair(pair, balance, peak_balance, config, state, bot_app, regime_filter)
         except Exception:
             logger.exception("Unhandled error analysing %s", pair)
 
@@ -194,11 +196,12 @@ def _analyse_pair(
     config: DriftConfig,
     state: BotState,
     bot_app,
+    regime_filter: RegimeFilter | None = None,
 ) -> None:
     df_d1 = get_candles(pair, config.strategy.timeframe_trend, count=250)
     df_h4 = get_candles(pair, config.strategy.timeframe_entry, count=100)
 
-    signal: Signal = analyze_pair(pair, df_d1, df_h4, config.strategy)
+    signal: Signal = analyze_pair(pair, df_d1, df_h4, config.strategy, regime_filter)
 
     with _trade_lock:
         with get_connection() as db_conn:
@@ -223,7 +226,7 @@ def _analyse_pair(
 
                 pip_mult = _pip_multiplier(pair)
                 pip_val = _pip_value(pair)
-                sl_pips = signal.atr_value * config.risk.trailing_stop_atr_multiplier * pip_mult
+                sl_pips = signal.atr_value * config.risk.stop_loss_atr_multiplier * pip_mult
 
                 lot_size = calculate_position_size(
                     balance=balance,
@@ -245,13 +248,14 @@ def _analyse_pair(
 
                 entry_price = tick.ask if signal.action == "buy" else tick.bid
 
-                stop_loss, take_profit = calculate_sl_tp(
-                    entry_price=entry_price,
-                    direction=signal.action,
-                    atr_value=signal.atr_value,
-                    atr_multiplier=config.risk.trailing_stop_atr_multiplier,
-                    tp_ratio=config.risk.take_profit_ratio,
-                )
+                # Mean reversion: SL is ATR-based, TP is at middle Bollinger Band.
+                sl_dist = signal.atr_value * config.risk.stop_loss_atr_multiplier
+                if signal.action == "buy":
+                    stop_loss = entry_price - sl_dist
+                    take_profit = signal.bb_middle
+                else:
+                    stop_loss = entry_price + sl_dist
+                    take_profit = signal.bb_middle
 
                 ticket = open_trade(
                     pair=pair,
@@ -418,6 +422,7 @@ def _monitoring_tick(
 
         if mt5_positions:
             process_open_trades(mt5_positions, config.risk)
+            _check_max_duration(config, mt5_positions, balance, bot_app)
 
         _check_friday_close(config, state, mt5_positions, balance, bot_app)
 
@@ -509,6 +514,79 @@ def _detect_closed_trades(
                 pnl,
                 close_reason,
             )
+
+
+def _check_max_duration(
+    config: DriftConfig,
+    mt5_positions: list[dict],
+    balance: float,
+    bot_app,
+) -> None:
+    """Close trades that have exceeded max_trade_duration_hours (time stop)."""
+    max_hours = config.strategy.max_trade_duration_hours
+    now = datetime.now(timezone.utc)
+
+    for pos in mt5_positions:
+        time_open = pos.get("time_open")
+        if time_open is None:
+            continue
+        if isinstance(time_open, (int, float)):
+            time_open = datetime.fromtimestamp(time_open, tz=timezone.utc)
+
+        age_hours = (now - time_open).total_seconds() / 3600.0
+        if age_hours < max_hours:
+            continue
+
+        logger.info(
+            "Max duration exceeded: closing ticket=%d %s (open %.1fh > %dh limit)",
+            pos["ticket"],
+            pos["pair"],
+            age_hours,
+            max_hours,
+        )
+        success = close_trade(
+            ticket=pos["ticket"],
+            pair=pos["pair"],
+            lot_size=pos["volume"],
+            direction=pos["direction"],
+            magic=config.system.magic_number,
+        )
+        if success:
+            import MetaTrader5 as mt5
+
+            exit_price = 0.0
+            pnl = pos.get("profit", 0.0)
+            deals = mt5.history_deals_get(position=pos["ticket"])
+            if deals:
+                close_deal = deals[-1]
+                exit_price = close_deal.price
+                pnl = close_deal.profit
+
+            duration = int(age_hours * 60)
+            with get_connection() as db_conn:
+                trade = get_trade_by_ticket(db_conn, pos["ticket"])
+                if trade and trade.get("closed_at") is None:
+                    close_trade_record(
+                        db_conn,
+                        trade["id"],
+                        exit_price=exit_price,
+                        profit_loss=pnl,
+                        balance_at_close=balance,
+                        close_reason="manual",
+                    )
+                    updated = get_trade_by_ticket(db_conn, pos["ticket"])
+                    duration = (updated["duration_minutes"] or duration) if updated else duration
+
+            trade_info = {
+                "pair": pos["pair"],
+                "direction": pos["direction"],
+                "entry_price": pos.get("price_open", 0.0),
+                "exit_price": exit_price,
+                "profit_loss": pnl,
+                "close_reason": "time_stop",
+                "duration_minutes": duration,
+            }
+            _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
 
 
 def _check_friday_close(
@@ -684,6 +762,18 @@ def main() -> None:
 
     _validate_pairs(config.pairs)
 
+    # Load MLP regime filter — fall back to ADX filter if model file is missing.
+    regime_filter = RegimeFilter(model_path=config.strategy.mlp_model_path)
+    if regime_filter.load():
+        logger.info("MLP regime filter loaded from %s", config.strategy.mlp_model_path)
+    else:
+        logger.warning(
+            "MLP model not found at %s — falling back to ADX < %.0f regime filter",
+            config.strategy.mlp_model_path,
+            config.strategy.adx_max_threshold,
+        )
+        regime_filter = None
+
     try:
         balance = get_balance()
     except RuntimeError:
@@ -772,7 +862,7 @@ def main() -> None:
                     break
 
                 peak_balance_ref[0] = _run_analysis_cycle(
-                    config, state, peak_balance_ref[0], bot_app
+                    config, state, peak_balance_ref[0], bot_app, regime_filter
                 )
             except Exception:
                 logger.exception("Unexpected error in main loop — pausing bot and retrying")

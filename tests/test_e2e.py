@@ -63,6 +63,47 @@ if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
         )
         return result
 
+    def _rsi_stub(series, length=14, **_kw):
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_gain = gain.ewm(alpha=1.0 / length, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / length, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, float("nan"))
+        result = 100.0 - (100.0 / (1.0 + rs))
+        result.name = f"RSI_{length}"
+        return result
+
+    def _adx_stub(high, low, close, length=14, **_kw):
+        prev_high = high.shift(1)
+        prev_low = low.shift(1)
+        prev_close = close.shift(1)
+        plus_dm = (high - prev_high).clip(lower=0)
+        minus_dm = (prev_low - low).clip(lower=0)
+        mask = plus_dm >= minus_dm
+        plus_dm = plus_dm.where(mask, 0.0)
+        minus_dm = minus_dm.where(~mask, 0.0)
+        tr = pd.concat(
+            [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+            axis=1,
+        ).max(axis=1)
+        alpha = 1.0 / length
+        atr_val = tr.ewm(alpha=alpha, adjust=False).mean()
+        _nan = float("nan")
+        plus_di = 100.0 * plus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_val.replace(0, _nan)
+        minus_di = 100.0 * minus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_val.replace(0, _nan)
+        di_sum = (plus_di + minus_di).replace(0, float("nan"))
+        dx = 100.0 * (plus_di - minus_di).abs() / di_sum
+        adx_val = dx.ewm(alpha=alpha, adjust=False).mean()
+        result = pd.DataFrame(
+            {
+                f"ADX_{length}": adx_val,
+                f"DMP_{length}": plus_di,
+                f"DMN_{length}": minus_di,
+            }
+        )
+        return result
+
     def _atr_stub(high, low, close, length=14, **_kw):
         tr = pd.concat(
             [
@@ -78,6 +119,8 @@ if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
 
     _pta_stub.ema = _ema_stub
     _pta_stub.macd = _macd_stub
+    _pta_stub.rsi = _rsi_stub
+    _pta_stub.adx = _adx_stub
     _pta_stub.atr = _atr_stub
     sys.modules["pandas_ta"] = _pta_stub
 
@@ -172,30 +215,34 @@ def _make_bearish_df(base_price: float = 1.08, rows: int = 250, seed: int = 7) -
     return df
 
 
-def _make_h4_with_macd_crossover(
+def _make_h4_with_pullback(
     base_price: float = 1.08, rows: int = 120, bullish: bool = True, seed: int = 1
 ) -> pd.DataFrame:
-    """Generate H4 DataFrame where the last two bars show a MACD histogram crossover.
+    """Generate H4 DataFrame with an EMA-20 pullback + RSI hook pattern.
 
-    For bullish: histogram goes from negative to positive at the last bar.
-    For bearish: histogram goes from positive to negative.
+    For bullish: price is in an uptrend, dips to/below EMA-20 and bounces,
+    RSI was in 35-50 zone and is now rising.
+    For bearish: inverse pattern.
     """
     rng = np.random.default_rng(seed)
     dates = pd.date_range(end="2026-01-01", periods=rows, freq="4h")
 
     if bullish:
-        # Downtrend then sharp reversal up in last 10 bars.
+        # Uptrend then pullback in last 5 bars then bounce in last 2 bars
         mid_prices = np.concatenate(
             [
-                np.linspace(base_price * 1.02, base_price * 0.98, rows - 10),
-                np.linspace(base_price * 0.98, base_price * 1.04, 10),
+                np.linspace(base_price * 0.97, base_price * 1.02, rows - 7),
+                np.linspace(base_price * 1.02, base_price * 0.995, 5),  # pullback
+                np.linspace(base_price * 0.995, base_price * 1.01, 2),  # bounce
             ]
         )
     else:
+        # Downtrend then pullback up in last 5 bars then reversal in last 2 bars
         mid_prices = np.concatenate(
             [
-                np.linspace(base_price * 0.98, base_price * 1.02, rows - 10),
-                np.linspace(base_price * 1.02, base_price * 0.96, 10),
+                np.linspace(base_price * 1.03, base_price * 0.98, rows - 7),
+                np.linspace(base_price * 0.98, base_price * 1.005, 5),  # pullback up
+                np.linspace(base_price * 1.005, base_price * 0.99, 2),  # reversal
             ]
         )
 
@@ -213,6 +260,57 @@ def _make_h4_with_macd_crossover(
     return df
 
 
+def _make_h4_with_macd_crossover(
+    base_price: float = 1.08, rows: int = 120, bullish: bool = True, seed: int = 1
+) -> pd.DataFrame:
+    """Kept for compatibility — delegates to _make_h4_with_pullback."""
+    return _make_h4_with_pullback(base_price=base_price, rows=rows, bullish=bullish, seed=seed)
+
+
+def _make_ranging_df(base_price: float = 0.90, rows: int = 250, seed: int = 5) -> pd.DataFrame:
+    """Generate a ranging (low-ADX) DataFrame — price oscillates around base_price."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range(end="2026-01-01", periods=rows, freq="D")
+
+    # Oscillating price with no trend
+    t = np.linspace(0, 4 * np.pi, rows)
+    close = base_price + base_price * 0.02 * np.sin(t) + rng.normal(0, base_price * 0.001, rows)
+
+    spread = base_price * 0.002
+    high = close + rng.uniform(0, spread, rows)
+    low = close - rng.uniform(0, spread, rows)
+    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
+
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": 1000},
+        index=dates,
+    )
+
+
+def _make_h4_oversold(base_price: float = 0.90, rows: int = 120, seed: int = 3) -> pd.DataFrame:
+    """Generate H4 DataFrame where the last bar is clearly below lower BB and RSI < 30."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range(end="2026-01-01", periods=rows, freq="4h")
+
+    # Start at base then drop sharply at the end
+    close = np.concatenate(
+        [
+            np.full(rows - 5, base_price) + rng.normal(0, base_price * 0.001, rows - 5),
+            np.linspace(base_price, base_price * 0.94, 5),  # sharp drop → oversold
+        ]
+    )
+
+    spread = base_price * 0.001
+    high = close + rng.uniform(0, spread, rows)
+    low = close - rng.uniform(0, spread, rows)
+    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
+
+    return pd.DataFrame(
+        {"open": open_, "high": high, "low": low, "close": close, "volume": 500},
+        index=dates,
+    )
+
+
 def _make_test_db() -> tuple[str, sqlite3.Connection]:
     """Create a temp DB file, init schema, and return (path, connection)."""
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -226,10 +324,10 @@ def _make_test_db() -> tuple[str, sqlite3.Connection]:
 
 
 def _make_signal(
-    pair: str = "EURUSD",
+    pair: str = "AUDCAD",
     action: str = "buy",
-    trend: str = "bullish",
-    reason: str = "trend + MACD confirmed",
+    trend: str = "ranging",
+    reason: str = "ranging_market + BB extreme + RSI confirmed",
 ) -> "Signal":  # noqa: F821
     from drift.strategy import Signal
 
@@ -238,12 +336,11 @@ def _make_signal(
         pair=pair,
         timestamp=now,
         h4_candle_time=now,
-        ema_fast=1.09,
-        ema_slow=1.07,
-        trend_direction=trend,
-        macd_value=0.0012,
-        macd_signal=0.0008,
-        macd_histogram=0.0004,
+        bb_upper=0.9050,
+        bb_middle=0.9000,
+        bb_lower=0.8950,
+        rsi=28.0,
+        adx=18.0,
         atr_value=0.0050,
         action=action,
         reason=reason,
@@ -286,30 +383,33 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
         self.conn.close()
         Path(self.db_path).unlink(missing_ok=True)
 
-    def test_bullish_signal_detected(self) -> None:
+    def test_ranging_signal_produces_valid_output(self) -> None:
         from drift.strategy import analyze_pair
 
-        df_d1 = _make_bullish_df(rows=250)
-        df_h4 = _make_h4_with_macd_crossover(bullish=True, rows=120)
+        df_d1 = _make_ranging_df(rows=250)
+        df_h4 = _make_h4_oversold(rows=120)
 
-        signal = analyze_pair("EURUSD", df_d1, df_h4, self.config.strategy)
+        signal = analyze_pair("AUDCAD", df_d1, df_h4, self.config.strategy)
 
-        self.assertEqual(signal.pair, "EURUSD")
-        self.assertEqual(signal.action, "buy")
-        self.assertEqual(signal.trend_direction, "bullish")
-        self.assertIsInstance(signal.ema_fast, float)
+        self.assertEqual(signal.pair, "AUDCAD")
+        self.assertIsInstance(signal.bb_upper, float)
+        self.assertIsInstance(signal.bb_middle, float)
+        self.assertIsInstance(signal.bb_lower, float)
         self.assertIsInstance(signal.atr_value, float)
         self.assertGreater(signal.atr_value, 0)
 
-    def test_bullish_trend_detected_on_rising_prices(self) -> None:
-        from drift.indicators import compute_ema
+    def test_bollinger_bands_computed_correctly(self) -> None:
+        from drift.indicators import compute_bollinger_bands
 
-        df_d1 = _make_bullish_df(rows=250)
-        ema_fast = compute_ema(df_d1, 50)
-        ema_slow = compute_ema(df_d1, 200)
+        df_h4 = _make_ranging_df(rows=100)
+        upper, middle, lower = compute_bollinger_bands(df_h4, period=20, std_dev=2.0)
 
-        # On a strong uptrend the fast EMA must be above the slow EMA.
-        self.assertGreater(float(ema_fast.iloc[-1]), float(ema_slow.iloc[-1]))
+        # Upper must be above middle, lower below middle for any valid row.
+        last_upper = float(upper.dropna().iloc[-1])
+        last_middle = float(middle.dropna().iloc[-1])
+        last_lower = float(lower.dropna().iloc[-1])
+        self.assertGreater(last_upper, last_middle)
+        self.assertLess(last_lower, last_middle)
 
     def test_risk_check_passes_with_clean_state(self) -> None:
         ok, reason = check_all_risk(
@@ -440,7 +540,7 @@ class TestRiskRejectionMaxTrades(unittest.TestCase):
         )
         self.assertFalse(ok)
 
-        signal = _make_signal(pair="EURGBP", action="buy")
+        signal = _make_signal(pair="EURCHF", action="buy")
         rejection_reason = f"risk: {reason}"
         sig_id = log_signal(self.conn, signal, trade_id=None, rejection_reason=rejection_reason)
 
@@ -832,25 +932,24 @@ class TestSignalLoggingCompleteness(unittest.TestCase):
         Path(self.db_path).unlink(missing_ok=True)
 
     def test_none_signal_logged_as_rejected(self) -> None:
-        signal = _make_signal(action="none", trend="none", reason="no clear trend")
+        signal = _make_signal(action="none", reason="trending_market")
         sig_id = log_signal(self.conn, signal, trade_id=None)
 
         row = self.conn.execute("SELECT * FROM signals WHERE id = ?", (sig_id,)).fetchone()
         self.assertEqual(row["decision"], "rejected")
-        self.assertEqual(row["reason"], "no clear trend")
+        self.assertEqual(row["reason"], "trending_market")
 
     def test_all_indicator_values_stored(self) -> None:
         signal = _make_signal(action="buy")
         sig_id = log_signal(self.conn, signal, trade_id=None)
 
         row = self.conn.execute("SELECT * FROM signals WHERE id = ?", (sig_id,)).fetchone()
-        self.assertIsNotNone(row["ema_50"])
-        self.assertIsNotNone(row["ema_200"])
-        self.assertIsNotNone(row["macd_value"])
-        self.assertIsNotNone(row["macd_signal"])
-        self.assertIsNotNone(row["macd_histogram"])
+        self.assertIsNotNone(row["bb_upper"])
+        self.assertIsNotNone(row["bb_middle"])
+        self.assertIsNotNone(row["bb_lower"])
+        self.assertIsNotNone(row["rsi"])
+        self.assertIsNotNone(row["adx"])
         self.assertIsNotNone(row["atr_value"])
-        self.assertIsNotNone(row["trend_direction"])
         self.assertIsNotNone(row["h4_candle_time"])
 
     def test_risk_rejected_signal_stores_risk_reason(self) -> None:
@@ -881,15 +980,15 @@ class TestSignalLoggingCompleteness(unittest.TestCase):
         self.assertEqual(row["trade_id"], trade_id)
 
     def test_multiple_pairs_logged_independently(self) -> None:
-        for pair in ["EURUSD", "GBPUSD", "USDJPY"]:
-            signal = _make_signal(pair=pair, action="none", trend="none", reason="no clear trend")
+        for pair in ["AUDCAD", "NZDCAD", "EURCHF"]:
+            signal = _make_signal(pair=pair, action="none", reason="trending_market")
             log_signal(self.conn, signal)
 
         rows = self.conn.execute("SELECT pair FROM signals ORDER BY pair").fetchall()
         pairs = [r["pair"] for r in rows]
-        self.assertIn("EURUSD", pairs)
-        self.assertIn("GBPUSD", pairs)
-        self.assertIn("USDJPY", pairs)
+        self.assertIn("AUDCAD", pairs)
+        self.assertIn("NZDCAD", pairs)
+        self.assertIn("EURCHF", pairs)
 
 
 # ---------------------------------------------------------------------------

@@ -43,12 +43,11 @@ CREATE TABLE IF NOT EXISTS signals (
     pair TEXT NOT NULL,
     analyzed_at TEXT NOT NULL,
     h4_candle_time TEXT NOT NULL,
-    ema_50 REAL,
-    ema_200 REAL,
-    trend_direction TEXT CHECK(trend_direction IN ('bullish', 'bearish', 'none')),
-    macd_value REAL,
-    macd_signal REAL,
-    macd_histogram REAL,
+    bb_upper REAL,
+    bb_middle REAL,
+    bb_lower REAL,
+    rsi REAL,
+    adx REAL,
     atr_value REAL,
     decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
     reason TEXT NOT NULL,
@@ -94,15 +93,96 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _migrate_signals_table(conn: sqlite3.Connection) -> None:
+    """Migrate signals table to the current mean-reversion schema.
+
+    v1 → v2: macd_value column existed  → renamed to signals_v1
+    v2 → v3: ema_20/ema_gap_pct existed → renamed to signals_v2
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+
+    # v1 migration: MACD-era schema
+    if "macd_value" in cols:
+        logger.info("Migrating signals table v1→v2: renaming to signals_v1")
+        conn.execute("ALTER TABLE signals RENAME TO signals_v1")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                h4_candle_time TEXT NOT NULL,
+                ema_50 REAL,
+                ema_200 REAL,
+                trend_direction TEXT CHECK(trend_direction IN ('bullish', 'bearish', 'none')),
+                ema_20 REAL,
+                rsi REAL,
+                adx REAL,
+                ema_gap_pct REAL,
+                atr_value REAL,
+                decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
+                reason TEXT NOT NULL,
+                trade_id INTEGER REFERENCES trades(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_signals_pair ON signals(pair);
+            CREATE INDEX IF NOT EXISTS idx_signals_analyzed ON signals(analyzed_at);
+            CREATE INDEX IF NOT EXISTS idx_signals_decision ON signals(decision);
+            """
+        )
+        conn.commit()
+        logger.info("v1→v2 migration complete — old data preserved in signals_v1")
+        # Refresh cols for v2→v3 check
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+
+    # v2 migration: EMA pullback / trend-following era schema → mean reversion schema
+    if "ema_20" in cols or "ema_gap_pct" in cols:
+        logger.info("Migrating signals table v2→v3: renaming to signals_v2")
+        conn.execute("ALTER TABLE signals RENAME TO signals_v2")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                h4_candle_time TEXT NOT NULL,
+                bb_upper REAL,
+                bb_middle REAL,
+                bb_lower REAL,
+                rsi REAL,
+                adx REAL,
+                atr_value REAL,
+                decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
+                reason TEXT NOT NULL,
+                trade_id INTEGER REFERENCES trades(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_signals_pair ON signals(pair);
+            CREATE INDEX IF NOT EXISTS idx_signals_analyzed ON signals(analyzed_at);
+            CREATE INDEX IF NOT EXISTS idx_signals_decision ON signals(decision);
+            """
+        )
+        conn.commit()
+        logger.info("v2→v3 migration complete — old data preserved in signals_v2")
+
+
 def init_db(db_path: str | Path | None = None) -> None:
     """Create tables and indexes if they don't exist.
 
     Creates the parent directory for the database file if needed.
+    Migrates the signals table from MACD schema to new indicator schema if needed.
     """
     path = _resolve_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
+        # Check for migration before running schema (table may already exist with old cols).
+        existing = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='signals'"
+        ).fetchone()
+        if existing:
+            conn.row_factory = sqlite3.Row
+            _migrate_signals_table(conn)
+            conn.row_factory = None
+
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
         logger.info("Database initialized at %s", path)
@@ -270,21 +350,20 @@ def log_signal(
         """
         INSERT INTO signals (
             pair, analyzed_at, h4_candle_time,
-            ema_50, ema_200, trend_direction,
-            macd_value, macd_signal, macd_histogram, atr_value,
+            bb_upper, bb_middle, bb_lower,
+            rsi, adx, atr_value,
             decision, reason, trade_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             signal.pair,
             analyzed_at,
             h4_candle_time,
-            signal.ema_fast,
-            signal.ema_slow,
-            signal.trend_direction,
-            signal.macd_value,
-            signal.macd_signal,
-            signal.macd_histogram,
+            signal.bb_upper,
+            signal.bb_middle,
+            signal.bb_lower,
+            signal.rsi,
+            signal.adx,
             signal.atr_value,
             decision,
             reason,

@@ -134,11 +134,6 @@ def process_open_trades(positions: list[dict], config: RiskConfig) -> list[dict]
             logger.warning("process_open_trades: skipping ticket=%d — no price data", ticket)
             continue
 
-        atr_value = _get_h4_atr(pair)
-        if atr_value is None:
-            logger.warning("process_open_trades: skipping ticket=%d — no ATR data", ticket)
-            continue
-
         if check_tp(position, current_price):
             logger.info(
                 "process_open_trades: ticket=%d %s TP hit at price=%.5f tp=%.5f — closing",
@@ -162,6 +157,20 @@ def process_open_trades(positions: list[dict], config: RiskConfig) -> list[dict]
                     ),
                 }
             )
+            continue
+
+        # Skip trailing stop updates when use_trailing_stop is False (mean reversion mode).
+        if not config.use_trailing_stop:
+            logger.debug(
+                "process_open_trades: ticket=%d %s trailing stop disabled — monitoring only",
+                ticket,
+                pair,
+            )
+            continue
+
+        atr_value = _get_h4_atr(pair)
+        if atr_value is None:
+            logger.warning("process_open_trades: skipping ticket=%d — no ATR data", ticket)
             continue
 
         new_sl = update_trailing(

@@ -9,27 +9,40 @@ broker:
 strategy:
   timeframe_trend: "D1"
   timeframe_entry: "H4"
-  ema_fast: 50
-  ema_slow: 200
-  macd_fast: 12
-  macd_slow: 26
-  macd_signal: 9
+  # Bollinger Bands (H4 entry signal)
+  bb_period: 20
+  bb_std_dev: 2.0
+  # RSI thresholds for mean reversion
+  rsi_oversold: 30.0
+  rsi_overbought: 70.0
+  # ADX regime filter: trade ONLY when ADX < adx_max_threshold (ranging market)
+  adx_period: 14
+  adx_max_threshold: 25.0
+  # ATR/RSI periods
   atr_period: 14
+  rsi_period: 14
+  # Time-stop: close trade if open longer than this many hours
+  max_trade_duration_hours: 120
+  # MLP regime filter (replaces simple ADX < threshold filter)
+  mlp_model_path: "data/regime_model.pkl"  # path to trained model; falls back to ADX if missing
+  mlp_lookforward: 20                       # bars to look forward for efficiency-ratio labeling
+  mlp_threshold: 0.4                        # efficiency ratio threshold (below = ranging)
 
 risk:
   percent_per_trade: 1.0           # % of current balance risked per trade
   max_open_trades: 4               # Maximum simultaneous trades
   max_same_currency_direction: 2   # Max trades in same direction for one currency
   max_drawdown_percent: 10.0       # Pause bot if drawdown exceeds this %
+  stop_loss_atr_multiplier: 2.0    # Wider SL for counter-trend mean reversion
   trailing_stop_atr_multiplier: 1.5
-  take_profit_ratio: 2.0           # TP = SL * this value (1:2 ratio)
+  use_trailing_stop: false         # Mean reversion: no trailing stop (price targets middle BB)
+  take_profit_mode: "middle_bb"    # TP at middle Bollinger Band (the mean we revert to)
 
 pairs:
-  - EURUSD
-  - GBPUSD
-  - USDJPY
-  - AUDUSD
-  - USDCAD
+  - AUDCAD                         # Commodity cross — naturally ranges
+  - NZDCAD
+  - AUDNZD
+  - EURCHF                         # Historically range-bound
   - EURGBP
 
 telegram:
