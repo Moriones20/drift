@@ -287,3 +287,35 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 - Ignorar — con micro lotes la comisión es centavos (~$0.07-$0.35 por trade)
 
 **Por qué:** Aunque la diferencia es pequeña con micro lotes, incluir comisiones hace que los reportes reflejen la realidad exacta. Es fácil de implementar y previene sorpresas al escalar el tamaño de las posiciones.
+
+---
+
+## D029 — Cambio de estrategia a Asian Session Scalper
+
+**Decisión:** Reemplazar la estrategia activa (mean reversion H4 con filtro MLP) por Asian Session Scalper en M15, operando solo durante la ventana 21:00-02:00 GMT. Ver `docs/plans/asian-session-scalper-live.md` para el plan de implementación y `docs/knowledge/asian-session-scalper.md` para las reglas.
+
+**Recorrido hasta llegar aquí:**
+
+| Iteración | Estrategia | Resultado backtest (mejor par) |
+|---|---|---|
+| 1 | Trend following EMA 50/200 + MACD (D002+D005) | Negativo en mayoría de pares — majors demasiado eficientes |
+| 2 | Trend following v2: EMA pullback + RSI + ADX | +0.1%, PF 1.31 — insuficiente |
+| 3 | Mean reversion H4: BB + RSI + ADX < 25 | +0.1% portfolio, problemas R:R |
+| 4 | Mean reversion H4 + MLP regime filter (walk-forward) | AUDCAD PF 1.74, WR 60%, solo 10 trades en 6 meses |
+| 5 | **Asian Session Scalper M15** | **EURCHF PF 8.17, AUDNZD PF 4.29, 277 trades en 2 años** |
+
+**Alternativas consideradas:**
+- Coexistir ambas estrategias en paralelo — añade complejidad de estado, riesgo de conflicto en pares compartidos (EURCHF/EURGBP/AUDNZD aparecen en ambas), no aporta beneficio claro dado que la nueva es mucho mejor
+- Quedarnos con mean reversion + MLP — el PF 1.74 es marginal, requiere muchos trades para validar estadísticamente, y la diferencia con Asian Scalper es de orden de magnitud
+- Seguir explorando una tercera estrategia antes de cambiar — válido pero ya tenemos un edge claro; iterar más sin necesidad gasta tiempo y la curva de aprendizaje en infraestructura (MT5, Telegram, riesgo) es lo que más importa para esta fase
+
+**Por qué:**
+1. Edge medible: el backtest sobre 2 años de datos M15 reales de MT5 muestra PF entre 2.0 y 8.0 en 5 de 6 pares, con drawdowns máximos < 1%.
+2. Hipótesis del por qué funciona: la sesión asiática (21:00-02:00 GMT) es la ventana más tranquila del día forex — Londres ya cerró, New York está cerrando, Tokyo aún no abre con fuerza. Los precios tienden a moverse en rango y volver al centro. La estrategia explota explícitamente esa propiedad.
+3. Toda la infraestructura existente se reutiliza sin cambios: `risk.py`, `executor.py`, `db.py`, `telegram_bot.py` son agnósticas a la estrategia.
+4. El cambio es localizado: solo `strategy.py`, `main.py` (scheduler M15 + ventana horaria) y la config necesitan modificación significativa.
+
+**Riesgos asumidos:**
+- USDJPY en el primer backtest dio PF 0.89 (perdedor) — Tokyo opera USDJPY activamente durante la sesión, lo cual rompe la hipótesis de "mercado tranquilo". La optimización validará si encontramos parámetros que lo salvan o si debe descartarse.
+- 16x más evaluaciones por noche (de H4 cada 4h → M15 cada 15min durante 5 horas). Más superficie para bugs y más carga sobre MT5. Mitigación: batch de fetches por tick, no secuencial por par.
+- Holidays japoneses (Golden Week, Año Nuevo) hacen explotar los spreads. Para Phase 3 habrá que añadir filtro de calendario; por ahora el SL fijo protege.
