@@ -126,8 +126,21 @@ def _pip_multiplier(pair: str) -> float:
 
 
 def _pip_value(pair: str) -> float:
-    """Return approximate pip value in USD per standard lot (MVP: 10.0 for all)."""
-    return 10.0
+    """Return USD pip value per standard lot using MT5 symbol info.
+
+    Uses `trade_tick_value` (USD per tick on one standard lot) and converts to
+    pips: 1 pip = 10 ticks on both 5-digit (most pairs) and 3-digit (JPY) brokers.
+
+    Falls back to $10 if MT5 has no info for the pair, but this is a safety net,
+    not a default — every configured pair should resolve through MT5 in practice.
+    """
+    import MetaTrader5 as mt5
+
+    info = mt5.symbol_info(pair)
+    if info is None or info.trade_tick_value <= 0:
+        logger.warning("No tick_value for %s — falling back to $10/pip/lot", pair)
+        return 10.0
+    return info.trade_tick_value * 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -136,17 +149,35 @@ def _pip_value(pair: str) -> float:
 
 
 def _validate_pairs(pairs: list[str]) -> None:
-    """Warn about configured pairs that are unavailable or not tradeable in MT5."""
+    """Activate configured pairs in Market Watch and warn about missing ones.
+
+    Activation (`symbol_select`) is required for `symbol_info.trade_tick_value`
+    to return a real value — without it MT5 reports $0 for inactive pairs, which
+    poisons position sizing.
+    """
     import MetaTrader5 as mt5
 
     for pair in pairs:
         info = mt5.symbol_info(pair)
         if info is None:
             logger.warning("Pair %s not found in MT5 — it will be skipped", pair)
-        elif not info.visible:
-            logger.warning("Pair %s exists but is not visible/tradeable in MT5", pair)
+            continue
+        if not info.visible:
+            if mt5.symbol_select(pair, True):
+                logger.info("Pair %s activated in Market Watch", pair)
+            else:
+                logger.warning("Pair %s could not be activated in Market Watch", pair)
+                continue
+        info = mt5.symbol_info(pair)
+        if info.trade_tick_value <= 0:
+            logger.warning("Pair %s has no tick_value — sizing will fall back to $10/pip", pair)
         else:
-            logger.debug("Pair %s OK (digits=%d)", pair, info.digits)
+            logger.debug(
+                "Pair %s OK (digits=%d, pip_value=$%.2f/lot)",
+                pair,
+                info.digits,
+                info.trade_tick_value * 10,
+            )
 
 
 # ---------------------------------------------------------------------------
