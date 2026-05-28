@@ -47,7 +47,7 @@ Remove from `StrategyConfig` (no longer used): `bb_period`, `bb_std_dev`, `mlp_*
 
 Update `config.example.yaml` with the new fields. Default pairs becomes:
 ```yaml
-pairs: [EURCHF, EURGBP, AUDNZD, USDJPY, GBPJPY, EURJPY]
+pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see "Final parameters" section
 ```
 
 Update `docs/user/configuration.md` to match.
@@ -255,24 +255,59 @@ Two waves:
 
 Each wave should commit before the next starts.
 
-## Final parameters (TO BE FILLED after optimization)
+## Final parameters (decided)
 
-Once `backtest/optimize_asian.py` completes, fill in here:
+Source: `backtest/optimize_asian.py` run completed 2026-05-28 15:22 UTC. Full output in `backtest/results_asian_opt/`.
+
+**Decision**: Option B — universal parameters across kept pairs, drop USDJPY entirely.
+
+### Universal parameters (use these in `config.yaml`)
 
 ```yaml
-# Universal parameters (from optimize_asian.py)
-sl_atr_mult: TBD
-adx_max_threshold: TBD
-rsi_oversold: TBD
-rsi_overbought: TBD
-range_atr_min: TBD
-range_atr_max: TBD
-
-# Pairs that passed KEEP criteria (PF>1.5, WR>50%, MaxDD>-5%, Trades>=20)
-pairs: TBD
+asian_session_scalper:
+  sl_atr_mult: 2.5
+  adx_max_threshold: 35.0
+  rsi_oversold: 35.0
+  rsi_overbought: 65.0
+  range_atr_min: 1.0
+  range_atr_max: 4.0
 ```
 
-If per-pair optimization shows large variance, also document per-pair overrides.
+### Pairs to trade
+
+```yaml
+pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
+```
+
+### Why drop USDJPY
+
+USDJPY is the only configured pair where universal params turn negative (-1.8% return, PF 0.75 with universal vs +1.1% / PF 1.83 with individual). Even at its individual optimum it's marginal (39 trades over 2 years, lowest Sharpe at 0.85). The first backtest already flagged this with PF 0.89, consistent with the hypothesis that Tokyo actively trades USDJPY during the Asian session — breaking the "quiet market" assumption the strategy relies on. Removing it is the simplest move that keeps the universal parameter set clean.
+
+### Per-pair optimal (for reference, not currently used)
+
+Kept here as a backup in case the universal config underperforms in live and we need to fall back to per-pair. Source: same optimization run.
+
+| Pair | sl_atr_mult | adx_max | rsi_os | rsi_ob | range_min | range_max |
+|---|---|---|---|---|---|---|
+| AUDNZD | 2.5 | 35.0 | 35.0 | 65.0 | 0.5 | 4.0 |
+| EURCHF | 2.5 | 35.0 | 35.0 | 65.0 | 1.0 | 4.0 |
+| EURJPY | 2.5 | 35.0 | 35.0 | 70.0 | 0.5 | 3.0 |
+| GBPJPY | 2.5 | 35.0 | 35.0 | 65.0 | 0.5 | 4.0 |
+| EURGBP | 2.5 | 35.0 | 35.0 | 65.0 | 0.5 | 4.0 |
+
+Note: differences are tiny — the universal set already captures the optimum for AUDNZD and EURCHF exactly, and is within 1 percentage point of return for the other three.
+
+### Backtest results summary (2 years M15 real MT5 data)
+
+| Pair | Return | PF | Max DD | Trades | Sharpe |
+|---|---|---|---|---|---|
+| AUDNZD | +16.16% | 6.03 | -0.30% | 196 | 7.41 |
+| EURCHF | +12.52% | 4.11 | -0.66% | 139 | 4.15 |
+| EURJPY | +5.61% | 3.55 | -0.79% | 97 | 2.66 |
+| GBPJPY | +5.61% | 2.68 | -0.65% | 137 | 2.95 |
+| EURGBP | +4.69% | 2.69 | -0.54% | 139 | 2.90 |
+
+Combined (5 pairs, $500 each, universal params): ≈ +9% portfolio return over 2 years, worst drawdown < 1%, 708 trades total.
 
 ## Pre-live checklist
 

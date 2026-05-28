@@ -316,6 +316,20 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 4. El cambio es localizado: solo `strategy.py`, `main.py` (scheduler M15 + ventana horaria) y la config necesitan modificación significativa.
 
 **Riesgos asumidos:**
-- USDJPY en el primer backtest dio PF 0.89 (perdedor) — Tokyo opera USDJPY activamente durante la sesión, lo cual rompe la hipótesis de "mercado tranquilo". La optimización validará si encontramos parámetros que lo salvan o si debe descartarse.
+- ~~USDJPY en el primer backtest dio PF 0.89 (perdedor) — Tokyo opera USDJPY activamente durante la sesión, lo cual rompe la hipótesis de "mercado tranquilo". La optimización validará si encontramos parámetros que lo salvan o si debe descartarse.~~ **Resuelto**: La optimización confirmó la sospecha. Incluso con sus parámetros óptimos individuales USDJPY apenas pasa el filtro (PF 1.83, 39 trades, Sharpe 0.85). Con parámetros universales se vuelve perdedor (PF 0.75). Decisión empírica: **descartado**. Pares finales: AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP.
 - 16x más evaluaciones por noche (de H4 cada 4h → M15 cada 15min durante 5 horas). Más superficie para bugs y más carga sobre MT5. Mitigación: batch de fetches por tick, no secuencial por par.
 - Holidays japoneses (Golden Week, Año Nuevo) hacen explotar los spreads. Para Phase 3 habrá que añadir filtro de calendario; por ahora el SL fijo protege.
+
+**Parámetros finales (post-optimización, universales):**
+
+```yaml
+sl_atr_mult: 2.5         # antes default 1.5
+adx_max_threshold: 35.0  # antes default 25
+rsi_oversold: 35.0       # antes default 30
+rsi_overbought: 65.0     # antes default 70
+range_atr_min: 1.0
+range_atr_max: 4.0       # antes default 3.0
+pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
+```
+
+Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw en `backtest/results_asian_opt/`.
