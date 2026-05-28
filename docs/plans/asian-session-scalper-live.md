@@ -97,17 +97,60 @@ Indicators (`drift/indicators.py`): make sure RSI and ATR use Wilder's smoothing
 
 **Files**: `main.py`
 
-Current behavior: wait for H4 close, evaluate, sleep.
+Current behavior: wait for H4 close (00:00, 04:00, …, 20:00 UTC), evaluate all pairs, sleep.
 
-New behavior:
-1. On startup, check if we're in the trading window (21:00-02:00 GMT). If not, sleep until next 21:00.
-2. Inside the window: every M15 close (21:00, 21:15, 21:30, ...), fetch latest M15 + H4 bars per pair, call `strategy.evaluate_pair()`, act on signal.
-3. Maintain `dict[str, SessionState]` per pair, reset at every 21:00 boundary.
-4. At 02:00 GMT, close any open trades and sleep until next 21:00.
+#### New design — state machine
 
-Keep the existing monitoring daemon (drawdown check, MT5 health check) running every 30s.
+The scheduler is a 4-state loop (UTC throughout, friendly display in UTC-5 only at the Telegram boundary):
+
+| State | UTC window | Behavior |
+|---|---|---|
+| **A — Outside** | 02:00-20:59 | Long sleep until next 21:00. Stop-aware (10s slices to react to /stop). |
+| **B — Define range** | 21:00-22:59 | Every M15 close: fetch M15+H4 per pair, update `SessionState.high/low`. No entries allowed. |
+| **C — Trading** | 23:00-01:59 | Every M15 close: same fetch, plus full strategy evaluation. Up to one trade per pair per session. |
+| **D — Session close** | 02:00 (single tick) | Close any open trade from this session, reset all `SessionState`, transition to A. |
+
+Transition A → B happens automatically: when the sleep until 21:00 ends, all per-pair `SessionState` get reset before the first M15 tick runs.
+
+#### Skip-Friday rule (audit confirmed)
+
+The Asian session would start at 21:00 UTC Friday and run into Saturday — but ICMarkets closes the market around 22:00 UTC Friday (Sydney close), leaving less than the 2-hour range-definition window. The scheduler must skip Friday's session entirely:
+
+```python
+def _in_session_window(now: datetime, start: int = 21, end: int = 2) -> bool:
+    if now.weekday() == 4:  # Friday — skip entirely
+        return False
+    h = now.hour
+    return (h >= start) or (h < end)  # wraps midnight
+```
+
+The `_check_friday_close` function in `_monitoring_tick` becomes redundant for this strategy (no trades to close on Friday, because none were opened). Remove its call; keep the function or delete it as you prefer. Document the removal in `DECISIONS.md` (a small follow-up to D029).
+
+#### New helpers
+
+```python
+def _next_m15_close(now: datetime) -> datetime:
+    """Next M15 boundary strictly after `now` (HH:00, HH:15, HH:30, HH:45)."""
+
+def _next_session_start(now: datetime) -> datetime:
+    """Next 21:00 UTC strictly after `now`, skipping Friday."""
+
+def _in_session_window(now: datetime) -> bool: ...
+```
+
+#### Sleep correctness
+
+The sleep until next 21:00 can be **up to 19 hours**. It must remain stop-aware (current pattern of `time.sleep(min(10.0, deadline - time.monotonic()))` works; reuse it). Do not introduce a single long `time.sleep()`.
+
+#### Session close at 02:00 (audit confirmed)
+
+The strategy class in the backtest closes at "hour == 2" — i.e., on the M15 bar whose close timestamp is 02:00:00 UTC. Match that in live: process the M15 candle whose close stamp == 02:00 UTC, close any open positions for the session, then transition to state A. Do not act on the wall clock alone — let the candle-close trigger drive it, consistent with the backtest.
 
 Time zone handling: all internal logic in UTC. Telegram notifications continue using UTC-5 for display (existing pattern).
+
+#### What stays unchanged
+
+- Monitoring thread (daemon, every 30s) for MT5 health, drawdown, balance peak, closed-trade detection, weekly report. See Step 6 for the trim of trailing-stop and max-duration logic that no longer applies.
 
 ### Step 4 — Update mt5_client.py for M15 data (small, can parallelize with Step 3)
 
@@ -135,17 +178,34 @@ Migrate `signals` table columns to match new fields:
 
 Use the existing migration pattern (rename old table to `signals_v3`, create new). Update `log_signal()` to write the new fields.
 
-### Step 6 — Adapt risk and executor (minimal, depends on Step 2)
+### Step 6 — Adapt risk, executor, monitoring (minimal-to-medium, depends on Step 2)
 
-**Files**: `drift/risk.py`, `drift/executor.py`
+**Files**: `drift/risk.py`, `drift/executor.py`, `main.py` (monitoring tick)
 
-These are mostly strategy-agnostic but verify:
-- `risk.position_size()` works with M15 ATR-based SL (it already takes `sl_pips` so just pass `1.5 * atr_pips`).
-- Correlation check counts positions correctly across the new pair set including JPY crosses.
-- `executor.open_trade()` accepts the new TP (range midpoint price, not a ratio).
-- Friday close logic still works — if we're trading at 22:00 UTC Friday, we should still close before 20:00 UTC.
+#### Risk and executor (small)
 
-**Trailing stops**: keep `use_trailing_stop: false` for this strategy.
+- `risk.calculate_position_size()` is strategy-agnostic. Pass `1.5 * atr_in_pips`. The pip-value fix is already in place (commit `f4821a0`): `_pip_value()` reads `symbol_info.trade_tick_value` from MT5, which gives the correct USD value per pair (JPY crosses ≈ $6.28/pip/lot, EURCHF ≈ $12.76, AUDNZD ≈ $5.93, etc.). Do not reintroduce the $10 default.
+- `_pip_multiplier()` already handles JPY (×100) vs the rest (×10000). No change.
+- Correlation check counts work for any pair set, including JPY crosses.
+- `executor.open_trade()` accepts the new TP (range midpoint price, not a ratio). Verify the parameter wiring.
+
+#### Trailing stops
+
+`use_trailing_stop: false`. `process_open_trades()` becomes a no-op for Asian Scalper and can stay as-is — the toggle already short-circuits it.
+
+#### Monitoring tick trim (audit finding)
+
+`_monitoring_tick()` currently does seven things. For Asian Scalper:
+
+| Responsibility | Action |
+|---|---|
+| MT5 health + reconnect | Keep |
+| Balance / peak / drawdown | Keep |
+| Detect closed trades | Keep |
+| `process_open_trades` (trailing) | Becomes no-op via config flag — no code change needed |
+| `_check_max_duration` | **Remove** — the 02:00 session close replaces it. Leaving it would race with the session-close logic. |
+| `_check_friday_close` | **Remove the call** (session skip in Step 3 handles Fridays). Keep the function defined unless we're sure no other strategy will need it. |
+| `_check_weekly_report` | Keep |
 
 ### Step 7 — Update tests (medium, can parallelize with implementation)
 
@@ -223,7 +283,10 @@ Before deploying to live (Phase 3 of ROADMAP):
 - [ ] Manual end-to-end test on demo account for at least 3 trading sessions
 - [ ] Telegram notifications verified for: trade open, trade close, session start/end, drawdown alert
 - [ ] Weekly report adapted to new metrics (no BB references)
-- [ ] Friday close logic verified at week boundary
+- [ ] **Pip-value fix verified for every configured pair** — log line at startup should show `pip_value=$X.XX/lot` for each pair, never $10 unless intentional
+- [ ] **Skip-Friday rule verified** — bot does NOT open the 21:00 UTC Friday session; logs show "Outside window — sleeping until next Monday 21:00 UTC" on Friday evenings
+- [ ] **Session-close verified at 02:00 UTC** — any trade open at 02:00 UTC gets closed by the candle-close trigger, not by wall clock
+- [ ] **No race between max_duration and session_close** — `_check_max_duration` must be off (Step 6)
 
 ## Risks and mitigations
 
