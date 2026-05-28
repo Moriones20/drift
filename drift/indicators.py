@@ -3,14 +3,32 @@ from __future__ import annotations
 import logging
 
 import pandas as pd
-import pandas_ta as ta
-
-from drift.config import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
+# pandas_ta is an optional heavy dependency that requires Python <3.14 (numba/tqdm constraint).
+# Import it lazily so the Wilder-smoothed indicator functions (rsi, atr, adx) remain importable
+# in environments where pandas_ta is not installed (e.g. Python 3.14 on dev machines).
+# The compute_* wrappers below will raise ImportError at call time if pandas_ta is absent.
+try:
+    import pandas_ta as ta  # type: ignore[import-untyped]
+
+    _TA_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    ta = None  # type: ignore[assignment]
+    _TA_AVAILABLE = False
+
+
+def _require_ta() -> None:
+    if not _TA_AVAILABLE:
+        raise ImportError(
+            "pandas_ta is required for compute_* functions but is not installed. "
+            "Install it with: pip install pandas_ta"
+        )
+
 
 def compute_ema(df: pd.DataFrame, period: int) -> pd.Series:
+    _require_ta()
     if len(df) < period:
         raise ValueError(f"Need at least {period} rows for EMA({period}), got {len(df)}")
     result = ta.ema(df["close"], length=period)
@@ -19,6 +37,7 @@ def compute_ema(df: pd.DataFrame, period: int) -> pd.Series:
 
 
 def compute_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    _require_ta()
     if len(df) < period + 1:
         raise ValueError(f"Need at least {period + 1} rows for RSI({period}), got {len(df)}")
     result = ta.rsi(df["close"], length=period)
@@ -27,6 +46,7 @@ def compute_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    _require_ta()
     min_rows = period * 2
     if len(df) < min_rows:
         raise ValueError(f"Need at least {min_rows} rows for ADX({period}), got {len(df)}")
@@ -42,6 +62,7 @@ def compute_macd(
     slow: int = 26,
     signal: int = 9,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
+    _require_ta()
     min_rows = slow + signal
     if len(df) < min_rows:
         raise ValueError(
@@ -56,6 +77,7 @@ def compute_macd(
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    _require_ta()
     if len(df) < period:
         raise ValueError(f"Need at least {period} rows for ATR({period}), got {len(df)}")
     result = ta.atr(df["high"], df["low"], df["close"], length=period)
@@ -87,25 +109,72 @@ def compute_bollinger_bands(
     return upper, middle, lower
 
 
-def compute_all(df_d1: pd.DataFrame, df_h4: pd.DataFrame, config: StrategyConfig) -> dict:
-    logger.debug(
-        "Computing indicators — D1 rows: %d, H4 rows: %d",
-        len(df_d1),
-        len(df_h4),
-    )
+# ---------------------------------------------------------------------------
+# Wilder-smoothing implementations for Asian Session Scalper
+# These mirror backtest/_indicators.py exactly to ensure live/backtest parity.
+# ---------------------------------------------------------------------------
 
-    adx = compute_adx(df_d1, config.adx_period)
-    rsi = compute_rsi(df_h4, config.rsi_period)
-    atr = compute_atr(df_h4, config.atr_period)
-    bb_upper, bb_middle, bb_lower = compute_bollinger_bands(
-        df_h4, config.bb_period, config.bb_std_dev
-    )
 
-    return {
-        "adx": adx,
-        "rsi": rsi,
-        "atr": atr,
-        "bb_upper": bb_upper,
-        "bb_middle": bb_middle,
-        "bb_lower": bb_lower,
-    }
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """Compute RSI using Wilder's smoothing (EWM alpha=1/period).
+
+    Matches backtest/_indicators.py rsi() exactly.
+    """
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """Compute ATR using Wilder's smoothing (EWM alpha=1/period).
+
+    Matches backtest/_indicators.py atr() exactly.
+    """
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, adjust=False).mean()
+
+
+def adx(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """Compute ADX using Wilder's smoothing (alpha=1/period).
+
+    Matches backtest/_indicators.py adx() exactly.
+    """
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+    prev_close = close.shift(1)
+
+    plus_dm = (high - prev_high).clip(lower=0)
+    minus_dm = (prev_low - low).clip(lower=0)
+    # Where +DM <= -DM, zero out +DM and vice-versa
+    mask = plus_dm >= minus_dm
+    plus_dm = plus_dm.where(mask, 0.0)
+    minus_dm = minus_dm.where(~mask, 0.0)
+
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+
+    alpha = 1.0 / period
+    atr_val = tr.ewm(alpha=alpha, adjust=False).mean()
+    _nan = float("nan")
+    plus_di = 100.0 * plus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_val.replace(0, _nan)
+    minus_di = 100.0 * minus_dm.ewm(alpha=alpha, adjust=False).mean() / atr_val.replace(0, _nan)
+
+    di_sum = (plus_di + minus_di).replace(0, float("nan"))
+    dx = 100.0 * (plus_di - minus_di).abs() / di_sum
+    adx_val = dx.ewm(alpha=alpha, adjust=False).mean()
+    return adx_val

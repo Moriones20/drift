@@ -1,192 +1,407 @@
+"""Asian Session Scalper — live strategy module.
+
+Ports the logic from backtest/asian_engine.py (AsianSessionStrategy.next(), lines 160-258)
+to a stateless-friendly function interface suitable for the live scheduler.
+
+Session window (UTC):
+  21:00-22:59  Range definition — accumulate high/low, no entries.
+  23:00-01:59  Trading window — evaluate entries once range is locked.
+  02:00        Time stop — force-close any open position, reset state.
+  02:01-20:59  Outside window — skip.
+
+All datetimes must be UTC-aware.  Never localize.
+"""
+
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+from typing import Literal
 
-import numpy as np
 import pandas as pd
 
 from drift.config import StrategyConfig
-from drift.indicators import compute_all
-from drift.mlp_filter import RegimeFilter
+from drift.indicators import adx as _adx
+from drift.indicators import atr as _atr
+from drift.indicators import rsi as _rsi
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SessionState:
+    """Per-pair tracking across a single Asian session (21:00 UTC to 02:00 UTC next day)."""
+
+    session_date: int | None = None  # ordinal of session-start UTC day
+    high: float = float("-inf")  # running high during 21:00-22:59
+    low: float = float("inf")  # running low during 21:00-22:59
+    locked: bool = False  # True after 23:00 if range is valid
+    range_high: float = float("nan")  # locked value
+    range_low: float = float("nan")  # locked value
+    traded: bool = False  # at most one trade per session per pair
+
+
+# ---------------------------------------------------------------------------
+# Signal
+# ---------------------------------------------------------------------------
+
+
+@dataclass
 class Signal:
+    action: Literal["buy", "sell", "none"]
     pair: str
-    timestamp: datetime
-    h4_candle_time: datetime
-    bb_upper: float
-    bb_middle: float
-    bb_lower: float
-    rsi: float
-    adx: float
-    atr_value: float
-    action: str
-    reason: str
-    regime_probability: float = 0.5  # MLP confidence: probability of ranging market
+    timestamp: datetime  # current M15 bar close, UTC
+    m15_candle_time: datetime  # = timestamp (alias for db logging)
+    h4_candle_time: datetime  # H4 bar used for ADX filter
+    entry_price: float
+    sl: float = float("nan")
+    tp: float = float("nan")
+    range_high: float = float("nan")
+    range_low: float = float("nan")
+    range_atr_ratio: float = float("nan")  # (range_high - range_low) / atr
+    rsi: float = float("nan")  # M15
+    atr_value: float = float("nan")  # M15
+    h4_adx: float = float("nan")
+    reason: str = ""  # human-readable rejection/acceptance reason
+    rejection_reason: str | None = None  # set when a strategy check rejects the signal
 
 
-def check_d1_regime(
-    adx: pd.Series,
-    adx_max_threshold: float,
-) -> tuple[bool, str]:
-    """Fallback ADX-based regime check (used when no MLP model is loaded).
+# ---------------------------------------------------------------------------
+# Session key helper (mirrors AsianSessionStrategy._session_key)
+# ---------------------------------------------------------------------------
 
-    Return (regime_ok, reject_reason).
-    Mean reversion trades only in ranging markets: ADX < adx_max_threshold.
+
+def _session_key(bar_time: datetime) -> int:
+    """Return an integer identifying the session this bar belongs to.
+
+    Sessions start at 21:00 UTC.  Bars at 21:00-23:59 belong to the session
+    of that calendar day.  Bars at 00:00-01:59 belong to the session that
+    started the previous calendar day (carry-over).
     """
-    adx_val = float(adx.iloc[-1])
-    if adx_val >= adx_max_threshold:
-        return False, "trending_market"
-    return True, ""
+    if bar_time.hour < 2:
+        # Carry-over: shift back to previous day's ordinal
+        shifted = bar_time - pd.Timedelta(hours=3)
+        return shifted.toordinal()
+    return bar_time.toordinal()
 
 
-def check_h4_entry(
-    close: pd.Series,
-    bb_upper: pd.Series,
-    bb_lower: pd.Series,
-    rsi: pd.Series,
-    rsi_oversold: float = 30.0,
-    rsi_overbought: float = 70.0,
-) -> str:
-    """Bollinger Band + RSI mean reversion entry.
-
-    BUY:  close below lower BB AND RSI < rsi_oversold  (price too low → expect bounce)
-    SELL: close above upper BB AND RSI > rsi_overbought (price too high → expect fade)
-    """
-    if len(close) < 1 or len(bb_upper) < 1 or len(bb_lower) < 1 or len(rsi) < 1:
-        return "none"
-
-    curr_close = float(close.iloc[-1])
-    curr_upper = float(bb_upper.iloc[-1])
-    curr_lower = float(bb_lower.iloc[-1])
-    curr_rsi = float(rsi.iloc[-1])
-
-    if curr_close < curr_lower and curr_rsi < rsi_oversold:
-        return "buy"
-
-    if curr_close > curr_upper and curr_rsi > rsi_overbought:
-        return "sell"
-
-    return "none"
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
 
 
-def _build_mlp_feature_df(indicators: dict, df_h4: pd.DataFrame) -> pd.DataFrame:
-    """Assemble a single-row DataFrame with the columns RegimeFilter.compute_features expects."""
-    return pd.DataFrame(
-        {
-            "adx": indicators["adx"].values,
-            "bb_upper": indicators["bb_upper"].values,
-            "bb_middle": indicators["bb_middle"].values,
-            "bb_lower": indicators["bb_lower"].values,
-            "atr": indicators["atr"].values,
-        },
-        index=df_h4.index[: len(indicators["adx"])],
-    )
-
-
-def analyze_pair(
-    pair: str,
-    df_d1: pd.DataFrame,
-    df_h4: pd.DataFrame,
+def update_session_state(
+    state: SessionState,
+    bar_time: datetime,
+    bar_high: float,
+    bar_low: float,
+    atr: float,
     config: StrategyConfig,
-    regime_filter: RegimeFilter | None = None,
+) -> None:
+    """Update *state* in-place for the range-definition window (21:00-22:59 UTC).
+
+    Also locks the range at 23:00 when the ATR filter passes.
+    Called internally by evaluate_pair; exposed for the scheduler to call
+    during the define-range phase when no entry evaluation is needed.
+    """
+    hour = bar_time.hour
+    key = _session_key(bar_time)
+
+    # Detect new session start at 21:00
+    if hour == 21 and state.session_date != key:
+        state.session_date = key
+        state.high = float("-inf")
+        state.low = float("inf")
+        state.locked = False
+        state.range_high = float("nan")
+        state.range_low = float("nan")
+        state.traded = False
+        logger.debug("New session started — session_key=%d", key)
+
+    # Accumulate range during 21:00-22:59
+    if state.session_date == key and hour in (21, 22):
+        if bar_high > state.high:
+            state.high = bar_high
+        if bar_low < state.low:
+            state.low = bar_low
+
+    # Lock range at 23:00 (only once per session)
+    if (
+        state.session_date == key
+        and hour == 23
+        and not state.locked
+        and state.high > float("-inf")
+        and state.low < float("inf")
+    ):
+        if not math.isnan(atr) and atr > 0:
+            range_width = state.high - state.low
+            in_range = config.range_atr_min * atr <= range_width <= config.range_atr_max * atr
+            if in_range:
+                state.range_high = state.high
+                state.range_low = state.low
+                state.locked = True
+                logger.debug(
+                    "Session range locked — high=%.5f low=%.5f width=%.5f atr=%.5f",
+                    state.range_high,
+                    state.range_low,
+                    range_width,
+                    atr,
+                )
+            else:
+                # Range outside acceptable ATR bounds — skip this session
+                state.locked = False
+                logger.debug(
+                    "Session range rejected — width=%.5f atr=%.5f min=%.1fx max=%.1fx",
+                    range_width,
+                    atr,
+                    config.range_atr_min,
+                    config.range_atr_max,
+                )
+
+
+def should_close_on_time(bar_time: datetime, config: StrategyConfig) -> bool:
+    """Return True when bar_time signals the session time stop.
+
+    Matches the backtest: hour == 2 triggers force-close of any open position.
+    """
+    return bar_time.hour == config.session_end_hour
+
+
+def check_tp_hit(
+    position_direction: str,
+    current_close: float,
+    range_midpoint: float,
+) -> bool:
+    """Return True when the position has reached the TP at the range midpoint.
+
+    Mirrors the exit logic in AsianSessionStrategy.next():
+      - Long: close >= midpoint
+      - Short: close <= midpoint
+    """
+    if position_direction == "buy":
+        return current_close >= range_midpoint
+    if position_direction == "sell":
+        return current_close <= range_midpoint
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Main evaluation function
+# ---------------------------------------------------------------------------
+
+
+def evaluate_pair(
+    symbol: str,
+    m15_df: pd.DataFrame,
+    h4_df: pd.DataFrame,
+    session_state: SessionState,
+    config: StrategyConfig,
 ) -> Signal:
-    indicators = compute_all(df_d1, df_h4, config)
+    """Evaluate one M15 bar close for *symbol* and return a Signal.
 
-    bb_upper_val = float(indicators["bb_upper"].iloc[-1])
-    bb_middle_val = float(indicators["bb_middle"].iloc[-1])
-    bb_lower_val = float(indicators["bb_lower"].iloc[-1])
-    rsi_val = float(indicators["rsi"].iloc[-1])
-    adx_val = float(indicators["adx"].iloc[-1])
-    atr_val = float(indicators["atr"].iloc[-1])
-    h4_candle_time = df_h4.index[-1].to_pydatetime().replace(tzinfo=timezone.utc)
+    Mirrors AsianSessionStrategy.next() in backtest/asian_engine.py lines 160-258.
 
-    # --- Regime filter ---
-    regime_ok: bool
-    regime_reason: str
-    regime_probability: float = 0.5
+    Parameters
+    ----------
+    symbol:
+        Forex pair identifier, e.g. "EURCHF".
+    m15_df:
+        M15 OHLCV DataFrame with a UTC-aware DatetimeIndex and columns
+        open/high/low/close/volume (lowercase).  Must contain enough history
+        for ATR and RSI warmup (~100 bars).
+    h4_df:
+        H4 OHLCV DataFrame with a UTC-aware DatetimeIndex and the same
+        lowercase column names.  Must contain enough history for ADX warmup
+        (~30 bars).
+    session_state:
+        Mutable per-pair state object.  Updated in-place.
+    config:
+        Strategy parameters.
 
-    if regime_filter is not None and regime_filter._loaded:
-        feat_df = _build_mlp_feature_df(indicators, df_h4)
-        features = regime_filter.compute_features(feat_df)
-        last_features = features[-1]
-        if np.isnan(last_features).any():
-            # Not enough history for ATR SMA — fall back to ADX filter
-            regime_ok, regime_reason = check_d1_regime(indicators["adx"], config.adx_max_threshold)
-        else:
-            regime_ok = regime_filter.predict(last_features)
-            regime_probability = regime_filter.predict_proba(last_features)
-            regime_reason = "" if regime_ok else "mlp_trending_market"
-    else:
-        regime_ok, regime_reason = check_d1_regime(indicators["adx"], config.adx_max_threshold)
+    Returns
+    -------
+    Signal with action='buy'/'sell' when an entry condition is met, else
+    action='none' with reason/rejection_reason populated.
+    """
+    if len(m15_df) < 2 or len(h4_df) < 2:
+        from datetime import timezone  # local import to avoid top-level DTZ003 noise
 
-    if not regime_ok:
-        logger.info(
-            "%s | action=none reason=%s adx=%.1f regime_prob=%.2f",
-            pair,
-            regime_reason,
-            adx_val,
-            regime_probability,
+        _now = datetime.now(tz=timezone.utc)
+        _m15_t = m15_df.index[-1].to_pydatetime() if len(m15_df) >= 1 else _now
+        _h4_t = h4_df.index[-1].to_pydatetime() if len(h4_df) >= 1 else _now
+        return Signal(
+            action="none",
+            pair=symbol,
+            timestamp=_m15_t,
+            m15_candle_time=_m15_t,
+            h4_candle_time=_h4_t,
+            entry_price=float("nan"),
+            reason="insufficient_data",
+            rejection_reason="insufficient_data",
+        )
+
+    # --- Compute indicators ---
+    m15_close = m15_df["close"]
+    m15_high = m15_df["high"]
+    m15_low = m15_df["low"]
+
+    rsi_series = _rsi(m15_close, config.m15_rsi_period)
+    atr_series = _atr(m15_high, m15_low, m15_close, config.m15_atr_period)
+
+    # H4 ADX: shift by 1 to prevent look-ahead bias (mirrors prepare_asian_data)
+    h4_adx_series = _adx(h4_df["high"], h4_df["low"], h4_df["close"], config.h4_adx_period)
+    h4_adx_shifted = h4_adx_series.shift(1)
+
+    # Current bar values
+    atr_val = float(atr_series.iloc[-1])
+    rsi_val = float(rsi_series.iloc[-1])
+
+    # Propagate shifted H4 ADX forward-filled to the current M15 bar timestamp
+    bar_ts = m15_df.index[-1]
+    h4_adx_resampled = h4_adx_shifted.resample("15min").last().ffill()
+    # Find the last H4 ADX value at or before the current M15 bar
+    _valid_idx = h4_adx_resampled.index[h4_adx_resampled.index <= bar_ts]
+    h4_adx_at_bar = h4_adx_resampled.reindex(_valid_idx)
+    adx_val = float(h4_adx_at_bar.iloc[-1]) if len(h4_adx_at_bar) > 0 else float("nan")
+
+    bar_time: datetime = bar_ts.to_pydatetime()
+    h4_candle_time: datetime = h4_df.index[-1].to_pydatetime()
+
+    curr_close = float(m15_df["close"].iloc[-1])
+    curr_high = float(m15_df["high"].iloc[-1])
+    curr_low = float(m15_df["low"].iloc[-1])
+
+    def _base_signal(
+        action: Literal["buy", "sell", "none"],
+        reason: str,
+        rejection_reason: str | None = None,
+    ) -> Signal:
+        range_width = (
+            session_state.range_high - session_state.range_low
+            if session_state.locked
+            else float("nan")
+        )
+        ratio = (
+            range_width / atr_val if (not math.isnan(range_width) and atr_val > 0) else float("nan")
         )
         return Signal(
-            pair=pair,
-            timestamp=datetime.now(timezone.utc),
+            action=action,
+            pair=symbol,
+            timestamp=bar_time,
+            m15_candle_time=bar_time,
             h4_candle_time=h4_candle_time,
-            bb_upper=bb_upper_val,
-            bb_middle=bb_middle_val,
-            bb_lower=bb_lower_val,
+            entry_price=curr_close,
+            range_high=session_state.range_high,
+            range_low=session_state.range_low,
+            range_atr_ratio=ratio,
             rsi=rsi_val,
-            adx=adx_val,
             atr_value=atr_val,
-            action="none",
-            reason=regime_reason,
-            regime_probability=regime_probability,
+            h4_adx=adx_val,
+            reason=reason,
+            rejection_reason=rejection_reason,
         )
 
-    entry = check_h4_entry(
-        df_h4["close"],
-        indicators["bb_upper"],
-        indicators["bb_lower"],
-        indicators["rsi"],
-        config.rsi_oversold,
-        config.rsi_overbought,
+    # --- Guard: valid ATR required ---
+    if math.isnan(atr_val) or atr_val <= 0:
+        return _base_signal("none", "atr_not_ready", "atr_not_ready")
+
+    # --- Guard: valid RSI and ADX required ---
+    if math.isnan(rsi_val) or math.isnan(adx_val):
+        return _base_signal("none", "indicators_not_ready", "indicators_not_ready")
+
+    hour = bar_time.hour
+
+    # --- Update session state (range definition + locking) ---
+    update_session_state(
+        state=session_state,
+        bar_time=bar_time,
+        bar_high=curr_high,
+        bar_low=curr_low,
+        atr=atr_val,
+        config=config,
     )
 
-    if entry == "none":
-        reason = "no entry signal"
-    else:
-        reason = "ranging_market + BB extreme + RSI confirmed"
+    # --- Time stop: signal close at 02:00 UTC ---
+    if should_close_on_time(bar_time, config):
+        return _base_signal("none", "session_end_time_stop")
 
-    logger.info(
-        "%s | action=%s reason=%s adx=%.1f rsi=%.1f"
-        " bb_upper=%.5f bb_lower=%.5f close=%.5f regime_prob=%.2f",
-        pair,
-        entry,
-        reason,
-        adx_val,
-        rsi_val,
-        bb_upper_val,
-        bb_lower_val,
-        float(df_h4["close"].iloc[-1]),
-        regime_probability,
-    )
+    # --- Entry logic: only between 23:00-01:59 UTC with a locked range ---
 
-    return Signal(
-        pair=pair,
-        timestamp=datetime.now(timezone.utc),
-        h4_candle_time=h4_candle_time,
-        bb_upper=bb_upper_val,
-        bb_middle=bb_middle_val,
-        bb_lower=bb_lower_val,
-        rsi=rsi_val,
-        adx=adx_val,
-        atr_value=atr_val,
-        action=entry,
-        reason=reason,
-        regime_probability=regime_probability,
+    # Outside trading window
+    if hour not in (23, 0, 1):
+        return _base_signal("none", "outside_window")
+
+    # Range must be locked
+    if not session_state.locked:
+        return _base_signal("none", "range_not_locked", "range_not_locked")
+
+    # Already traded this session
+    if session_state.traded:
+        return _base_signal("none", "already_traded_this_session", "already_traded_this_session")
+
+    # H4 ADX regime filter
+    if adx_val >= config.adx_max_threshold:
+        reason = f"adx_trending adx={adx_val:.1f} threshold={config.adx_max_threshold}"
+        logger.info("%s | action=none reason=%s", symbol, reason)
+        return _base_signal("none", reason, "adx_trending")
+
+    range_high = session_state.range_high
+    range_low = session_state.range_low
+    sl_dist = atr_val * config.sl_atr_mult
+    mid = (range_high + range_low) / 2.0
+
+    # BUY: price at/below session low AND RSI oversold
+    if curr_close <= range_low and rsi_val < config.rsi_oversold:
+        sl = curr_close - sl_dist
+        tp = mid
+        session_state.traded = True
+        reason = f"asian_scalper_buy range_low={range_low:.5f} rsi={rsi_val:.1f} adx={adx_val:.1f}"
+        logger.info(
+            "%s | action=buy entry=%.5f sl=%.5f tp=%.5f rsi=%.1f adx=%.1f",
+            symbol,
+            curr_close,
+            sl,
+            tp,
+            rsi_val,
+            adx_val,
+        )
+        sig = _base_signal("buy", reason)
+        sig.sl = sl
+        sig.tp = tp
+        return sig
+
+    # SELL: price at/above session high AND RSI overbought
+    if curr_close >= range_high and rsi_val > config.rsi_overbought:
+        sl = curr_close + sl_dist
+        tp = mid
+        session_state.traded = True
+        reason = (
+            f"asian_scalper_sell range_high={range_high:.5f} rsi={rsi_val:.1f} adx={adx_val:.1f}"
+        )
+        logger.info(
+            "%s | action=sell entry=%.5f sl=%.5f tp=%.5f rsi=%.1f adx=%.1f",
+            symbol,
+            curr_close,
+            sl,
+            tp,
+            rsi_val,
+            adx_val,
+        )
+        sig = _base_signal("sell", reason)
+        sig.sl = sl
+        sig.tp = tp
+        return sig
+
+    # No entry condition met
+    return _base_signal(
+        "none",
+        f"no_entry_condition close={curr_close:.5f} range=[{range_low:.5f},{range_high:.5f}]"
+        f" rsi={rsi_val:.1f}",
     )
