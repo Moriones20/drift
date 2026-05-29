@@ -42,13 +42,14 @@ CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pair TEXT NOT NULL,
     analyzed_at TEXT NOT NULL,
+    m15_candle_time TEXT NOT NULL,
     h4_candle_time TEXT NOT NULL,
-    bb_upper REAL,
-    bb_middle REAL,
-    bb_lower REAL,
+    range_high REAL,
+    range_low REAL,
+    range_atr_ratio REAL,
     rsi REAL,
-    adx REAL,
     atr_value REAL,
+    h4_adx REAL,
     decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
     reason TEXT NOT NULL,
     trade_id INTEGER REFERENCES trades(id)
@@ -94,10 +95,13 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 
 def _migrate_signals_table(conn: sqlite3.Connection) -> None:
-    """Migrate signals table to the current mean-reversion schema.
+    """Migrate signals table through successive schema versions.
 
-    v1 → v2: macd_value column existed  → renamed to signals_v1
-    v2 → v3: ema_20/ema_gap_pct existed → renamed to signals_v2
+    v1 → v2: macd_value column existed        → renamed to signals_v1
+    v2 → v3: ema_20/ema_gap_pct existed       → renamed to signals_v2
+    v3 → v4: bb_upper existed (mean-reversion) → renamed to signals_v3
+             Asian Session Scalper schema created (m15_candle_time, range_high,
+             range_low, range_atr_ratio, h4_adx; bb_upper/bb_middle/bb_lower/adx removed)
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
 
@@ -162,13 +166,52 @@ def _migrate_signals_table(conn: sqlite3.Connection) -> None:
         )
         conn.commit()
         logger.info("v2→v3 migration complete — old data preserved in signals_v2")
+        # Refresh cols for v3→v4 check
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+
+    # v3 migration: mean-reversion (BB+RSI) schema → Asian Session Scalper schema
+    if "bb_upper" in cols or ("m15_candle_time" not in cols and "h4_adx" not in cols):
+        # Guard: if signals_v3 already exists, we already ran this migration once.
+        already_done = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='signals_v3'"
+        ).fetchone()
+        if already_done is not None:
+            logger.debug("v3→v4 migration already applied — skipping")
+            return
+        logger.info("Migrating signals table v3→v4: renaming to signals_v3")
+        conn.execute("ALTER TABLE signals RENAME TO signals_v3")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                m15_candle_time TEXT NOT NULL,
+                h4_candle_time TEXT NOT NULL,
+                range_high REAL,
+                range_low REAL,
+                range_atr_ratio REAL,
+                rsi REAL,
+                atr_value REAL,
+                h4_adx REAL,
+                decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
+                reason TEXT NOT NULL,
+                trade_id INTEGER REFERENCES trades(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_signals_pair ON signals(pair);
+            CREATE INDEX IF NOT EXISTS idx_signals_analyzed ON signals(analyzed_at);
+            CREATE INDEX IF NOT EXISTS idx_signals_decision ON signals(decision);
+            """
+        )
+        conn.commit()
+        logger.info("v3→v4 migration complete — old data preserved in signals_v3")
 
 
 def init_db(db_path: str | Path | None = None) -> None:
     """Create tables and indexes if they don't exist.
 
     Creates the parent directory for the database file if needed.
-    Migrates the signals table from MACD schema to new indicator schema if needed.
+    Migrates the signals table through v1→v2→v3→v4 if an older schema is detected.
     """
     path = _resolve_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -344,27 +387,29 @@ def log_signal(
         reason = signal.reason
 
     analyzed_at = signal.timestamp.isoformat()
+    m15_candle_time = signal.m15_candle_time.isoformat()
     h4_candle_time = signal.h4_candle_time.isoformat()
 
     cursor = conn.execute(
         """
         INSERT INTO signals (
-            pair, analyzed_at, h4_candle_time,
-            bb_upper, bb_middle, bb_lower,
-            rsi, adx, atr_value,
+            pair, analyzed_at, m15_candle_time, h4_candle_time,
+            range_high, range_low, range_atr_ratio,
+            rsi, atr_value, h4_adx,
             decision, reason, trade_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             signal.pair,
             analyzed_at,
+            m15_candle_time,
             h4_candle_time,
-            signal.bb_upper,
-            signal.bb_middle,
-            signal.bb_lower,
+            signal.range_high,
+            signal.range_low,
+            signal.range_atr_ratio,
             signal.rsi,
-            signal.adx,
             signal.atr_value,
+            signal.h4_adx,
             decision,
             reason,
             trade_id,
