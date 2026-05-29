@@ -212,7 +212,7 @@ Thread Telegram (daemon):
 | Componente | Archivo | Responsabilidad |
 |---|---|---|
 | MT5 Client | `drift/mt5_client.py` | Conexión, datos de mercado, estado de cuenta |
-| Indicators | `drift/indicators.py` | Cálculo de RSI, ATR (M15), ADX (H4) |
+| Indicators | `drift/indicators.py` | Cálculo de RSI(14) y ATR(14) en M15, ADX(14) en H4 |
 | Strategy | `drift/strategy.py` | Asian Session Scalper: SessionState, evaluate_pair(), time stop |
 | Risk Manager | `drift/risk.py` | Position sizing, límites de trades, drawdown |
 | Executor | `drift/executor.py` | Abrir/cerrar trades, configurar SL/TP |
@@ -251,12 +251,10 @@ drift/
 │   ├── test_risk.py
 │   └── test_db.py
 ├── backtest/
-│   ├── asian_engine.py                  # Asian Session Scalper (fuente de verdad)
+│   ├── asian_engine.py                  # Asian Session Scalper (fuente de verdad del backtest)
 │   ├── run_asian.py                     # Runner del backtest asiático
 │   ├── optimize_asian.py                # Optimización de parámetros
-│   ├── engine_meanrev_legacy.py         # Mean reversion legacy (solo referencia histórica)
-│   ├── run_all_meanrev_legacy.py        # Runner legacy del mean reversion
-│   └── results_asian_opt/              # Resultados de optimización
+│   └── results_asian_opt/              # Resultados de optimización (parámetros D029)
 ├── docs/
 │   ├── DECISIONS.md
 │   ├── ARCHITECTURE.md
@@ -291,7 +289,7 @@ CREATE TABLE trades (
     balance_at_close REAL,
     opened_at TEXT NOT NULL,
     closed_at TEXT,
-    close_reason TEXT CHECK(close_reason IN ('trailing_stop', 'take_profit', 'stop_loss', 'manual', 'drawdown_pause')),
+    close_reason TEXT CHECK(close_reason IN ('trailing_stop', 'take_profit', 'stop_loss', 'manual', 'drawdown_pause', 'session_close')),
     duration_minutes INTEGER,
     mt5_ticket INTEGER
 );

@@ -42,7 +42,7 @@ Muestra los ultimos 5 trades cerrados.
 - Par y direccion.
 - Precio de entrada y salida.
 - P&L realizado.
-- Motivo de cierre: `stop_loss`, `take_profit`, `trailing_stop`, `friday_close`, o manual via `/stop`.
+- Motivo de cierre: `stop_loss`, `take_profit`, `session_close` (cierre forzado 02:00 UTC), `manual` (cerrado via `/stop`), o `drawdown_pause`.
 - Duracion del trade.
 - Hora de cierre.
 
@@ -70,7 +70,7 @@ Pausa el bot: deja de buscar nuevas señales y no abre nuevos trades.
 
 **Comportamiento:**
 - Los trades abiertos se mantienen con sus stop loss y take profit activos.
-- El hilo de monitoreo sigue corriendo: se actualizan trailing stops y se detectan cierres por SL/TP.
+- El hilo de monitoreo sigue corriendo: se detectan cierres por SL/TP y se verifica el drawdown.
 - El bot responde a comandos de Telegram normalmente.
 - Si el bot ya esta pausado, informa que ya lo esta.
 
@@ -85,7 +85,7 @@ Para reanudar, usar `/resume`.
 Reanuda el bot despues de una pausa.
 
 **Comportamiento:**
-- El bot vuelve a analizar señales en el siguiente cierre de vela H4.
+- El bot vuelve a analizar señales en el siguiente cierre de vela M15 dentro de la ventana activa (23:00-01:59 UTC).
 - Funciona tanto para pausas manuales (via `/pause`) como para pausas automaticas por drawdown.
 - Si el bot no esta pausado, informa que ya esta corriendo.
 
@@ -136,4 +136,4 @@ Ademas de los comandos, el bot envia notificaciones de forma automatica en los s
 | Error en el loop | Si ocurre un error inesperado en el loop principal, el bot se pausa y notifica para que se investigue. |
 | Reconexion a MT5 | Si se pierde y se recupera la conexion con MT5. |
 | Cierre del bot | Confirma que el bot se apago correctamente. |
-| Reporte semanal | Enviado automaticamente el lunes a la 01:00 UTC (domingo 8pm UTC-5), con el mismo contenido que `/report`. |
+| Reporte semanal | Enviado automaticamente segun la config (`reports.weekly_report_day` / `weekly_report_hour` / `timezone`). Con los valores por defecto: domingo a las 20:00 UTC-5 (lunes 01:00 UTC). Mismo contenido que `/report`. |

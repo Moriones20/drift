@@ -20,15 +20,10 @@ Credenciales para conectarse a MetaTrader 5. Los tres campos son **obligatorios*
 
 Parametros de los indicadores tecnicos. Todos tienen valores por defecto y no es necesario modificarlos para el uso normal.
 
-### Parametros generales
+### Parametros de filtro
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `timeframe_trend` | string | `"D1"` | Timeframe para el filtro de tendencia. Solo se admiten valores validos de MT5: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN1`. |
-| `timeframe_entry` | string | `"H4"` | Timeframe base para señales de entrada. |
-| `atr_period` | entero | `14` | Periodo del ATR generico. |
-| `rsi_period` | entero | `14` | Periodo del RSI generico. |
-| `adx_period` | entero | `14` | Periodo del ADX generico. |
 | `adx_max_threshold` | decimal | `35.0` | Umbral maximo del ADX H4 para considerar que el mercado esta en rango. Si el ADX H4 supera este valor, se bloquean las entradas (mercado con tendencia fuerte, no apto para scalper de rango). |
 | `rsi_oversold` | decimal | `35.0` | Nivel de RSI por debajo del cual se considera que el precio esta sobrevendido. Las entradas de compra requieren RSI < este valor. |
 | `rsi_overbought` | decimal | `65.0` | Nivel de RSI por encima del cual se considera que el precio esta sobrecomprado. Las entradas de venta requieren RSI > este valor. |
@@ -73,8 +68,6 @@ Parametros de gestion de riesgo. Son los mas importantes para proteger el capita
 | `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente en todos los pares. |
 | `max_same_currency_direction` | entero | `2` | — | Maximo de trades en la misma direccion para una misma divisa base o cotizada. Limita la exposicion correlacionada. |
 | `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | Si el drawdown desde el pico de balance supera este porcentaje, el bot se pausa automaticamente y notifica por Telegram. Requiere `/resume` manual para reactivar. |
-| `trailing_stop_atr_multiplier` | decimal | `1.5` | — | Multiplicador del ATR para calcular la distancia del stop loss inicial. Con ATR de 0.0010 y multiplicador 1.5, el SL queda a 0.0015 del precio de entrada. |
-| `take_profit_ratio` | decimal | `3.0` | — | Ratio riesgo/beneficio. Con `3.0`, el take profit se coloca a una distancia triple del stop loss (ratio 1:3). |
 
 ---
 
@@ -84,11 +77,10 @@ Lista de pares de divisas a monitorear. Debe contener al menos un par.
 
 ```yaml
 pairs:
-  - EURUSD
-  - GBPUSD
-  - USDJPY
-  - AUDUSD
-  - USDCAD
+  - AUDNZD
+  - EURCHF
+  - EURJPY
+  - GBPJPY
   - EURGBP
 ```
 
@@ -116,9 +108,9 @@ Configuracion de la zona horaria y el reporte semanal automatico.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `timezone` | string | `"UTC-5"` | Zona horaria para mostrar horas en los reportes. Solo afecta la presentacion — internamente todo se maneja en UTC. |
-| `weekly_report_day` | string | `"sunday"` | Dia de la semana del reporte automatico (en ingles, minusculas). Solo referencial: el reporte se envia el lunes a la 01:00 UTC, que equivale al domingo a las 8pm UTC-5. |
-| `weekly_report_hour` | entero | `20` | Hora del reporte en la zona horaria configurada. Solo referencial: ver nota arriba. |
+| `timezone` | string | `"UTC-5"` | Zona horaria para mostrar horas en los reportes y para interpretar `weekly_report_hour`. Solo afecta la presentacion — internamente todo se maneja en UTC. |
+| `weekly_report_day` | string | `"sunday"` | Dia de la semana del reporte automatico (en ingles, minusculas). Con los valores por defecto (`sunday` / `20` / `UTC-5`), el disparo ocurre el domingo a las 20:00 UTC-5, que equivale al lunes a la 01:00 UTC. |
+| `weekly_report_hour` | entero | `20` | Hora del reporte en la zona horaria configurada (`timezone`). Cambiar este valor mueve el disparo proporcionalmente. |
 
 ---
 
@@ -128,7 +120,6 @@ Parametros internos del bot. No es necesario modificarlos salvo casos especifico
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `loop_check_interval_seconds` | entero | `30` | Intervalo en segundos del hilo de monitoreo. Controla con que frecuencia se actualizan los trailing stops, se verifican trades cerrados y se chequea el drawdown. |
+| `loop_check_interval_seconds` | entero | `30` | Intervalo en segundos del hilo de monitoreo. Controla con que frecuencia se verifican trades cerrados y se chequea el drawdown. |
 | `mt5_reconnect_interval_seconds` | entero | `300` | Intervalo minimo entre intentos de reconexion a MT5 si se pierde la conexion. |
 | `magic_number` | entero | `234000` | Numero magico que identifica las ordenes de Drift en MT5. Permite que el bot distinga sus propias posiciones de otras que pueda haber en la cuenta. No modificar salvo que haya conflicto con otro EA. |
-| `friday_close_hour_utc` | entero | `20` | Hora UTC del viernes a partir de la cual se cierran automaticamente los trades con perdida y los trades abiertos en las ultimas 4 horas. Evita mantener posiciones durante el fin de semana con riesgo de gap. `20` equivale a las 3pm UTC-5. |
