@@ -81,15 +81,15 @@ Al arrancar, Drift ejecuta la siguiente secuencia:
 3. **Conecta con MT5** usando las credenciales del broker. Si falla, el bot se detiene con un error.
 4. **Valida los pares configurados** — avisa en el log si algun par no esta disponible en MT5.
 5. **Inicia el bot de Telegram** y empieza a escuchar comandos.
-6. **Inicia el hilo de monitoreo** (cada 30 segundos por defecto) para actualizar trailing stops y detectar trades cerrados.
+6. **Inicia el hilo de monitoreo** (cada 30 segundos por defecto) para detectar trades cerrados y verificar drawdown.
 7. **Envia notificacion de inicio** a Telegram con el balance actual.
-8. **Espera el siguiente cierre de vela H4** — los cierres ocurren a las 00:00, 04:00, 08:00, 12:00, 16:00 y 20:00 UTC.
+8. **Espera el proximo inicio de sesion asiatica (21:00 UTC)** — el bot duerme hasta las 21:00 GMT de la proxima sesion valida (lunes a jueves). Los viernes no se opera.
 
 El mensaje de inicio en Telegram confirma que todo funciona correctamente.
 
 ### Verificar que funciona
 
-- El log en consola debe mostrar `Drift bot running — waiting for first H4 candle close`.
+- El log en consola debe mostrar `Drift bot running — waiting for next session start (21:00 UTC)`.
 - En Telegram debes recibir el mensaje de inicio con el balance de la cuenta.
 - El comando `/status` en Telegram debe responder con el estado del bot y la conexion MT5.
 

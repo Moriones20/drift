@@ -2,7 +2,7 @@
 
 ## Vision
 
-Bot de forex trend following que opera autónomamente en MT5 con ICMarkets, gestionando riesgo de forma estricta para generar retornos consistentes con mínima intervención.
+Bot de forex autónomo que opera en MT5 con ICMarkets usando la estrategia Asian Session Scalper (mean reversion durante la sesión asiática), gestionando riesgo de forma estricta para generar retornos consistentes con mínima intervención.
 
 **Audiencia:** Uso personal — trader retail con $500 de capital inicial operando desde Colombia.
 
@@ -27,19 +27,25 @@ Bot de forex trend following que opera autónomamente en MT5 con ICMarkets, gest
 
 ## Arquitectura
 
-### Estrategia: Trend Following
+### Estrategia: Asian Session Scalper (mean reversion durante sesión asiática)
 
-- **Filtro de tendencia (D1):** Cruce de EMA 50/200. Precio arriba de ambas EMAs con cruce alcista = solo compras. Inverso = solo ventas.
-- **Señal de entrada (H4):** MACD (12, 26, 9). Histograma cruzando de negativo a positivo (compra) o positivo a negativo (venta), alineado con la dirección D1.
-- **Stop Loss:** 1.5x ATR(14) del H4.
-- **Take Profit:** Dual — trailing stop + ratio fijo 1:2. El que se active primero cierra el trade.
+Ver `docs/knowledge/asian-session-scalper.md` para las reglas completas y `docs/DECISIONS.md` (D029) para el historial de iteraciones que llevaron a esta estrategia.
+
+- **Ventana operativa:** 21:00-02:00 GMT. Se salta el viernes completamente.
+- **Definición de rango (21:00-23:00):** Se registran los high/low de cada vela M15 durante las primeras 2 horas.
+- **Filtro de régimen:** ADX(14) en H4 debe estar por debajo de 35. Si el mercado va en tendencia, no se opera.
+- **Señal de entrada (23:00-01:59):** BUY si precio toca el piso del rango y RSI M15 < 35. SELL si toca el techo y RSI M15 > 65.
+- **Stop Loss:** 2.5x ATR(14) M15.
+- **Take Profit:** Precio cruza el midpoint del rango (mean reversion al centro).
+- **Time stop:** Si a las 02:00 GMT el trade sigue abierto, se cierra.
+- **Sin trailing stop** (use_trailing_stop: false).
 - **Position sizing:** Dinámico — 1% del balance actual por trade.
 
-### Pares iniciales
+### Pares activos
 
-EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, EURGBP
+AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP
 
-Estos se ajustarán durante la fase de demo según rendimiento observado.
+USDJPY descartado: Tokyo opera activamente USDJPY desde las 23:00 GMT, rompiendo la hipótesis de mercado tranquilo. Con parámetros universales da PF 0.75 (perdedor). Ver D029.
 
 ### Gestión de riesgo
 
@@ -52,14 +58,13 @@ Estos se ajustarán durante la fase de demo según rendimiento observado.
 
 ### Fin de semana
 
-- Antes del cierre del viernes: cerrar trades en pérdida o recién abiertos
-- Mantener abiertos solo trades en ganancia (protegidos por trailing stop)
-- Motivo: gaps de fin de semana pueden superar el stop loss
+- El viernes no se abre sesión asiática (skip-Friday rule en el scheduler).
+- No quedan trades abiertos al entrar el fin de semana por diseño (el time stop los cierra a las 02:00 GMT).
 
 ### Operación
 
-- Horario: 24/5 (lunes a viernes)
-- Ciclo: analiza los 6 pares cada vez que cierra una vela H4 (6 veces al día)
+- Horario efectivo: lunes-jueves 21:00-02:00 GMT (≈5 horas/noche)
+- Ciclo: analiza los 5 pares en cada cierre de vela M15 dentro de la ventana
 - Infraestructura: PC personal durante demo, VPS Windows para live
 - Zona horaria interna: UTC. Presentación al usuario: UTC-5 (Colombia)
 

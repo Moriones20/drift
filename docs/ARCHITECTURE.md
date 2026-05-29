@@ -6,10 +6,9 @@
 ┌─────────────────────────────────────────────────────┐
 │                   MT5 Terminal                       │
 │              (ICMarkets Raw Spread)                  │
-│         Pares: EURUSD GBPUSD USDJPY                 │
-│                AUDUSD USDCAD EURGBP                 │
+│   Pares: AUDNZD EURCHF EURJPY GBPJPY EURGBP        │
 └────────┬────────────────────────┬────────────────────┘
-         │ market data            │ order execution
+         │ market data (M15 + H4) │ order execution
          ▼                        ▲
 ┌────────────────┐        ┌───────────────┐
 │  mt5_client.py │        │ executor.py   │
@@ -18,54 +17,74 @@
 │ • disconnect() │        │ • close_trade()│
 │ • get_candles()│        │ • modify_sl() │
 │ • get_balance()│        │ • get_open()  │
-│ • health_check│        │               │
+│ • health_check │        │               │
 └───────┬────────┘        └───────▲───────┘
         │                         │
         ▼                         │
 ┌────────────────┐        ┌───────┴───────┐
 │ indicators.py  │        │  risk.py      │
 │                │        │               │
-│ • ema(50,200)  │        │ • position_   │
-│ • macd(12,26,9)│        │   size()      │
-│ • atr(14)      │        │ • check_max   │
+│ • rsi(14) M15  │        │ • position_   │
+│ • atr(14) M15  │        │   size()      │
+│ • adx(14) H4   │        │ • check_max   │
 │                │        │   _trades()   │
 └───────┬────────┘        │ • check_      │
         │                 │   drawdown()  │
         ▼                 └───────▲───────┘
-┌────────────────┐                │
-│ strategy.py    │────────────────┘
-│                │
-│ • analyze_pair()  → señal compra/venta/nada
-│ • check_d1_trend()→ filtro EMA 50/200
-│ • check_h4_entry()→ señal MACD
-└───────┬────────┘
+┌────────────────────────┐        │
+│ strategy.py            │────────┘
+│                        │
+│ • evaluate_pair()      → Signal (buy/sell/none)
+│ • update_session_state()→ SessionState per pair
+│ • should_close_on_time()→ true at 02:00 GMT
+│ • check_tp_hit()       → TP at range midpoint
+│                        │
+│ SessionState (per pair):│
+│   session_date, high,  │
+│   low, locked,         │
+│   range_high/low,      │
+│   traded               │
+└───────┬────────────────┘
         │
         ▼
 ┌────────────────┐        ┌───────────────┐
 │ trailing.py    │        │    db.py       │
-│                │        │               │
-│ • update_      │        │ • log_trade() │
-│   trailing()   │        │ • log_signal()│
-│ • check_tp()   │        │ • log_event() │
+│ (no-op —       │        │               │
+│  trailing       │        │ • log_trade() │
+│  disabled)      │        │ • log_signal()│
+│                │        │ • log_event() │
 │                │        │ • get_stats() │
 └────────────────┘        └───────▲───────┘
                                   │
 ┌─────────────────────────────────┤
-│         main.py (Loop)          │
+│         main.py (Scheduler)     │
 │                                 │
-│ • Cada cierre de vela H4:       │
-│   1. Obtener datos D1/H4        │
-│   2. Calcular indicadores       │
-│   3. Evaluar estrategia         │
-│   4. Verificar riesgo           │
-│   5. Ejecutar si hay señal      │
-│   6. Loggear decisión           │
-│   7. Notificar si corresponde   │
+│ 4-state machine (UTC):          │
+│  A — Outside (02:00-20:59):     │
+│      Long sleep until 21:00.    │
+│      Stop-aware (10s slices).   │
+│      Skip Friday entirely.      │
 │                                 │
-│ • Continuo:                     │
-│   8. Monitorear trailing stops  │
-│   9. Verificar drawdown         │
-│  10. Health check MT5           │
+│  B — Define range (21:00-22:59):│
+│      Each M15 close: fetch M15  │
+│      + H4, update SessionState  │
+│      high/low. No entries.      │
+│                                 │
+│  C — Trading (23:00-01:59):     │
+│      Each M15 close: full       │
+│      _analyse_pair_m15() eval.  │
+│      Max 1 trade/pair/session.  │
+│                                 │
+│  D — Session close (02:00):     │
+│      Close any open session     │
+│      trades, reset SessionState,│
+│      transition to A.           │
+│                                 │
+│ • Continuo (daemon thread):     │
+│   MT5 health + reconnect        │
+│   Balance / peak / drawdown     │
+│   Detect closed trades          │
+│   Weekly report check           │
 └─────────────┬───────────────────┘
               │
               ▼
@@ -74,6 +93,7 @@
 │                                 │
 │ Notificaciones automáticas:     │
 │ • Trade abierto/cerrado         │
+│ • Sesión iniciada/cerrada       │
 │ • Bot inicio/pausa/stop         │
 │ • Errores                       │
 │ • Reporte semanal (dom 8pm)     │
@@ -85,56 +105,50 @@
 └─────────────────────────────────┘
 ```
 
-## Data Flow — Ciclo de análisis (cada 4 horas)
+## Data Flow — Ciclo de análisis (cada M15 dentro de ventana 21:00-02:00 UTC)
 
 ```
-Cierre vela H4
+Cierre vela M15 (dentro de ventana activa)
       │
       ▼
 Para cada par en config.pairs:
+  _analyse_pair_m15(pair, session_state)
       │
-      ├─→ Obtener últimas 250 velas D1
+      ├─→ Obtener últimas ~100 velas M15 + ~30 velas H4
+      │
+      ├─→ Actualizar SessionState
       │     │
       │     ▼
-      │   Calcular EMA 50 y EMA 200
+      │   update_session_state(state, bar_time, bar_high, bar_low, atr)
+      │   • Estado B (21:00-22:59): acumular high/low del rango. Sin entradas.
+      │   • Estado C (23:00-01:59): rango ya lockeado — evaluar señales.
+      │
+      ├─→ [solo en Estado C] Evaluar señal
       │     │
       │     ▼
-      │   ¿EMA 50 > EMA 200? ──No──→ ¿EMA 50 < EMA 200? ──No──→ Sin tendencia → LOGGEAR → siguiente par
-      │     │Sí                         │Sí
-      │     ▼                           ▼
-      │   Tendencia ALCISTA           Tendencia BAJISTA
-      │     │                           │
-      │     └─────────┬─────────────────┘
-      │               │
-      │               ▼
-      │   Obtener últimas 100 velas H4
-      │     │
-      │     ▼
-      │   Calcular MACD (12, 26, 9)
-      │     │
-      │     ▼
-      │   ¿Histograma MACD confirma dirección? ──No──→ LOGGEAR señal rechazada → siguiente par
+      │   ¿Rango válido? (1.0x-4.0x ATR) ──No──→ LOGGEAR "range invalid" → siguiente par
       │     │Sí
       │     ▼
-      │   Calcular ATR(14)
-      │     │
-      │     ▼
-      │   ¿Trades abiertos < 4? ──No──→ LOGGEAR "max trades" → siguiente par
+      │   ¿ADX H4 < 35.0? ──No──→ LOGGEAR "adx filter" → siguiente par
       │     │Sí
       │     ▼
-      │   ¿Correlación OK? (max 2 trades misma dirección por moneda) ──No──→ LOGGEAR "correlación" → siguiente par
+      │   ¿Precio toca extremo del rango?
+      │     ├─ BUY: precio <= range_low AND RSI M15 < 35.0
+      │     └─ SELL: precio >= range_high AND RSI M15 > 65.0
+      │     │
+      │     ▼ (si hay señal)
+      │   ¿traded == False? ──No──→ LOGGEAR "already traded" → siguiente par
       │     │Sí
       │     ▼
       │   ¿Drawdown < 10%? ──No──→ PAUSAR bot → NOTIFICAR → detener
       │     │Sí
       │     ▼
-      │   Calcular position size (1% del balance, incluyendo comisión)
-      │     │
-      │     ▼
-      │   Calcular SL (1.5x ATR) y TP (2x SL)
+      │   Calcular position size (1% del balance)
+      │   SL = 2.5x ATR(14), TP = range midpoint
       │     │
       │     ▼
       │   Abrir trade en MT5
+      │   state.traded = True
       │     │
       │     ▼
       │   LOGGEAR señal aceptada + trade
@@ -142,31 +156,32 @@ Para cada par en config.pairs:
       │     ▼
       │   NOTIFICAR por Telegram
       │
+      ├─→ [Estado D — 02:00 UTC] Cerrar trades de sesión abiertos → reset SessionState
+      │
       └─→ siguiente par
 ```
 
 ## Data Flow — Monitoreo continuo
 
 ```
-Cada 30 segundos:
-      │
-      ├─→ Para cada trade abierto:
-      │     │
-      │     ├─→ ¿Precio alcanzó TP (1:2)? ──Sí──→ Cerrar → Loggear → Notificar
-      │     │
-      │     ├─→ Actualizar trailing stop si el precio avanzó a favor
-      │     │
-      │     └─→ ¿SL alcanzado? (MT5 lo cierra automáticamente) → Detectar cierre → Loggear → Notificar
-      │
-      ├─→ Calcular drawdown actual
-      │     │
-      │     └─→ ¿> 10%? ──Sí──→ Pausar → Notificar
+Cada 30 segundos (thread daemon):
       │
       ├─→ Health check MT5
       │     │
       │     └─→ ¿Desconectado? ──Sí──→ Reintentar cada 5 min → Notificar si falla
       │
-      └─→ ¿Viernes >= 20:00 UTC? ──Sí──→ Cerrar trades en pérdida → Loggear → Notificar
+      ├─→ Calcular drawdown actual
+      │     │
+      │     └─→ ¿> 10%? ──Sí──→ Pausar → Notificar
+      │
+      ├─→ Detectar trades cerrados por MT5 (SL hit, TP hit)
+      │     └─→ Loggear → Notificar
+      │
+      └─→ ¿Domingo 8pm UTC-5? ──Sí──→ Generar y enviar reporte semanal
+
+Nota: trailing stop desactivado (use_trailing_stop: false).
+      Cierre por tiempo (02:00 UTC) lo maneja el scheduler principal, no este thread.
+      Viernes no se opera (skip-Friday rule en el scheduler).
 ```
 
 ## Main Loop — Arquitectura de threads
@@ -174,16 +189,18 @@ Cada 30 segundos:
 ```
 Thread principal (main.py):
       │
-      ├─→ Calcular próximo cierre H4 (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC)
-      │   Esperar con sleep hasta cierre + 5 segundos (asegurar datos disponibles)
-      │   Ejecutar ciclo de análisis para los 6 pares
+      ├─→ 4-state scheduler (ver diagrama System Diagram):
+      │   • Estado A: sleep hasta 21:00 UTC (stop-aware, slices de 10s)
+      │   • Estado B/C: esperar próximo cierre M15, analizar 5 pares
+      │   • Estado D: cerrar sesión a las 02:00 UTC, reset SessionState
+      │   Salta viernes completamente (skip-Friday rule)
       │
       └─→ Thread secundario (daemon):
           Loop cada 30 segundos:
-          - Trailing stop updates
-          - Drawdown check
-          - MT5 health check
-          - Friday close check
+          - MT5 health + reconnect
+          - Balance / peak / drawdown
+          - Detect closed trades
+          - Weekly report check
 
 Thread Telegram (daemon):
       Corre python-telegram-bot polling en thread separado
@@ -195,8 +212,8 @@ Thread Telegram (daemon):
 | Componente | Archivo | Responsabilidad |
 |---|---|---|
 | MT5 Client | `drift/mt5_client.py` | Conexión, datos de mercado, estado de cuenta |
-| Indicators | `drift/indicators.py` | Cálculo de EMA, MACD, ATR |
-| Strategy | `drift/strategy.py` | Lógica de decisión: ¿comprar, vender, o nada? |
+| Indicators | `drift/indicators.py` | Cálculo de RSI, ATR (M15), ADX (H4) |
+| Strategy | `drift/strategy.py` | Asian Session Scalper: SessionState, evaluate_pair(), time stop |
 | Risk Manager | `drift/risk.py` | Position sizing, límites de trades, drawdown |
 | Executor | `drift/executor.py` | Abrir/cerrar trades, configurar SL/TP |
 | Trailing Stop | `drift/trailing.py` | Monitorear y actualizar stops de trades abiertos |
@@ -209,19 +226,19 @@ Thread Telegram (daemon):
 
 ```
 drift/
-├── main.py                  # Entry point y loop principal
+├── main.py                  # Entry point y loop principal (M15 scheduler)
 ├── config.yaml              # Configuración (no versionada con credenciales)
 ├── config.example.yaml      # Ejemplo de configuración (versionado)
 ├── requirements.txt         # Dependencias Python
 ├── drift/
 │   ├── __init__.py
 │   ├── config.py            # Carga y validación de config
-│   ├── mt5_client.py        # Conexión y datos de MT5
-│   ├── indicators.py        # Cálculos técnicos (EMA, MACD, ATR)
-│   ├── strategy.py          # Lógica de trend following
+│   ├── mt5_client.py        # Conexión y datos de MT5 (M15 + H4)
+│   ├── indicators.py        # Cálculos técnicos (RSI, ATR, ADX)
+│   ├── strategy.py          # Asian Session Scalper (SessionState, evaluate_pair)
 │   ├── risk.py              # Position sizing y gestión de riesgo
 │   ├── executor.py          # Ejecución de trades en MT5
-│   ├── trailing.py          # Trailing stop manager
+│   ├── trailing.py          # Trailing stop manager (desactivado en estrategia actual)
 │   ├── db.py                # SQLite database layer
 │   └── telegram_bot.py      # Bot de Telegram
 ├── data/
@@ -234,14 +251,19 @@ drift/
 │   ├── test_risk.py
 │   └── test_db.py
 ├── backtest/
-│   ├── run_backtest.py      # Script de backtesting
-│   └── results/             # Resultados de backtests
+│   ├── asian_engine.py                  # Asian Session Scalper (fuente de verdad)
+│   ├── run_asian.py                     # Runner del backtest asiático
+│   ├── optimize_asian.py                # Optimización de parámetros
+│   ├── engine_meanrev_legacy.py         # Mean reversion legacy (solo referencia histórica)
+│   ├── run_all_meanrev_legacy.py        # Runner legacy del mean reversion
+│   └── results_asian_opt/              # Resultados de optimización
 ├── docs/
 │   ├── DECISIONS.md
 │   ├── ARCHITECTURE.md
 │   ├── knowledge/
 │   │   ├── mt5-python-api.md
 │   │   ├── telegram-bot-setup.md
+│   │   ├── asian-session-scalper.md    # Estrategia activa — reglas y parámetros
 │   │   └── trend-following-indicators.md
 │   └── user/
 │       ├── getting-started.md
@@ -278,14 +300,14 @@ CREATE TABLE signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pair TEXT NOT NULL,
     analyzed_at TEXT NOT NULL,
-    h4_candle_time TEXT NOT NULL,
-    ema_50 REAL,
-    ema_200 REAL,
-    trend_direction TEXT CHECK(trend_direction IN ('bullish', 'bearish', 'none')),
-    macd_value REAL,
-    macd_signal REAL,
-    macd_histogram REAL,
-    atr_value REAL,
+    m15_candle_time TEXT NOT NULL,
+    range_high REAL,
+    range_low REAL,
+    range_atr_ratio REAL,
+    m15_rsi REAL,
+    m15_atr REAL,
+    h4_adx REAL,
+    session_traded_count INTEGER,
     decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
     reason TEXT NOT NULL,
     trade_id INTEGER REFERENCES trades(id)

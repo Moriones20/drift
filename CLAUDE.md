@@ -1,6 +1,6 @@
 # Drift
 
-Bot de forex trend following autónomo. Opera en MetaTrader 5 con ICMarkets, usando cruce EMA 50/200 (D1) + MACD (H4) para señales, con gestión de riesgo estricta (1% por trade, 10% max drawdown). Notificaciones y control vía Telegram.
+Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion durante la ventana 21:00-02:00 GMT sobre un rango definido en las primeras 2 horas. Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
 
 ## Key Documents
 
@@ -28,13 +28,13 @@ Bot de forex trend following autónomo. Opera en MetaTrader 5 con ICMarkets, usa
 ## Core Architecture
 
 ```
-main.py (loop cada 4h)
+main.py (M15 loop dentro de ventana 21:00-02:00 GMT)
   → mt5_client.py    (datos de mercado)
-  → indicators.py    (EMA, MACD, ATR)
+  → indicators.py    (RSI, ATR, ADX)
   → strategy.py      (¿comprar/vender/nada?)
   → risk.py          (position sizing, límites)
   → executor.py      (abrir/cerrar trades)
-  → trailing.py      (monitoreo continuo de stops)
+  → trailing.py      (no activo — use_trailing_stop: false)
   → db.py            (logging completo)
   → telegram_bot.py  (notificaciones + comandos)
 ```
@@ -42,7 +42,7 @@ main.py (loop cada 4h)
 ## Design Priorities
 
 1. **Supervivencia** — riesgo 1% por trade, max 4 simultáneos, 10% drawdown = pausa
-2. **Simplicidad** — 3 indicadores (EMA, MACD, ATR), nada más
+2. **Simplicidad** — 3 indicadores (RSI, ATR, ADX) sobre M15 + H4, nada más
 3. **Transparencia** — logging completo de TODAS las señales (aceptadas y rechazadas)
 4. **Autonomía** — 24/5 sin intervención, Telegram para monitoreo
 5. **Cabeza fría** — cambios solo con datos y análisis, nunca por emoción
