@@ -285,11 +285,8 @@ class TestDbAcceptsSessionClose(unittest.TestCase):
 class TestTradesMigration(unittest.TestCase):
     """D030: init_db migrates old friday_close CHECK to session_close, idempotently.
 
-    NOTE — known bug (not fixed here, per instructions): if the old table contains rows
-    with close_reason='friday_close', the migration's INSERT…SELECT triggers an
-    IntegrityError on the new table (which drops 'friday_close' from its CHECK). The
-    migration was designed for a demo/empty DB or rows with other close_reason values.
-    test_migration_friday_close_row_raises documents this behaviour.
+    Rows carrying close_reason='friday_close' are remapped to 'session_close' during
+    the INSERT…SELECT so the migration succeeds regardless of existing data.
     """
 
     def _build_old_schema_db(
@@ -427,13 +424,10 @@ class TestTradesMigration(unittest.TestCase):
         finally:
             Path(db_path).unlink(missing_ok=True)
 
-    def test_migration_friday_close_row_raises(self) -> None:
-        """BUG (documented, not fixed): migration fails when a row carries close_reason=
-        'friday_close' because the INSERT…SELECT violates the new CHECK.
-
-        The migration was designed for a demo/empty DB; rows with the old value would
-        require either NULL-ing the column or mapping to another value, which is out of
-        scope.  This test pins the observed behaviour so any future fix is intentional.
+    def test_migration_remaps_friday_close_to_session_close(self) -> None:
+        """Migration must succeed when a row carries close_reason='friday_close' and
+        remap that value to 'session_close' (its modern equivalent). All other fields
+        must be preserved verbatim and no rows may be lost.
         """
         db_path = self._build_old_schema_db(
             rows=[
@@ -456,8 +450,25 @@ class TestTradesMigration(unittest.TestCase):
             ]
         )
         try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                init_db(db_path)
+            # Must not raise — the CASE expression remaps the value before INSERT.
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute("SELECT * FROM trades").fetchall()
+                self.assertEqual(len(rows), 1, "No rows must be lost during migration")
+                row = rows[0]
+                self.assertEqual(row["close_reason"], "session_close")
+                # Verify all other fields are preserved.
+                self.assertEqual(row["pair"], "EURCHF")
+                self.assertEqual(row["direction"], "buy")
+                self.assertAlmostEqual(row["entry_price"], 0.95)
+                self.assertAlmostEqual(row["exit_price"], 0.962)
+                self.assertAlmostEqual(row["profit_loss"], 60.0)
+                self.assertAlmostEqual(row["balance_at_close"], 5060.0)
+                self.assertEqual(row["duration_minutes"], 300)
+            finally:
+                conn.close()
         finally:
             Path(db_path).unlink(missing_ok=True)
 

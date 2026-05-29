@@ -257,7 +257,10 @@ def _migrate_trades_table(conn: sqlite3.Connection) -> None:
         INSERT INTO trades_new
             SELECT id, pair, direction, entry_price, exit_price, stop_loss, take_profit,
                    position_size, profit_loss, balance_at_open, balance_at_close,
-                   opened_at, closed_at, close_reason, duration_minutes, mt5_ticket
+                   opened_at, closed_at,
+                   CASE WHEN close_reason = 'friday_close' THEN 'session_close'
+                        ELSE close_reason END,
+                   duration_minutes, mt5_ticket
             FROM trades;
 
         DROP TABLE trades;
