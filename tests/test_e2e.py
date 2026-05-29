@@ -11,11 +11,10 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import numpy as np
 import pandas as pd
 
 # Ensure project root is on the path when run directly.
@@ -172,145 +171,6 @@ def _make_config() -> DriftConfig:
     )
 
 
-def _make_bullish_df(base_price: float = 1.08, rows: int = 250, seed: int = 42) -> pd.DataFrame:
-    """Generate a DataFrame with a clear uptrend (EMA50 will cross above EMA200)."""
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range(end="2026-01-01", periods=rows, freq="D")
-
-    # Monotonically rising mid-prices with tiny noise.
-    trend = np.linspace(base_price * 0.90, base_price * 1.10, rows)
-    noise = rng.normal(0, base_price * 0.001, rows)
-    close = trend + noise
-
-    spread = base_price * 0.002
-    high = close + rng.uniform(0, spread, rows)
-    low = close - rng.uniform(0, spread, rows)
-    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
-
-    df = pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": 1000},
-        index=dates,
-    )
-    return df
-
-
-def _make_bearish_df(base_price: float = 1.08, rows: int = 250, seed: int = 7) -> pd.DataFrame:
-    """Generate a DataFrame with a clear downtrend (EMA50 will cross below EMA200)."""
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range(end="2026-01-01", periods=rows, freq="D")
-
-    trend = np.linspace(base_price * 1.10, base_price * 0.90, rows)
-    noise = rng.normal(0, base_price * 0.001, rows)
-    close = trend + noise
-
-    spread = base_price * 0.002
-    high = close + rng.uniform(0, spread, rows)
-    low = close - rng.uniform(0, spread, rows)
-    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
-
-    df = pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": 1000},
-        index=dates,
-    )
-    return df
-
-
-def _make_h4_with_pullback(
-    base_price: float = 1.08, rows: int = 120, bullish: bool = True, seed: int = 1
-) -> pd.DataFrame:
-    """Generate H4 DataFrame with an EMA-20 pullback + RSI hook pattern.
-
-    For bullish: price is in an uptrend, dips to/below EMA-20 and bounces,
-    RSI was in 35-50 zone and is now rising.
-    For bearish: inverse pattern.
-    """
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range(end="2026-01-01", periods=rows, freq="4h")
-
-    if bullish:
-        # Uptrend then pullback in last 5 bars then bounce in last 2 bars
-        mid_prices = np.concatenate(
-            [
-                np.linspace(base_price * 0.97, base_price * 1.02, rows - 7),
-                np.linspace(base_price * 1.02, base_price * 0.995, 5),  # pullback
-                np.linspace(base_price * 0.995, base_price * 1.01, 2),  # bounce
-            ]
-        )
-    else:
-        # Downtrend then pullback up in last 5 bars then reversal in last 2 bars
-        mid_prices = np.concatenate(
-            [
-                np.linspace(base_price * 1.03, base_price * 0.98, rows - 7),
-                np.linspace(base_price * 0.98, base_price * 1.005, 5),  # pullback up
-                np.linspace(base_price * 1.005, base_price * 0.99, 2),  # reversal
-            ]
-        )
-
-    noise = rng.normal(0, base_price * 0.0005, rows)
-    close = mid_prices + noise
-    spread = base_price * 0.001
-    high = close + rng.uniform(0, spread, rows)
-    low = close - rng.uniform(0, spread, rows)
-    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
-
-    df = pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": 500},
-        index=dates,
-    )
-    return df
-
-
-def _make_h4_with_macd_crossover(
-    base_price: float = 1.08, rows: int = 120, bullish: bool = True, seed: int = 1
-) -> pd.DataFrame:
-    """Kept for compatibility — delegates to _make_h4_with_pullback."""
-    return _make_h4_with_pullback(base_price=base_price, rows=rows, bullish=bullish, seed=seed)
-
-
-def _make_ranging_df(base_price: float = 0.90, rows: int = 250, seed: int = 5) -> pd.DataFrame:
-    """Generate a ranging (low-ADX) DataFrame — price oscillates around base_price."""
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range(end="2026-01-01", periods=rows, freq="D")
-
-    # Oscillating price with no trend
-    t = np.linspace(0, 4 * np.pi, rows)
-    close = base_price + base_price * 0.02 * np.sin(t) + rng.normal(0, base_price * 0.001, rows)
-
-    spread = base_price * 0.002
-    high = close + rng.uniform(0, spread, rows)
-    low = close - rng.uniform(0, spread, rows)
-    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
-
-    return pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": 1000},
-        index=dates,
-    )
-
-
-def _make_h4_oversold(base_price: float = 0.90, rows: int = 120, seed: int = 3) -> pd.DataFrame:
-    """Generate H4 DataFrame where the last bar is clearly below lower BB and RSI < 30."""
-    rng = np.random.default_rng(seed)
-    dates = pd.date_range(end="2026-01-01", periods=rows, freq="4h")
-
-    # Start at base then drop sharply at the end
-    close = np.concatenate(
-        [
-            np.full(rows - 5, base_price) + rng.normal(0, base_price * 0.001, rows - 5),
-            np.linspace(base_price, base_price * 0.94, 5),  # sharp drop → oversold
-        ]
-    )
-
-    spread = base_price * 0.001
-    high = close + rng.uniform(0, spread, rows)
-    low = close - rng.uniform(0, spread, rows)
-    open_ = close - rng.uniform(-spread / 2, spread / 2, rows)
-
-    return pd.DataFrame(
-        {"open": open_, "high": high, "low": low, "close": close, "volume": 500},
-        index=dates,
-    )
-
-
 def _make_test_db() -> tuple[str, sqlite3.Connection]:
     """Create a temp DB file, init schema, and return (path, connection)."""
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
@@ -326,46 +186,30 @@ def _make_test_db() -> tuple[str, sqlite3.Connection]:
 def _make_signal(
     pair: str = "AUDCAD",
     action: str = "buy",
-    trend: str = "ranging",
-    reason: str = "ranging_market + BB extreme + RSI confirmed",
+    trend: str = "ranging",  # kept for call-site compatibility; unused
+    reason: str = "asian_scalper_buy range_low=0.8950 rsi=28.0 adx=15.0",
 ) -> "Signal":  # noqa: F821
+    """Build a minimal Signal for the Asian Session Scalper schema."""
     from drift.strategy import Signal
 
     now = datetime.now(timezone.utc)
     return Signal(
         pair=pair,
         timestamp=now,
+        m15_candle_time=now,
         h4_candle_time=now,
-        bb_upper=0.9050,
-        bb_middle=0.9000,
-        bb_lower=0.8950,
+        entry_price=0.8952,
+        sl=0.8900,
+        tp=0.9000,
+        range_high=0.9050,
+        range_low=0.8950,
+        range_atr_ratio=2.0,
         rsi=28.0,
-        adx=18.0,
         atr_value=0.0050,
+        h4_adx=15.0,
         action=action,
         reason=reason,
     )
-
-
-def _make_open_trade_dict(
-    pair: str = "EURUSD",
-    direction: str = "buy",
-    profit: float = 50.0,
-    time_open: datetime | None = None,
-) -> dict:
-    if time_open is None:
-        time_open = datetime.now(timezone.utc) - timedelta(hours=10)
-    return {
-        "pair": pair,
-        "direction": direction,
-        "profit": profit,
-        "time_open": time_open,
-        "ticket": 1001,
-        "volume": 0.01,
-        "price_open": 1.08,
-        "sl": 1.075,
-        "tp": 1.09,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +217,6 @@ def _make_open_trade_dict(
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_PANDAS_TA, "pandas_ta not available")
 class TestFullSignalToTradeFlow(unittest.TestCase):
     def setUp(self) -> None:
         self.config = _make_config()
@@ -382,34 +225,6 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
     def tearDown(self) -> None:
         self.conn.close()
         Path(self.db_path).unlink(missing_ok=True)
-
-    def test_ranging_signal_produces_valid_output(self) -> None:
-        from drift.strategy import analyze_pair
-
-        df_d1 = _make_ranging_df(rows=250)
-        df_h4 = _make_h4_oversold(rows=120)
-
-        signal = analyze_pair("AUDCAD", df_d1, df_h4, self.config.strategy)
-
-        self.assertEqual(signal.pair, "AUDCAD")
-        self.assertIsInstance(signal.bb_upper, float)
-        self.assertIsInstance(signal.bb_middle, float)
-        self.assertIsInstance(signal.bb_lower, float)
-        self.assertIsInstance(signal.atr_value, float)
-        self.assertGreater(signal.atr_value, 0)
-
-    def test_bollinger_bands_computed_correctly(self) -> None:
-        from drift.indicators import compute_bollinger_bands
-
-        df_h4 = _make_ranging_df(rows=100)
-        upper, middle, lower = compute_bollinger_bands(df_h4, period=20, std_dev=2.0)
-
-        # Upper must be above middle, lower below middle for any valid row.
-        last_upper = float(upper.dropna().iloc[-1])
-        last_middle = float(middle.dropna().iloc[-1])
-        last_lower = float(lower.dropna().iloc[-1])
-        self.assertGreater(last_upper, last_middle)
-        self.assertLess(last_lower, last_middle)
 
     def test_risk_check_passes_with_clean_state(self) -> None:
         ok, reason = check_all_risk(
@@ -662,70 +477,11 @@ class TestDrawdownPause(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Friday close logic
+# Test 5 (deleted): Friday close logic
+# The Asian Session Scalper never opens positions on Friday (skip-Friday rule in
+# _in_session_window), so _check_friday_close is a no-op for this strategy.
+# Tests for the filtering algorithm are removed. See DECISIONS.md D029 / Step 6.
 # ---------------------------------------------------------------------------
-
-
-class TestFridayCloseLogic(unittest.TestCase):
-    def test_losing_trades_selected(self) -> None:
-        now = datetime.now(timezone.utc)
-        recent_threshold = now - timedelta(hours=4)
-
-        old = now - timedelta(hours=8)
-        positions = [
-            _make_open_trade_dict("EURUSD", "buy", profit=-30.0, time_open=old),
-            _make_open_trade_dict("GBPUSD", "sell", profit=50.0, time_open=old),
-            _make_open_trade_dict("USDJPY", "buy", profit=-10.0, time_open=old),
-        ]
-
-        to_close = [
-            p
-            for p in positions
-            if p.get("profit", 0) < 0 or p.get("time_open", now) >= recent_threshold
-        ]
-
-        pairs_to_close = {p["pair"] for p in to_close}
-        self.assertIn("EURUSD", pairs_to_close)
-        self.assertIn("USDJPY", pairs_to_close)
-        self.assertNotIn("GBPUSD", pairs_to_close)
-
-    def test_recently_opened_trades_selected(self) -> None:
-        now = datetime.now(timezone.utc)
-        recent_threshold = now - timedelta(hours=4)
-
-        positions = [
-            _make_open_trade_dict("EURUSD", "buy", profit=50.0, time_open=now - timedelta(hours=2)),
-            _make_open_trade_dict("GBPUSD", "buy", profit=50.0, time_open=now - timedelta(hours=6)),
-        ]
-
-        to_close = [
-            p
-            for p in positions
-            if p.get("profit", 0) < 0 or p.get("time_open", now) >= recent_threshold
-        ]
-
-        pairs_to_close = {p["pair"] for p in to_close}
-        # EURUSD opened 2h ago (within 4h threshold) → must be closed.
-        self.assertIn("EURUSD", pairs_to_close)
-        # GBPUSD opened 6h ago (outside threshold) and profitable → not closed.
-        self.assertNotIn("GBPUSD", pairs_to_close)
-
-    def test_profitable_old_trades_not_selected(self) -> None:
-        now = datetime.now(timezone.utc)
-        recent_threshold = now - timedelta(hours=4)
-
-        positions = [
-            _make_open_trade_dict(
-                "EURUSD", "buy", profit=200.0, time_open=now - timedelta(hours=24)
-            ),
-        ]
-        to_close = [
-            p
-            for p in positions
-            if p.get("profit", 0) < 0 or p.get("time_open", now) >= recent_threshold
-        ]
-        self.assertEqual(len(to_close), 0)
-
 
 # ---------------------------------------------------------------------------
 # Test 6: Weekly report generation
@@ -940,16 +696,18 @@ class TestSignalLoggingCompleteness(unittest.TestCase):
         self.assertEqual(row["reason"], "trending_market")
 
     def test_all_indicator_values_stored(self) -> None:
+        """Asian Scalper signal fields (range_high, range_low, h4_adx, etc.) are persisted."""
         signal = _make_signal(action="buy")
         sig_id = log_signal(self.conn, signal, trade_id=None)
 
         row = self.conn.execute("SELECT * FROM signals WHERE id = ?", (sig_id,)).fetchone()
-        self.assertIsNotNone(row["bb_upper"])
-        self.assertIsNotNone(row["bb_middle"])
-        self.assertIsNotNone(row["bb_lower"])
+        self.assertIsNotNone(row["range_high"])
+        self.assertIsNotNone(row["range_low"])
+        self.assertIsNotNone(row["range_atr_ratio"])
         self.assertIsNotNone(row["rsi"])
-        self.assertIsNotNone(row["adx"])
+        self.assertIsNotNone(row["h4_adx"])
         self.assertIsNotNone(row["atr_value"])
+        self.assertIsNotNone(row["m15_candle_time"])
         self.assertIsNotNone(row["h4_candle_time"])
 
     def test_risk_rejected_signal_stores_risk_reason(self) -> None:
