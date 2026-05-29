@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # pandas_ta is an optional heavy dependency that requires Python <3.14 (numba/tqdm constraint).
 # Import it lazily so the Wilder-smoothed indicator functions (rsi, atr, adx) remain importable
 # in environments where pandas_ta is not installed (e.g. Python 3.14 on dev machines).
-# The compute_* wrappers below will raise ImportError at call time if pandas_ta is absent.
+# compute_atr uses pandas_ta and is required by drift/trailing.py.
 try:
     import pandas_ta as ta  # type: ignore[import-untyped]
 
@@ -19,94 +19,17 @@ except ImportError:  # pragma: no cover
     _TA_AVAILABLE = False
 
 
-def _require_ta() -> None:
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     if not _TA_AVAILABLE:
         raise ImportError(
-            "pandas_ta is required for compute_* functions but is not installed. "
+            "pandas_ta is required for compute_atr but is not installed. "
             "Install it with: pip install pandas_ta"
         )
-
-
-def compute_ema(df: pd.DataFrame, period: int) -> pd.Series:
-    _require_ta()
-    if len(df) < period:
-        raise ValueError(f"Need at least {period} rows for EMA({period}), got {len(df)}")
-    result = ta.ema(df["close"], length=period)
-    result.name = f"ema_{period}"
-    return result
-
-
-def compute_rsi(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    _require_ta()
-    if len(df) < period + 1:
-        raise ValueError(f"Need at least {period + 1} rows for RSI({period}), got {len(df)}")
-    result = ta.rsi(df["close"], length=period)
-    result.name = f"rsi_{period}"
-    return result
-
-
-def compute_adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    _require_ta()
-    min_rows = period * 2
-    if len(df) < min_rows:
-        raise ValueError(f"Need at least {min_rows} rows for ADX({period}), got {len(df)}")
-    result = ta.adx(df["high"], df["low"], df["close"], length=period)
-    adx_col = f"ADX_{period}"
-    adx = result[adx_col].rename(f"adx_{period}")
-    return adx
-
-
-def compute_macd(
-    df: pd.DataFrame,
-    fast: int = 12,
-    slow: int = 26,
-    signal: int = 9,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
-    _require_ta()
-    min_rows = slow + signal
-    if len(df) < min_rows:
-        raise ValueError(
-            f"Need at least {min_rows} rows for MACD({fast},{slow},{signal}), got {len(df)}"
-        )
-    result = ta.macd(df["close"], fast=fast, slow=slow, signal=signal)
-    suffix = f"{fast}_{slow}_{signal}"
-    macd_line = result[f"MACD_{suffix}"].rename("macd_line")
-    signal_line = result[f"MACDs_{suffix}"].rename("macd_signal")
-    histogram = result[f"MACDh_{suffix}"].rename("macd_histogram")
-    return macd_line, signal_line, histogram
-
-
-def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    _require_ta()
     if len(df) < period:
         raise ValueError(f"Need at least {period} rows for ATR({period}), got {len(df)}")
     result = ta.atr(df["high"], df["low"], df["close"], length=period)
     result.name = f"atr_{period}"
     return result
-
-
-def compute_bollinger_bands(
-    df: pd.DataFrame,
-    period: int = 20,
-    std_dev: float = 2.0,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Compute Bollinger Bands (upper, middle/SMA, lower).
-
-    Returns (bb_upper, bb_middle, bb_lower) as pandas Series.
-    """
-    if len(df) < period:
-        raise ValueError(
-            f"Need at least {period} rows for Bollinger Bands({period}), got {len(df)}"
-        )
-    close = df["close"]
-    middle = close.rolling(window=period).mean()
-    std = close.rolling(window=period).std(ddof=1)
-    upper = middle + std_dev * std
-    lower = middle - std_dev * std
-    upper.name = f"bb_upper_{period}"
-    middle.name = f"bb_middle_{period}"
-    lower.name = f"bb_lower_{period}"
-    return upper, middle, lower
 
 
 # ---------------------------------------------------------------------------

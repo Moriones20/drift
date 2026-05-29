@@ -7,17 +7,11 @@ broker:
   password: "your_password_here"
 
 strategy:
-  timeframe_trend: "D1"
-  timeframe_entry: "H4"
   # RSI thresholds for session scalper entries
   rsi_oversold: 35.0
   rsi_overbought: 65.0
   # ADX regime filter: trade ONLY when H4 ADX < adx_max_threshold (ranging market)
-  adx_period: 14
   adx_max_threshold: 35.0
-  # ATR/RSI periods (generic)
-  atr_period: 14
-  rsi_period: 14
   # Asian Session Scalper — session window (UTC hours)
   session_start_hour: 21       # begin observing range at 21:00 UTC
   range_definition_hours: 2    # 21:00-23:00 UTC: define range, no entries
@@ -37,7 +31,6 @@ risk:
   max_open_trades: 4               # Maximum simultaneous trades
   max_same_currency_direction: 2   # Max trades in same direction for one currency
   max_drawdown_percent: 10.0       # Pause bot if drawdown exceeds this %
-  stop_loss_atr_multiplier: 2.0    # Generic SL multiplier used by risk.py position sizing
   trailing_stop_atr_multiplier: 1.5
   use_trailing_stop: false         # Asian Scalper: no trailing stop (fixed TP at range midpoint)
 
@@ -56,4 +49,3 @@ system:
   loop_check_interval_seconds: 30    # How often to check trailing stops and health
   mt5_reconnect_interval_seconds: 300  # 5 minutes between reconnection attempts
   magic_number: 234000               # Identifies Drift orders in MT5
-  friday_close_hour_utc: 20          # Close losing trades at 8pm UTC Friday (3pm UTC-5)

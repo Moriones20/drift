@@ -15,26 +15,11 @@ class BrokerConfig:
 
 @dataclass
 class StrategyConfig:
-    timeframe_trend: str = "D1"
-    timeframe_entry: str = "H4"
-    # RSI thresholds for mean reversion / session scalper entries
+    # RSI thresholds for session scalper entries
     rsi_oversold: float = 35.0
     rsi_overbought: float = 65.0
     # ADX regime filter — trade ONLY when ADX < adx_max_threshold (ranging market)
-    adx_period: int = 14
     adx_max_threshold: float = 35.0
-    # ATR and RSI periods
-    atr_period: int = 14
-    rsi_period: int = 14
-    # Legacy fields kept for indicator module compatibility
-    ema_fast: int = 50
-    ema_slow: int = 200
-    ema_entry: int = 20
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
-    adx_threshold: float = 25.0
-    ema_gap_threshold: float = 1.0
     # Asian Session Scalper — session window (UTC hours)
     session_start_hour: int = 21
     range_definition_hours: int = 2
@@ -56,12 +41,8 @@ class RiskConfig:
     max_open_trades: int = 4
     max_same_currency_direction: int = 2
     max_drawdown_percent: float = 10.0
-    # Wider stop for counter-trend mean reversion trades
-    stop_loss_atr_multiplier: float = 2.0
     trailing_stop_atr_multiplier: float = 1.5
     use_trailing_stop: bool = False
-    take_profit_ratio: float = 3.0
-    take_profit_mode: str = "middle_bb"
 
 
 @dataclass
@@ -82,10 +63,9 @@ class SystemConfig:
     loop_check_interval_seconds: int = 30
     mt5_reconnect_interval_seconds: int = 300
     magic_number: int = 234000
-    friday_close_hour_utc: int = 20
 
 
-DEFAULT_PAIRS = ["AUDCAD", "NZDCAD", "AUDNZD", "EURCHF", "EURGBP"]
+DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]
 
 
 @dataclass
@@ -119,22 +99,9 @@ def _parse_broker(raw: dict) -> BrokerConfig:
 def _parse_strategy(raw: dict) -> StrategyConfig:
     defaults = StrategyConfig()
     return StrategyConfig(
-        timeframe_trend=str(raw.get("timeframe_trend", defaults.timeframe_trend)),
-        timeframe_entry=str(raw.get("timeframe_entry", defaults.timeframe_entry)),
         rsi_oversold=float(raw.get("rsi_oversold", defaults.rsi_oversold)),
         rsi_overbought=float(raw.get("rsi_overbought", defaults.rsi_overbought)),
-        adx_period=int(raw.get("adx_period", defaults.adx_period)),
         adx_max_threshold=float(raw.get("adx_max_threshold", defaults.adx_max_threshold)),
-        atr_period=int(raw.get("atr_period", defaults.atr_period)),
-        rsi_period=int(raw.get("rsi_period", defaults.rsi_period)),
-        ema_fast=int(raw.get("ema_fast", defaults.ema_fast)),
-        ema_slow=int(raw.get("ema_slow", defaults.ema_slow)),
-        ema_entry=int(raw.get("ema_entry", defaults.ema_entry)),
-        macd_fast=int(raw.get("macd_fast", defaults.macd_fast)),
-        macd_slow=int(raw.get("macd_slow", defaults.macd_slow)),
-        macd_signal=int(raw.get("macd_signal", defaults.macd_signal)),
-        adx_threshold=float(raw.get("adx_threshold", defaults.adx_threshold)),
-        ema_gap_threshold=float(raw.get("ema_gap_threshold", defaults.ema_gap_threshold)),
         session_start_hour=int(raw.get("session_start_hour", defaults.session_start_hour)),
         range_definition_hours=int(
             raw.get("range_definition_hours", defaults.range_definition_hours)
@@ -158,15 +125,10 @@ def _parse_risk(raw: dict) -> RiskConfig:
             raw.get("max_same_currency_direction", defaults.max_same_currency_direction)
         ),
         max_drawdown_percent=float(raw.get("max_drawdown_percent", defaults.max_drawdown_percent)),
-        stop_loss_atr_multiplier=float(
-            raw.get("stop_loss_atr_multiplier", defaults.stop_loss_atr_multiplier)
-        ),
         trailing_stop_atr_multiplier=float(
             raw.get("trailing_stop_atr_multiplier", defaults.trailing_stop_atr_multiplier)
         ),
         use_trailing_stop=bool(raw.get("use_trailing_stop", defaults.use_trailing_stop)),
-        take_profit_ratio=float(raw.get("take_profit_ratio", defaults.take_profit_ratio)),
-        take_profit_mode=str(raw.get("take_profit_mode", defaults.take_profit_mode)),
     )
 
 
@@ -199,7 +161,6 @@ def _parse_system(raw: dict) -> SystemConfig:
             raw.get("mt5_reconnect_interval_seconds", defaults.mt5_reconnect_interval_seconds)
         ),
         magic_number=int(raw.get("magic_number", defaults.magic_number)),
-        friday_close_hour_utc=int(raw.get("friday_close_hour_utc", defaults.friday_close_hour_utc)),
     )
 
 

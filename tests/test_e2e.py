@@ -43,25 +43,6 @@ HAS_PANDAS_TA = _try_import_pandas_ta()
 if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
     _pta_stub = MagicMock()
 
-    def _ema_stub(series, length, **_kw):
-        return series.ewm(span=length, adjust=False).mean()
-
-    def _macd_stub(series, fast=12, slow=26, signal=9, **_kw):
-        ema_fast = series.ewm(span=fast, adjust=False).mean()
-        ema_slow = series.ewm(span=slow, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-        hist = macd_line - signal_line
-        suffix = f"{fast}_{slow}_{signal}"
-        result = pd.DataFrame(
-            {
-                f"MACD_{suffix}": macd_line,
-                f"MACDs_{suffix}": signal_line,
-                f"MACDh_{suffix}": hist,
-            }
-        )
-        return result
-
     def _rsi_stub(series, length=14, **_kw):
         delta = series.diff()
         gain = delta.clip(lower=0)
@@ -116,8 +97,6 @@ if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
         atr.name = f"ATRr_{length}"
         return atr
 
-    _pta_stub.ema = _ema_stub
-    _pta_stub.macd = _macd_stub
     _pta_stub.rsi = _rsi_stub
     _pta_stub.adx = _adx_stub
     _pta_stub.atr = _atr_stub
@@ -145,7 +124,6 @@ from drift.db import (  # noqa: E402
 from drift.report import generate_weekly_report  # noqa: E402
 from drift.risk import (  # noqa: E402
     calculate_position_size,
-    calculate_sl_tp,
     check_all_risk,
     check_correlation,
     check_drawdown,
@@ -246,32 +224,6 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
             pip_value=10.0,
         )
         self.assertGreater(lot, 0)
-
-    def test_sl_tp_correct_for_buy(self) -> None:
-        entry = 1.08000
-        atr = 0.0050
-        sl, tp = calculate_sl_tp(
-            entry_price=entry,
-            direction="buy",
-            atr_value=atr,
-            atr_multiplier=1.5,
-            tp_ratio=2.0,
-        )
-        self.assertLess(sl, entry)
-        self.assertGreater(tp, entry)
-
-    def test_sl_tp_correct_for_sell(self) -> None:
-        entry = 1.08000
-        atr = 0.0050
-        sl, tp = calculate_sl_tp(
-            entry_price=entry,
-            direction="sell",
-            atr_value=atr,
-            atr_multiplier=1.5,
-            tp_ratio=2.0,
-        )
-        self.assertGreater(sl, entry)
-        self.assertLess(tp, entry)
 
     def test_trade_and_signal_logged_to_db(self) -> None:
         signal = _make_signal(action="buy")

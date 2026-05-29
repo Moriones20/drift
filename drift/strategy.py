@@ -174,24 +174,6 @@ def should_close_on_time(bar_time: datetime, config: StrategyConfig) -> bool:
     return bar_time.hour == config.session_end_hour
 
 
-def check_tp_hit(
-    position_direction: str,
-    current_close: float,
-    range_midpoint: float,
-) -> bool:
-    """Return True when the position has reached the TP at the range midpoint.
-
-    Mirrors the exit logic in AsianSessionStrategy.next():
-      - Long: close >= midpoint
-      - Short: close <= midpoint
-    """
-    if position_direction == "buy":
-        return current_close >= range_midpoint
-    if position_direction == "sell":
-        return current_close <= range_midpoint
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Main evaluation function
 # ---------------------------------------------------------------------------

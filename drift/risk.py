@@ -143,21 +143,3 @@ def check_all_risk(
         return False, reason
 
     return True, ""
-
-
-def calculate_sl_tp(
-    entry_price: float,
-    direction: str,
-    atr_value: float,
-    atr_multiplier: float,
-    tp_ratio: float,
-) -> tuple[float, float]:
-    distance = atr_value * atr_multiplier
-    if direction.lower() == "buy":
-        stop_loss = entry_price - distance
-        take_profit = entry_price + distance * tp_ratio
-    else:
-        stop_loss = entry_price + distance
-        take_profit = entry_price - distance * tp_ratio
-
-    return stop_loss, take_profit

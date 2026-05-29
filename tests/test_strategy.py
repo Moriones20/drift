@@ -43,9 +43,6 @@ if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
 
     _pta_stub = MagicMock()
 
-    def _ema_stub(series, length, **_kw):
-        return series.ewm(span=length, adjust=False).mean()
-
     def _rsi_stub(series, length=14, **_kw):
         delta = series.diff()
         gain = delta.clip(lower=0)
@@ -100,7 +97,6 @@ if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
         atr.name = f"ATRr_{length}"
         return atr
 
-    _pta_stub.ema = _ema_stub
     _pta_stub.rsi = _rsi_stub
     _pta_stub.adx = _adx_stub
     _pta_stub.atr = _atr_stub
@@ -115,7 +111,6 @@ from drift.config import StrategyConfig  # noqa: E402
 from drift.strategy import (  # noqa: E402
     SessionState,
     Signal,
-    check_tp_hit,
     evaluate_pair,
     should_close_on_time,
     update_session_state,
@@ -730,45 +725,7 @@ class TestTimeStop:
 
 
 # ---------------------------------------------------------------------------
-# 6. TP hit detection
-# ---------------------------------------------------------------------------
-
-
-class TestTpHitDetection:
-    def test_buy_tp_hit_above_midpoint(self) -> None:
-        midpoint = 1.0800
-        result = check_tp_hit("buy", current_close=midpoint + 0.0001, range_midpoint=midpoint)
-        assert result is True
-
-    def test_buy_tp_not_hit_below_midpoint(self) -> None:
-        midpoint = 1.0800
-        result = check_tp_hit("buy", current_close=midpoint - 0.0001, range_midpoint=midpoint)
-        assert result is False
-
-    def test_sell_tp_hit_below_midpoint(self) -> None:
-        midpoint = 1.0800
-        result = check_tp_hit("sell", current_close=midpoint - 0.0001, range_midpoint=midpoint)
-        assert result is True
-
-    def test_sell_tp_not_hit_above_midpoint(self) -> None:
-        midpoint = 1.0800
-        result = check_tp_hit("sell", current_close=midpoint + 0.0001, range_midpoint=midpoint)
-        assert result is False
-
-    def test_buy_tp_hit_exactly_at_midpoint(self) -> None:
-        midpoint = 1.0800
-        assert check_tp_hit("buy", current_close=midpoint, range_midpoint=midpoint) is True
-
-    def test_sell_tp_hit_exactly_at_midpoint(self) -> None:
-        midpoint = 1.0800
-        assert check_tp_hit("sell", current_close=midpoint, range_midpoint=midpoint) is True
-
-    def test_unknown_direction_returns_false(self) -> None:
-        assert check_tp_hit("none", current_close=1.0800, range_midpoint=1.0800) is False
-
-
-# ---------------------------------------------------------------------------
-# 7. Scheduler helpers (_in_session_window, _next_session_start, _next_m15_close)
+# 6. Scheduler helpers (_in_session_window, _next_session_start, _next_m15_close)
 # ---------------------------------------------------------------------------
 
 
