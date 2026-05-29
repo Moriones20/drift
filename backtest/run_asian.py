@@ -27,6 +27,7 @@ from backtest.asian_engine import (
     save_results,
 )
 from backtest.download_data import download_asian_all, load_asian_data
+from drift.config import load_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,8 +41,6 @@ RESULTS_DIR = Path(__file__).parent / "results_asian"
 
 CASH: float = 500.0
 COMMISSION: float = 0.00007
-SL_ATR_MULT: float = 1.5
-ADX_MAX_THRESHOLD: float = 25.0
 
 
 def _asian_data_complete(pairs: list[str], data_dir: Path) -> bool:
@@ -194,6 +193,9 @@ def _print_portfolio_summary(rows: list[dict]) -> None:
 
 
 def main() -> None:
+    config = load_config()
+    strategy = config.strategy
+
     if not _asian_data_complete(ASIAN_PAIRS, DATA_DIR):
         logger.info("Asian data missing — running download_asian_all()")
         download_asian_all(ASIAN_PAIRS, DATA_DIR)
@@ -217,8 +219,12 @@ def main() -> None:
             df_bt,
             cash=CASH,
             commission=COMMISSION,
-            sl_atr_mult=SL_ATR_MULT,
-            adx_max_threshold=ADX_MAX_THRESHOLD,
+            sl_atr_mult=strategy.sl_atr_mult,
+            adx_max_threshold=strategy.adx_max_threshold,
+            rsi_oversold=strategy.rsi_oversold,
+            rsi_overbought=strategy.rsi_overbought,
+            range_atr_min=strategy.range_atr_min,
+            range_atr_max=strategy.range_atr_max,
         )
 
         print(format_results(symbol, stats))

@@ -4,11 +4,11 @@ Strategy rules:
   - Timeframe: M15 (15-minute candles)
   - Trading window: 21:00-02:00 GMT (quiet Asian session)
   - Session range: High/Low of the 21:00-23:00 definition window
-  - BUY when price <= session low AND RSI(14) < 30
-  - SELL when price >= session high AND RSI(14) > 70
-  - Range filter: 1x ATR(14) <= range_width <= 3x ATR(14)
-  - TP: middle of session range; SL: 1.5x ATR(14); time stop at 02:00 GMT
-  - ADX(14) on H4 < 25 (ranging market filter)
+  - BUY when price <= session low AND RSI(14) < rsi_oversold (default 35)
+  - SELL when price >= session high AND RSI(14) > rsi_overbought (default 65)
+  - Range filter: range_atr_min x ATR(14) <= range_width <= range_atr_max x ATR(14)
+  - TP: middle of session range; SL: sl_atr_mult x ATR(14); time stop at 02:00 GMT
+  - ADX(14) on H4 < adx_max_threshold (default 35, ranging market filter)
   - Max 1 trade per session per pair
 
 Usage:
@@ -105,12 +105,12 @@ class AsianSessionStrategy(Strategy):
     Entries only between 23:00-02:00 GMT after the 21:00-23:00 range is set.
     """
 
-    sl_atr_mult: float = 1.5
-    adx_max_threshold: float = 25.0
-    rsi_oversold: float = 30.0
-    rsi_overbought: float = 70.0
+    sl_atr_mult: float = 2.5
+    adx_max_threshold: float = 35.0
+    rsi_oversold: float = 35.0
+    rsi_overbought: float = 65.0
     range_atr_min: float = 1.0
-    range_atr_max: float = 3.0
+    range_atr_max: float = 4.0
 
     def init(self) -> None:
         self.rsi_ind = self.I(lambda: self.data.rsi, name="RSI")
@@ -267,8 +267,12 @@ def run_asian_backtest(
     df: pd.DataFrame,
     cash: float = 500,
     commission: float = 0.00007,
-    sl_atr_mult: float = 1.5,
-    adx_max_threshold: float = 25.0,
+    sl_atr_mult: float = 2.5,
+    adx_max_threshold: float = 35.0,
+    rsi_oversold: float = 35.0,
+    rsi_overbought: float = 65.0,
+    range_atr_min: float = 1.0,
+    range_atr_max: float = 4.0,
 ) -> tuple[pd.Series, Backtest]:
     """Run the Asian Session Scalper backtest and return (stats, bt).
 
@@ -281,7 +285,14 @@ def run_asian_backtest(
         commission=commission,
         exclusive_orders=True,
     )
-    stats = bt.run(sl_atr_mult=sl_atr_mult, adx_max_threshold=adx_max_threshold)
+    stats = bt.run(
+        sl_atr_mult=sl_atr_mult,
+        adx_max_threshold=adx_max_threshold,
+        rsi_oversold=rsi_oversold,
+        rsi_overbought=rsi_overbought,
+        range_atr_min=range_atr_min,
+        range_atr_max=range_atr_max,
+    )
     logger.info(
         "Asian backtest complete — %d trades, return %.2f%%",
         int(stats.get("# Trades", 0)),
