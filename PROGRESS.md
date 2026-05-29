@@ -44,19 +44,19 @@
 Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 
 ### Batch A — Crítico + Alto
-- [ ] 1. DB: añadir `session_close` y quitar `friday_close` del CHECK + migración rebuild de `trades`
-- [ ] 2. Cierre de sesión 02:00 bajo `_trade_lock` y aislado por posición (try/except)
-- [ ] 3. `_detect_closed_trades`: motivo desconocido ⇒ `manual`, no `trailing_stop`
+- [x] 1. DB: añadir `session_close` y quitar `friday_close` del CHECK + migración rebuild de `trades` (remapea filas `friday_close`→`session_close`)
+- [x] 2. Cierre de sesión 02:00 bajo `_trade_lock` y aislado por posición (try/except)
+- [x] 3. `_detect_closed_trades`: motivo desconocido ⇒ `manual`, no `trailing_stop`
 
 ### Batch B — Medio
-- [ ] 4. Reporte semanal derivado de `reports.*` config (no hardcode lunes 01:00 UTC)
-- [ ] 5. Paridad backtest⇄vivo: defaults de clase = D029 + run_asian pasa los 6 params desde config
+- [x] 4. Reporte semanal derivado de `reports.*` config (no hardcode lunes 01:00 UTC)
+- [x] 5. Paridad backtest⇄vivo: defaults de clase = D029 + run_asian pasa los 6 params desde config
 
 ### Batch C — Limpieza
-- [ ] 6. Eliminar config/código muerto (friday_close_hour_utc, take_profit_*, calculate_sl_tp, check_tp_hit, compute_* sin uso, campos legacy de StrategyConfig)
-- [ ] 7. `DEFAULT_PAIRS` = los 5 pares de D029
+- [x] 6. Eliminar config/código muerto (friday_close_hour_utc, take_profit_*, calculate_sl_tp, check_tp_hit, compute_* sin uso, campos legacy de StrategyConfig)
+- [x] 7. `DEFAULT_PAIRS` = los 5 pares de D029
 - [x] 8. Sincronizar docs (reescribir PROGRESS legacy, barrer ARCHITECTURE/docs por friday_close/EMA/MACD)
-- [ ] 9. Tests de regresión del ciclo de sesión (session_close, cierre aislado, weekly trigger, migración)
+- [x] 9. Tests de regresión del ciclo de sesión (session_close, cierre aislado, weekly trigger, migración) — 21 tests nuevos, 102 en total
 
 ## Phase 3 — Live
 
