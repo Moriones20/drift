@@ -110,26 +110,38 @@ def _next_m15_close(now: datetime) -> datetime:
 
 
 def _in_session_window(now: datetime, config: DriftConfig) -> bool:
-    """Return True iff the current UTC time is inside the Asian session trading window.
+    """Return True iff the current UTC time is inside an active Asian session.
 
-    Session runs from session_start_hour (21) through session_end_hour (2), wrapping
-    midnight.  Friday is always excluded: ICMarkets closes around 22:00 UTC Friday
-    (Sydney close), leaving less than the 2-hour range-definition window.
+    A session spans `session_start_hour` (21) on day N to `session_end_hour` (2) on
+    day N+1.  The session is identified by its start day:
+
+      - Sessions starting Mon-Thu and Sun are valid.
+      - Sessions starting Fri are skipped (ICMarkets Sydney close around 22:00 UTC Fri
+        leaves less than the 2-hour range-definition window).
+      - Sessions starting Sat are skipped (market closed).
+
+    So Friday 00:00-01:59 UTC is allowed because it is the tail of Thursday's session.
     """
-    if now.weekday() == 4:  # Friday
-        return False
     h = now.hour
     start = config.strategy.session_start_hour
     end = config.strategy.session_end_hour
-    # Wraps midnight: active if hour >= start OR hour < end
-    return h >= start or h < end
+
+    if h >= start:
+        # Tonight is the start of "today's" session — valid unless today is Fri or Sat.
+        return now.weekday() not in (4, 5)
+    if h < end:
+        # We are in the tail of "yesterday's" session — valid unless yesterday was Fri or Sat.
+        yesterday_weekday = (now - timedelta(days=1)).weekday()
+        return yesterday_weekday not in (4, 5)
+    return False
 
 
 def _next_session_start(now: datetime, config: DriftConfig) -> datetime:
-    """Return the next session_start_hour:00 UTC strictly after *now*, skipping Friday.
+    """Return the next session_start_hour:00 UTC strictly after *now*.
 
-    A call on Friday 22:00 UTC returns Monday 21:00 UTC (skips Saturday/Sunday too
-    since the session does not exist on weekends; Monday is the first valid slot).
+    Skips Friday and Saturday session starts (no market / not enough window).
+    Sunday 21:00 UTC IS a valid session start — it is the Sydney open of the new
+    trading week.  A call on Friday 22:00 UTC returns Sunday 21:00 UTC.
     """
     start_hour = config.strategy.session_start_hour
     # Start from current day's session_start_hour candidate
@@ -137,9 +149,8 @@ def _next_session_start(now: datetime, config: DriftConfig) -> datetime:
     if candidate <= now:
         candidate += timedelta(days=1)
 
-    # Advance past Friday (weekday 4) — Friday sessions are skipped entirely.
-    # Also skip Saturday (5) and Sunday (6) as there is no market.
-    while candidate.weekday() in (4, 5, 6):
+    # Skip Friday (4) and Saturday (5) — Sunday (6) is the new week's first session.
+    while candidate.weekday() in (4, 5):
         candidate += timedelta(days=1)
 
     return candidate

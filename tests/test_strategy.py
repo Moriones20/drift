@@ -840,21 +840,49 @@ class TestSchedulerHelpers:
         wed_21 = datetime(2026, 1, 7, 21, 0, tzinfo=UTC)
         assert self._in_session_window(wed_21, self._drift_config()) is True
 
+    def test_in_session_window_friday_01_30_is_true(self) -> None:
+        """Friday 01:30 UTC is the tail of Thursday's session (started 21:00 Thu)."""
+        # 2026-01-09 is a Friday
+        fri_01_30 = datetime(2026, 1, 9, 1, 30, tzinfo=UTC)
+        assert fri_01_30.weekday() == 4
+        assert self._in_session_window(fri_01_30, self._drift_config()) is True
+
+    def test_in_session_window_saturday_01_30_is_false(self) -> None:
+        """Saturday 01:30 UTC would be the tail of Friday's session — blocked."""
+        # 2026-01-10 is a Saturday
+        sat_01_30 = datetime(2026, 1, 10, 1, 30, tzinfo=UTC)
+        assert sat_01_30.weekday() == 5
+        assert self._in_session_window(sat_01_30, self._drift_config()) is False
+
+    def test_in_session_window_sunday_21_00_is_true(self) -> None:
+        """Sunday 21:00 UTC is the Sydney open of the new trading week — valid."""
+        # 2026-01-11 is a Sunday
+        sun_21 = datetime(2026, 1, 11, 21, 0, tzinfo=UTC)
+        assert sun_21.weekday() == 6
+        assert self._in_session_window(sun_21, self._drift_config()) is True
+
+    def test_in_session_window_monday_01_30_is_true(self) -> None:
+        """Monday 01:30 UTC is the tail of Sunday's session — valid."""
+        # 2026-01-12 is a Monday
+        mon_01_30 = datetime(2026, 1, 12, 1, 30, tzinfo=UTC)
+        assert mon_01_30.weekday() == 0
+        assert self._in_session_window(mon_01_30, self._drift_config()) is True
+
     # _next_session_start ---------------------------------------------------
 
-    def test_next_session_start_from_friday_returns_monday(self) -> None:
-        """From Friday 22:00 UTC the next valid session start is Monday 21:00 UTC.
+    def test_next_session_start_from_friday_returns_sunday(self) -> None:
+        """From Friday 22:00 UTC the next valid session start is Sunday 21:00 UTC.
 
-        The implementation skips Friday (4), Saturday (5), and Sunday (6).
+        Skips Friday (4) and Saturday (5); Sunday (6) is the new week's first session.
         """
         config = self._drift_config()
         friday_22 = datetime(2026, 1, 9, 22, 0, tzinfo=UTC)
         result = self._next_session_start(friday_22, config)
 
-        # Expect Monday 2026-01-12 21:00 UTC
-        expected = datetime(2026, 1, 12, 21, 0, tzinfo=UTC)
+        # Expect Sunday 2026-01-11 21:00 UTC
+        expected = datetime(2026, 1, 11, 21, 0, tzinfo=UTC)
         assert result == expected, f"Expected {expected}, got {result}"
-        assert result.weekday() == 0  # Monday
+        assert result.weekday() == 6  # Sunday
 
     def test_next_session_start_from_wednesday_14_00(self) -> None:
         """From Wednesday 14:00 UTC the next session is that same Wednesday at 21:00 UTC."""
