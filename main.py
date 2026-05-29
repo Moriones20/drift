@@ -53,7 +53,7 @@ CANDLE_CLOSE_DELAY_SECONDS = 5
 _LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 _PROJECT_ROOT = Path(__file__).parent
 
-# Weekly report: sent Monday 01:00 UTC (= Sunday 8pm UTC-5).
+# Weekly report trigger is derived from config.reports at runtime.
 # Tracks the date of the last sent report to avoid duplicate sends.
 _last_report_date: date | None = None
 
@@ -240,58 +240,70 @@ def _close_session_trades(
 
     Called at state D (M15 bar whose close stamp hour == session_end_hour).
     """
-    mt5_positions = get_open_positions(config.system.magic_number)
-    for pos in mt5_positions:
-        logger.info("Session close (02:00): closing ticket=%d %s", pos["ticket"], pos["pair"])
-        success = close_trade(
-            ticket=pos["ticket"],
-            pair=pos["pair"],
-            lot_size=pos["volume"],
-            direction=pos["direction"],
-            magic=config.system.magic_number,
-        )
-        if success:
-            import MetaTrader5 as mt5
+    with _trade_lock:
+        mt5_positions = get_open_positions(config.system.magic_number)
+        for pos in mt5_positions:
+            try:
+                logger.info(
+                    "Session close (02:00): closing ticket=%d %s", pos["ticket"], pos["pair"]
+                )
+                success = close_trade(
+                    ticket=pos["ticket"],
+                    pair=pos["pair"],
+                    lot_size=pos["volume"],
+                    direction=pos["direction"],
+                    magic=config.system.magic_number,
+                )
+                if success:
+                    import MetaTrader5 as mt5
 
-            exit_price = 0.0
-            pnl = pos.get("profit", 0.0)
-            deals = mt5.history_deals_get(position=pos["ticket"])
-            if deals:
-                close_deal = deals[-1]
-                exit_price = close_deal.price
-                pnl = close_deal.profit
+                    exit_price = 0.0
+                    pnl = pos.get("profit", 0.0)
+                    deals = mt5.history_deals_get(position=pos["ticket"])
+                    if deals:
+                        close_deal = deals[-1]
+                        exit_price = close_deal.price
+                        pnl = close_deal.profit
 
-            with get_connection() as db_conn:
-                trade = get_trade_by_ticket(db_conn, pos["ticket"])
-                if trade and trade.get("closed_at") is None:
-                    close_trade_record(
-                        db_conn,
-                        trade["id"],
-                        exit_price=exit_price,
-                        profit_loss=pnl,
-                        balance_at_close=balance,
-                        close_reason="session_close",
+                    with get_connection() as db_conn:
+                        trade = get_trade_by_ticket(db_conn, pos["ticket"])
+                        if trade and trade.get("closed_at") is None:
+                            close_trade_record(
+                                db_conn,
+                                trade["id"],
+                                exit_price=exit_price,
+                                profit_loss=pnl,
+                                balance_at_close=balance,
+                                close_reason="session_close",
+                            )
+                            updated = get_trade_by_ticket(db_conn, pos["ticket"])
+                            duration = (updated["duration_minutes"] or 0) if updated else 0
+                        else:
+                            duration = 0
+
+                    trade_info = {
+                        "pair": pos["pair"],
+                        "direction": pos["direction"],
+                        "entry_price": pos.get("price_open", 0.0),
+                        "exit_price": exit_price,
+                        "profit_loss": pnl,
+                        "close_reason": "session_close",
+                        "duration_minutes": duration,
+                    }
+                    _fire_and_forget(
+                        notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info)
                     )
-                    updated = get_trade_by_ticket(db_conn, pos["ticket"])
-                    duration = (updated["duration_minutes"] or 0) if updated else 0
-                else:
-                    duration = 0
+            except Exception:
+                logger.exception(
+                    "Error closing session position ticket=%d %s — continuing",
+                    pos["ticket"],
+                    pos["pair"],
+                )
 
-            trade_info = {
-                "pair": pos["pair"],
-                "direction": pos["direction"],
-                "entry_price": pos.get("price_open", 0.0),
-                "exit_price": exit_price,
-                "profit_loss": pnl,
-                "close_reason": "session_close",
-                "duration_minutes": duration,
-            }
-            _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
-
-    # Reset all session states — next session starts fresh at 21:00.
-    for pair in list(session_states.keys()):
-        session_states[pair] = SessionState()
-    logger.info("Session states reset after session close")
+        # Reset all session states — next session starts fresh at 21:00.
+        for pair in list(session_states.keys()):
+            session_states[pair] = SessionState()
+        logger.info("Session states reset after session close")
 
 
 # ---------------------------------------------------------------------------
@@ -540,19 +552,68 @@ def _monitoring_loop(
         shutdown_event.wait(timeout=interval)
 
 
+_DAY_NAME_TO_WEEKDAY: dict[str, int] = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _weekly_trigger_utc(reports_config) -> tuple[int, int]:
+    """Return (weekday_utc, hour_utc) for the weekly report trigger.
+
+    Converts the local trigger (weekly_report_day + weekly_report_hour interpreted
+    in reports_config.timezone) to UTC, handling day rollover.
+
+    Example: sunday 20:00 UTC-5 → monday 01:00 UTC → (0, 1).
+    """
+    day_name = reports_config.weekly_report_day.strip().lower()
+    local_weekday = _DAY_NAME_TO_WEEKDAY.get(day_name, 6)  # default sunday
+    local_hour = int(reports_config.weekly_report_hour)
+
+    # Parse offset from strings like "UTC-5", "UTC+3", "UTC-5:30" (hours only used here).
+    tz_str = reports_config.timezone.strip().upper()
+    offset_hours = 0
+    if tz_str.startswith("UTC"):
+        remainder = tz_str[3:]
+        if remainder:
+            try:
+                offset_hours = int(remainder.split(":")[0])
+            except ValueError:
+                offset_hours = 0
+
+    # Convert local hour to UTC hour: UTC = local - offset
+    utc_hour = local_hour - offset_hours
+    day_shift = 0
+    if utc_hour >= 24:
+        utc_hour -= 24
+        day_shift = 1
+    elif utc_hour < 0:
+        utc_hour += 24
+        day_shift = -1
+
+    utc_weekday = (local_weekday + day_shift) % 7
+    return utc_weekday, utc_hour
+
+
 def _check_weekly_report(
     config: DriftConfig,
     balance: float,
     peak_balance: float,
     bot_app,
 ) -> None:
-    """Send the weekly report if it's Monday 01:xx UTC and not yet sent today."""
+    """Send the weekly report when the UTC time matches the configured trigger."""
     global _last_report_date
 
     now = datetime.now(timezone.utc)
     today = now.date()
 
-    if now.weekday() != 0 or now.hour != 1:
+    trigger_weekday, trigger_hour = _weekly_trigger_utc(config.reports)
+    if now.weekday() != trigger_weekday or now.hour != trigger_hour:
         return
     if _last_report_date == today:
         return
@@ -683,7 +744,7 @@ def _detect_closed_trades(
                 elif close_deal.reason == mt5.DEAL_REASON_TP:
                     close_reason = "take_profit"
                 else:
-                    close_reason = "trailing_stop" if pnl > 0 else "stop_loss"
+                    close_reason = "manual"
             else:
                 exit_price = 0.0
                 pnl = 0.0

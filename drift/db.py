@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS trades (
     closed_at TEXT,
     close_reason TEXT CHECK(close_reason IN (
         'trailing_stop', 'take_profit', 'stop_loss',
-        'manual', 'drawdown_pause', 'friday_close'
+        'manual', 'drawdown_pause', 'session_close'
     )),
     duration_minutes INTEGER,
     mt5_ticket INTEGER
@@ -207,17 +207,87 @@ def _migrate_signals_table(conn: sqlite3.Connection) -> None:
         logger.info("v3→v4 migration complete — old data preserved in signals_v3")
 
 
+def _migrate_trades_table(conn: sqlite3.Connection) -> None:
+    """Migrate trades table to replace the friday_close CHECK with session_close.
+
+    SQLite does not support ALTER TABLE ... ALTER CONSTRAINT, so a guarded rebuild
+    is used: create a new table with the correct CHECK, copy all rows, drop the old
+    table, and rename the new one. Recreate the indexes afterward.
+
+    The migration is detected by reading the CREATE TABLE statement from
+    sqlite_master and checking for the string 'friday_close'. It is idempotent:
+    if that string is not present the function returns immediately without touching
+    the table.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'"
+    ).fetchone()
+    if row is None:
+        # Table does not exist yet — the schema script will create it correctly.
+        return
+    if "friday_close" not in (row[0] or ""):
+        logger.debug("Trades table migration not needed — skipping")
+        return
+
+    logger.info("Migrating trades table: replacing friday_close with session_close in CHECK")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS trades_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pair TEXT NOT NULL,
+            direction TEXT NOT NULL CHECK(direction IN ('buy', 'sell')),
+            entry_price REAL NOT NULL,
+            exit_price REAL,
+            stop_loss REAL NOT NULL,
+            take_profit REAL NOT NULL,
+            position_size REAL NOT NULL,
+            profit_loss REAL,
+            balance_at_open REAL NOT NULL,
+            balance_at_close REAL,
+            opened_at TEXT NOT NULL,
+            closed_at TEXT,
+            close_reason TEXT CHECK(close_reason IN (
+                'trailing_stop', 'take_profit', 'stop_loss',
+                'manual', 'drawdown_pause', 'session_close'
+            )),
+            duration_minutes INTEGER,
+            mt5_ticket INTEGER
+        );
+
+        INSERT INTO trades_new
+            SELECT id, pair, direction, entry_price, exit_price, stop_loss, take_profit,
+                   position_size, profit_loss, balance_at_open, balance_at_close,
+                   opened_at, closed_at, close_reason, duration_minutes, mt5_ticket
+            FROM trades;
+
+        DROP TABLE trades;
+
+        ALTER TABLE trades_new RENAME TO trades;
+
+        CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);
+        CREATE INDEX IF NOT EXISTS idx_trades_opened ON trades(opened_at);
+        """
+    )
+    conn.commit()
+    logger.info("Trades table migration complete")
+
+
 def init_db(db_path: str | Path | None = None) -> None:
     """Create tables and indexes if they don't exist.
 
     Creates the parent directory for the database file if needed.
+    Migrates the trades table if the old friday_close CHECK is detected.
     Migrates the signals table through v1→v2→v3→v4 if an older schema is detected.
     """
     path = _resolve_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
-        # Check for migration before running schema (table may already exist with old cols).
+        # Migrate trades table before running schema (CHECK cannot be altered in place).
+        # _migrate_trades_table is idempotent and handles the "table doesn't exist" case itself.
+        _migrate_trades_table(conn)
+
+        # Check for signals migration before running schema (table may already exist with old cols).
         existing = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='signals'"
         ).fetchone()

@@ -34,9 +34,7 @@ _REASON_LABELS = {
     "trailing_stop": "Trailing stop hit",
     "manual": "Manual close",
     "drawdown_pause": "Drawdown limit reached",
-    "friday_close": "Friday close",
-    "session_end": "Session ended",
-    "time_stop": "Time stop",
+    "session_close": "Session close (02:00)",
 }
 
 
