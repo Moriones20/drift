@@ -6,6 +6,11 @@ data/*.db
 
 # Logs
 logs/*.log
+logs/*.out
+
+# Bot operational artifacts
+.bot.pid
+backups/
 
 # Backtest output
 backtest/results/*.html

@@ -13,7 +13,8 @@ Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion
 | `docs/knowledge/mt5-python-api.md` | Referencia de la API de MT5 con Python |
 | `docs/knowledge/telegram-bot-setup.md` | Setup del bot de Telegram y formato de mensajes |
 | `docs/knowledge/trend-following-indicators.md` | Fórmulas e implementación de EMA, MACD, ATR |
-| `docs/user/` | Documentación para el usuario (stubs, completar al implementar) |
+| `docs/user/runbook.md` | Comandos Git Bash para encender, apagar, monitorear y diagnosticar el bot |
+| `docs/user/` | Documentación para el usuario (getting-started, configuration, commands) |
 
 ## Tech Stack
 

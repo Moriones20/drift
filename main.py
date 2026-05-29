@@ -217,7 +217,7 @@ def _validate_pairs(pairs: list[str]) -> None:
         if info.trade_tick_value <= 0:
             logger.warning("Pair %s has no tick_value — sizing will fall back to $10/pip", pair)
         else:
-            logger.debug(
+            logger.info(
                 "Pair %s OK (digits=%d, pip_value=$%.2f/lot)",
                 pair,
                 info.digits,
