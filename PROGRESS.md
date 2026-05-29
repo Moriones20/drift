@@ -39,6 +39,25 @@
 - [x] 20. Comparación y ranking de pares
 - [x] 21. Optimización de parámetros (sin overfitting)
 
+## Phase 2.5 — Audit fixes (pre-live)
+
+Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
+
+### Batch A — Crítico + Alto
+- [ ] 1. DB: añadir `session_close` y quitar `friday_close` del CHECK + migración rebuild de `trades`
+- [ ] 2. Cierre de sesión 02:00 bajo `_trade_lock` y aislado por posición (try/except)
+- [ ] 3. `_detect_closed_trades`: motivo desconocido ⇒ `manual`, no `trailing_stop`
+
+### Batch B — Medio
+- [ ] 4. Reporte semanal derivado de `reports.*` config (no hardcode lunes 01:00 UTC)
+- [ ] 5. Paridad backtest⇄vivo: defaults de clase = D029 + run_asian pasa los 6 params desde config
+
+### Batch C — Limpieza
+- [ ] 6. Eliminar config/código muerto (friday_close_hour_utc, take_profit_*, calculate_sl_tp, check_tp_hit, compute_* sin uso, campos legacy de StrategyConfig)
+- [ ] 7. `DEFAULT_PAIRS` = los 5 pares de D029
+- [ ] 8. Sincronizar docs (reescribir PROGRESS legacy, barrer ARCHITECTURE/docs por friday_close/EMA/MACD)
+- [ ] 9. Tests de regresión del ciclo de sesión (session_close, cierre aislado, weekly trigger, migración)
+
 ## Phase 3 — Live
 
 ### Session 8: Go Live (Steps 22-26)
@@ -51,6 +70,12 @@
 ---
 
 ## Notes
+
+> ⚠️ **Pivote de estrategia (D029):** las notas de Phases 1-2 abajo describen las estrategias
+> previas (trend-following EMA/MACD, mean-reversion H4) sobre las que se construyó la
+> infraestructura. La estrategia activa es **Asian Session Scalper M15** (ver `CLAUDE.md`).
+> La infraestructura (risk/executor/db/telegram) se reutilizó sin cambios. La reescritura
+> completa de estas notas históricas es el Step 8 de `docs/plans/audit-fixes.md`.
 
 - Session 1 (Steps 1-4) complete. Foundation: scaffolding, config, MT5 connection, data fetching.
 - Quality review done after Step 4: fixed fragile default_factory access in config.py, switched main.py from print to logging.

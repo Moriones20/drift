@@ -333,3 +333,51 @@ pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
 ```
 
 Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw en `backtest/results_asian_opt/`.
+
+---
+
+## D030 — Time-stop 02:00 registra `close_reason = 'session_close'`
+
+**Decisión:** Añadir `'session_close'` como valor explícito del enum `trades.close_reason` y usarlo en el cierre forzado de las 02:00 UTC. Eliminar `'friday_close'` del enum.
+
+**Por qué:** El time-stop de fin de sesión es un cierre conceptualmente distinto de SL/TP/manual; merece su propia categoría para reportes y estadísticas. El bug crítico de la auditoría era que `main.py` ya escribía `"session_close"` pero el `CHECK` no lo admitía → `IntegrityError` nocturno. `'friday_close'` pertenecía a la estrategia anterior (D026) y ya no tiene ruta que lo escriba bajo Asian Scalper (las sesiones de viernes se omiten y todo cierra a las 02:00).
+
+**Alternativas:** reusar `'manual'` — rechazada por perder granularidad en el reporte semanal.
+
+**Migración:** SQLite no permite `ALTER` de un `CHECK`; se hace rebuild guardado de la tabla `trades` (análogo a las migraciones de `signals`). La DB actual es demo/vacía, así que no hay riesgo de pérdida.
+
+## D031 — Cierre de sesión bajo `_trade_lock` y aislado por posición
+
+**Decisión:** El cierre forzado de las 02:00 se ejecuta dentro de `_trade_lock` y cada posición se procesa en su propio `try/except`.
+
+**Por qué:** `_close_session_trades` corría sin el lock que sí toma el hilo de monitoreo (race en `order_send`/DB), y un fallo en la primera posición abortaba el lote dejando las demás abiertas en el broker (anulando el time-stop) y pausando el bot. La robustez del time-stop es una salvaguarda central de supervivencia.
+
+## D032 — El reporte semanal se deriva de la config, no se hardcodea
+
+**Decisión:** El instante de disparo del reporte se calcula desde `reports.weekly_report_day` + `weekly_report_hour` interpretados en `reports.timezone`, en lugar del "lunes 01:00 UTC" hardcodeado.
+
+**Por qué:** Convención del proyecto "config nunca hardcodeada" (D017). Los campos existían y se documentaban pero el código los ignoraba. El comportamiento por defecto (domingo 20:00 UTC-5 ⇒ lunes 01:00 UTC) se preserva sin regresión.
+
+## D033 — Paridad de parámetros backtest ⇄ vivo
+
+**Decisión:** Los defaults de clase de `AsianSessionStrategy` pasan a los valores optimizados de D029, y `run_asian_backtest`/`run_asian.py` aceptan y aplican los 6 parámetros desde `config.yaml`.
+
+**Por qué:** Un run "plano" del backtest usaba `1.5/25/30·70/1-3` mientras vivo usa `2.5/35/35·65/1-4`. La validación debe correr con los mismos parámetros que producción para ser significativa. `config.yaml` es la fuente única de verdad.
+
+## D034 — Etiqueta de cierre sin `trailing_stop` mientras el trailing esté desactivado
+
+**Decisión:** En `_detect_closed_trades`, los cierres de motivo MT5 desconocido se registran como `'manual'`, no `'trailing_stop'`.
+
+**Por qué:** `use_trailing_stop: false` en Asian Scalper; etiquetar como trailing un cierre que no lo es distorsiona reportes y estadísticas. SL/TP se siguen detectando por `DEAL_REASON`.
+
+## D035 — Eliminar código y config legacy de la estrategia anterior
+
+**Decisión:** Eliminar config parseada-pero-no-usada (`friday_close_hour_utc`, `take_profit_ratio`, `stop_loss_atr_multiplier`, `take_profit_mode`), funciones sin consumidores en runtime (`calculate_sl_tp`, `check_tp_hit`, `compute_ema/macd/rsi/adx/bollinger`) y campos legacy de `StrategyConfig` (EMA/MACD/genéricos), siempre que grep confirme que no tienen uso.
+
+**Por qué:** Convención "sin código muerto". Son restos del trend-following y mean-reversion previos al Asian Scalper. `compute_atr` se conserva (lo usa `trailing.py`).
+
+## D036 — `DEFAULT_PAIRS` coherente con D029
+
+**Decisión:** `config.py:DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]`.
+
+**Por qué:** El fallback listaba `[AUDCAD, NZDCAD, AUDNZD, EURCHF, EURGBP]`, divergente de los 5 pares finales de D029 y de `config.yaml`/`CLAUDE.md`. Aunque `config.yaml` siempre manda, un fallback divergente es una trampa.
