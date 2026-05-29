@@ -57,9 +57,6 @@ _PROJECT_ROOT = Path(__file__).parent
 # Tracks the date of the last sent report to avoid duplicate sends.
 _last_report_date: date | None = None
 
-# Friday close: kept for reference; call removed from _monitoring_tick (Step 6).
-_friday_closed: bool = False
-
 # Prevents race conditions between the main analysis cycle and the monitoring thread.
 _trade_lock = threading.Lock()
 
@@ -703,94 +700,6 @@ def _detect_closed_trades(
                 pnl,
                 close_reason,
             )
-
-
-def _check_friday_close(
-    config: DriftConfig,
-    state: BotState,
-    mt5_positions: list[dict],
-    balance: float,
-    bot_app,
-) -> None:
-    """Friday close logic — kept for reference but not called from _monitoring_tick.
-
-    The Asian Session Scalper never opens positions on Friday (skip-Friday rule in
-    _in_session_window), so there should be no open trades to close on Friday.
-    The call site was removed from _monitoring_tick in Step 6 to avoid a race with
-    the 02:00 session-close trigger.  Function retained here in case a future
-    strategy needs it.
-    """
-    global _friday_closed
-
-    now = datetime.now(timezone.utc)
-
-    if now.weekday() == 0 and _friday_closed:
-        _friday_closed = False
-
-    if now.weekday() != 4 or now.hour < config.system.friday_close_hour_utc:
-        return
-
-    if _friday_closed:
-        return
-
-    recent_threshold = now - timedelta(hours=4)
-    positions_to_close = [
-        p
-        for p in mt5_positions
-        if p.get("profit", 0) < 0 or p.get("time_open", now) >= recent_threshold
-    ]
-    if not positions_to_close:
-        return
-
-    _friday_closed = True
-
-    logger.info(
-        "Friday close: closing %d trades (losing or recently opened)",
-        len(positions_to_close),
-    )
-    for pos in positions_to_close:
-        success = close_trade(
-            ticket=pos["ticket"],
-            pair=pos["pair"],
-            lot_size=pos["volume"],
-            direction=pos["direction"],
-            magic=config.system.magic_number,
-        )
-        if success:
-            import MetaTrader5 as mt5
-
-            exit_price = 0.0
-            pnl = pos.get("profit", 0.0)
-            deals = mt5.history_deals_get(position=pos["ticket"])
-            if deals:
-                close_deal = deals[-1]
-                exit_price = close_deal.price
-                pnl = close_deal.profit
-
-            duration = 0
-            with get_connection() as db_conn:
-                trade = get_trade_by_ticket(db_conn, pos["ticket"])
-                if trade and trade.get("closed_at") is None:
-                    close_trade_record(
-                        db_conn,
-                        trade["id"],
-                        exit_price=exit_price,
-                        profit_loss=pnl,
-                        balance_at_close=balance,
-                        close_reason="friday_close",
-                    )
-                    updated = get_trade_by_ticket(db_conn, pos["ticket"])
-                    duration = (updated["duration_minutes"] or 0) if updated else 0
-            trade_info = {
-                "pair": pos["pair"],
-                "direction": pos["direction"],
-                "entry_price": pos["price_open"],
-                "exit_price": exit_price,
-                "profit_loss": pnl,
-                "close_reason": "friday_close",
-                "duration_minutes": duration,
-            }
-            _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
 
 
 # ---------------------------------------------------------------------------
