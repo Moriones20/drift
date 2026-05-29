@@ -20,7 +20,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backtest.download_data import PAIRS, download_all, load_data
-from backtest.engine import format_results, prepare_backtest_data, run_backtest, save_results
+from backtest.engine_meanrev_legacy import (
+    format_results,
+    prepare_backtest_data,
+    run_backtest,
+    save_results,
+)
 
 logging.basicConfig(
     level=logging.INFO,

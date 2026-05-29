@@ -19,7 +19,7 @@ from backtesting import Backtest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backtest.download_data import generate_synthetic_data, load_data
-from backtest.engine import PAIRS, DriftBacktestStrategy, prepare_backtest_data
+from backtest.engine_meanrev_legacy import PAIRS, DriftBacktestStrategy, prepare_backtest_data
 
 logging.basicConfig(
     level=logging.INFO,

@@ -7,7 +7,9 @@ Replicates the live strategy exactly:
   - Max trade duration: 30 H4 bars (~5 days)
 
 Usage:
-    from backtest.engine import prepare_backtest_data, run_backtest, format_results, save_results
+    from backtest.engine_meanrev_legacy import (
+        prepare_backtest_data, run_backtest, format_results, save_results
+    )
 """
 
 from __future__ import annotations
@@ -27,7 +29,11 @@ from backtest._indicators import adx as _adx
 from backtest._indicators import atr as _atr
 from backtest._indicators import bollinger_bands as _bb
 from backtest._indicators import rsi as _rsi
-from drift.mlp_filter import RegimeFilter
+
+try:
+    from drift.mlp_filter import RegimeFilter  # removed in Step 9 cleanup
+except ImportError:
+    RegimeFilter = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 

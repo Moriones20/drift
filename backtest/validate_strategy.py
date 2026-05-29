@@ -18,7 +18,7 @@ from backtesting import Backtest
 # Make project root importable when run as a script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backtest.engine import DriftBacktestStrategy, prepare_backtest_data
+from backtest.engine_meanrev_legacy import DriftBacktestStrategy, prepare_backtest_data
 
 logging.basicConfig(
     level=logging.INFO,

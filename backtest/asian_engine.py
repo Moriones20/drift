@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from backtest._indicators import adx as _adx
 from backtest._indicators import atr as _atr
 from backtest._indicators import rsi as _rsi
-from backtest.engine import format_results, save_results
+from backtest.engine_meanrev_legacy import format_results, save_results
 
 logger = logging.getLogger(__name__)
 
