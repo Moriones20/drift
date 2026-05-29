@@ -36,16 +36,16 @@ La estrategia identifica el rango de la noche y, cuando el precio toca un extrem
 
 ## Parámetros configurables
 
-| Parámetro | Valor por defecto | Qué controla |
+| Parámetro | Valor (universal optimizado) | Qué controla |
 |---|---|---|
-| `sl_atr_mult` | 1.5 | Multiplicador de ATR para el stop loss. Más alto = SL más lejos = menos stops pero pérdidas mayores |
-| `adx_max_threshold` | 25.0 | Máximo ADX H4 permitido. Más alto = más permisivo, más trades pero en mercados más volátiles |
-| `rsi_oversold` | 30.0 | RSI para señal de compra. Más alto (ej: 35) = más señales pero menos confirmación |
-| `rsi_overbought` | 70.0 | RSI para señal de venta. Más bajo (ej: 65) = más señales pero menos confirmación |
+| `sl_atr_mult` | 2.5 | Multiplicador de ATR para el stop loss. Más alto = SL más lejos = menos stops pero pérdidas mayores |
+| `adx_max_threshold` | 35.0 | Máximo ADX H4 permitido. Más alto = más permisivo, más trades pero en mercados más volátiles |
+| `rsi_oversold` | 35.0 | RSI para señal de compra. Más alto = más señales pero menos confirmación |
+| `rsi_overbought` | 65.0 | RSI para señal de venta. Más bajo = más señales pero menos confirmación |
 | `range_atr_min` | 1.0 | Ancho mínimo del rango en múltiplos de ATR |
-| `range_atr_max` | 3.0 | Ancho máximo del rango |
+| `range_atr_max` | 4.0 | Ancho máximo del rango |
 
-Estos valores son los baseline del primer backtest. La optimización fina por par se documenta en `docs/plans/asian-session-scalper-live.md`.
+Estos son los valores universales tras la optimización con grid search de 1620 combinaciones × 6 pares + búsqueda universal. Detalle en D029 y `docs/plans/asian-session-scalper-live.md`.
 
 ## Tiempos clave (fijos, no configurables)
 
@@ -75,18 +75,19 @@ Los pares ideales son los que **no tienen actividad fuerte durante la sesión as
 |---|---|
 | USDJPY | Tokyo opera USDJPY activamente desde las 23:00 GMT — rompe la hipótesis de mercado tranquilo. En el primer backtest dio PF 0.89. |
 
-## Métricas del primer backtest (datos reales MT5, 2 años de M15)
+## Métricas tras optimización (datos reales MT5, 2 años de M15, parámetros universales)
 
 | Par | Return | Win Rate | PF | Max DD | Trades | Sharpe |
 |---|---|---|---|---|---|---|
-| EURCHF | +5.84% | 78.3% | **8.17** | -0.26% | 46 | 3.16 |
-| AUDNZD | +5.60% | 66.2% | 4.29 | -0.30% | 77 | 3.91 |
-| EURJPY | +2.55% | 71.4% | 3.58 | -0.42% | 42 | 1.80 |
-| GBPJPY | +1.47% | 61.9% | 2.02 | -0.44% | 42 | 1.22 |
-| EURGBP | +1.31% | 65.8% | 2.63 | -0.39% | 38 | 1.50 |
-| USDJPY | -0.18% | 37.5% | 0.89 | -0.74% | 32 | DROP |
+| AUDNZD | +16.16% | 78.1% | **6.03** | -0.30% | 196 | **7.41** |
+| EURCHF | +12.52% | 77.7% | 4.11 | -0.66% | 139 | 4.15 |
+| EURJPY | +5.61% | 70.1% | 3.55 | -0.79% | 97 | 2.66 |
+| GBPJPY | +5.61% | 67.9% | 2.68 | -0.65% | 137 | 2.95 |
+| EURGBP | +4.69% | 68.3% | 2.69 | -0.54% | 139 | 2.90 |
 
-Portfolio total: PF 3.60 promedio, peor drawdown -0.7%, 277 trades en 2 años.
+Portfolio total: +9% sobre $2500 (5 pares × $500) en 2 años, peor drawdown < 1%, 708 trades.
+
+USDJPY fue descartado tras la optimización (Tokyo opera USDJPY durante la sesión asiática, rompe la hipótesis de mercado tranquilo). Detalle en D029.
 
 ## Riesgos conocidos
 
