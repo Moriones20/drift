@@ -12,17 +12,23 @@ Antes de arrancar el bot, verificá:
 2. **`config.yaml` existe** con tus credenciales reales (broker, telegram).
 3. **Las dependencias están instaladas**: `pip install -r requirements.txt`.
 
-## Arrancar el bot (producción — servicio NSSM)
+## Arrancar el bot (producción — servicio WinSW)
 
-Para producción se recomienda correr el bot como servicio Windows con NSSM en vez del método
-`nohup`.  NSSM reinicia el proceso automáticamente si muere (crash de Python o muerte dura), y lo
-levanta al encender el PC.
+Para producción se recomienda correr el bot como servicio Windows con WinSW en vez del método
+`nohup`.  WinSW reinicia el proceso automáticamente si muere (crash de Python o muerte dura), lo
+levanta al encender el PC, y su configuración XML vive versionada en el repo.
+
+> **Por qué WinSW y no NSSM:** NSSM no recibe mantenimiento activo desde 2014.  WinSW es un
+> proyecto activo (v2.12.0, enero 2026), su configuración es un archivo XML en el repo
+> (versionable, portable al VPS), tiene rotación de logs nativa y política de reintentos
+> configurable.
 
 ### Pre-requisitos para el servicio
 
-1. Descargá `nssm.exe` desde <https://nssm.cc/download> y ponelo en el PATH
-   (por ejemplo copialo a `C:\Windows\System32\`).
-2. Abrí PowerShell como Administrador.
+1. Descargá `WinSW-x64.exe` desde <https://github.com/winsw/winsw/releases/tag/v2.12.0>.
+2. Renombrá el archivo descargado a `drift-service.exe`.
+3. Copialo a la carpeta `scripts\` del repo (junto a `drift-service.xml` que ya está en el repo).
+4. Abrí PowerShell como Administrador.
 
 ### Instalar el servicio (una sola vez)
 
@@ -32,7 +38,8 @@ Desde PowerShell elevado, parado en cualquier directorio:
 & "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1"
 ```
 
-El script detecta automáticamente el Python del PATH y la raíz del repo.
+El script detecta automáticamente el Python del PATH, parcheaa el XML con la ruta real al
+intérprete, y llama a `drift-service.exe install` + `drift-service.exe start`.
 Para usar un virtualenv específico:
 
 ```powershell
@@ -43,26 +50,36 @@ Para usar un virtualenv específico:
 ### Controlar el servicio
 
 ```powershell
-nssm start   Drift   # iniciar
-nssm stop    Drift   # detener
-nssm restart Drift   # reiniciar
-nssm status  Drift   # ver estado (SERVICE_RUNNING / SERVICE_STOPPED)
+scripts\drift-service.exe start     # iniciar
+scripts\drift-service.exe stop      # detener
+scripts\drift-service.exe restart   # reiniciar
+scripts\drift-service.exe status    # ver estado
+```
+
+Alternativamente, con los comandos nativos de Windows:
+
+```powershell
+sc.exe start   Drift
+sc.exe stop    Drift
+sc.exe query   Drift
 ```
 
 ### Desinstalar el servicio
 
 ```powershell
-nssm remove Drift confirm
+scripts\drift-service.exe stop
+scripts\drift-service.exe uninstall
 ```
 
 ### Logs del servicio
 
-NSSM redirige stdout y stderr a archivos separados (además del `logs/drift.log` del bot):
+WinSW captura stdout y stderr del proceso en archivos rotativos (10 MB, hasta 5 copias):
 
 ```powershell
-Get-Content -Wait logs\service-stdout.log   # stdout en vivo
-Get-Content -Wait logs\service-stderr.log   # stderr (trazas no capturadas)
+Get-Content -Wait logs\drift-service.out.log   # stdout + stderr en vivo
 ```
+
+El log de la aplicación sigue en `logs\drift.log` (escritura directa del bot).
 
 ### Mecanismo de restart y global error handler
 
@@ -71,14 +88,15 @@ Hay dos capas complementarias de supervivencia:
 - **Error handler de Python** (`main.py`): cualquier excepción de Python que escapa todos los
   handlers internos es capturada en el nivel más alto, logueada con traza completa en
   `logs/drift.log`, notificada por Telegram, registrada en la DB, y luego el proceso termina con
-  error para que NSSM lo reinicie.
-- **NSSM**: reinicia el proceso si muere por cualquier motivo, incluyendo crashes nativos
-  (segfault en pandas/numpy/MT5) que Python no puede capturar.  Después de 10 segundos de espera
-  el proceso vuelve a arrancar solo.
+  error para que WinSW lo reinicie.
+- **WinSW**: reinicia el proceso si muere por cualquier motivo, incluyendo crashes nativos
+  (segfault en pandas/numpy/MT5) que Python no puede capturar.  La política de reintentos es
+  10 s en el primer fallo, 30 s en el segundo, 60 s en los siguientes; el contador se resetea
+  si el bot lleva 1 hora estable.
 
-> **Limitación conocida:** NSSM reinicia procesos *muertos*, no descongela procesos *suspendidos*.
-> Después de un resume desde suspend/hibernate, el proceso sigue vivo pero MT5 puede estar muerto —
-> eso lo maneja el reconnect automático (paso 6 del plan de fixes), no NSSM.
+> **Limitación conocida:** WinSW reinicia procesos *muertos*, no descongela procesos
+> *suspendidos*.  Después de un resume desde suspend/hibernate, el proceso sigue vivo pero MT5
+> puede estar muerto — eso lo maneja el reconnect automático (paso 6 del plan de fixes), no WinSW.
 
 ---
 
@@ -97,7 +115,7 @@ python main.py
 ### Modo background detached (método legacy — NO recomendado para producción)
 
 Este método sobrevive aunque cierres la terminal, pero NO reinicia si el proceso muere.
-Usarlo solo para pruebas rápidas; en producción usá el servicio NSSM.
+Usarlo solo para pruebas rápidas; en producción usá el servicio WinSW.
 
 ```bash
 nohup python main.py > logs/drift.out 2>&1 &

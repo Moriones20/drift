@@ -1,58 +1,54 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Installs the Drift forex bot as a Windows service managed by NSSM.
+    Installs the Drift forex bot as a Windows service managed by WinSW.
 
 .DESCRIPTION
-    Uses NSSM (Non-Sucking Service Manager) to register Drift as a Windows service
+    Uses WinSW (Windows Service Wrapper) to register Drift as a Windows service
     named "Drift".  The service:
       - Runs under the current Python interpreter (overridable via -PythonExe).
-      - Sets AppDirectory to the repository root so relative paths in main.py work.
-      - Restarts automatically on any exit (crash or clean) with a 10-second delay.
-      - Applies a throttle so an immediate-crash loop backs off progressively.
-      - Redirects stdout and stderr to logs\service-stdout.log / service-stderr.log.
-      - Starts automatically on Windows boot (SERVICE_AUTO_START).
+      - Sets the working directory to the repository root so relative paths in
+        main.py (config.yaml, data\, logs\) resolve correctly.
+      - Restarts automatically on failure with a 10-second initial delay and
+        progressive backoff (10s / 30s / 60s), resetting after 1 hour stable.
+      - Captures stdout and stderr to logs\service-*.log with 10 MB rotation.
+      - Starts automatically on Windows boot (Automatic start mode).
+
+    WinSW convention: the .exe and .xml share the same base name and must be
+    in the same directory.  This script expects both files to live in scripts\:
+        scripts\drift-service.exe   <- WinSW binary (see NOTES)
+        scripts\drift-service.xml   <- service descriptor (already in repo)
 
 .NOTES
-    NSSM is NOT included in this repository.  Download nssm.exe from:
-        https://nssm.cc/download
-    Place nssm.exe somewhere on your PATH (e.g. C:\Windows\System32\) or pass
-    its full path via -NssmExe.
+    WinSW is NOT included in this repository.  Download WinSW-x64.exe from:
+        https://github.com/winsw/winsw/releases/tag/v2.12.0
+    Rename the downloaded file to "drift-service.exe" and place it in scripts\.
 
-    After running this script, start the service with:
-        nssm start Drift
-
-    To verify the service is running:
-        nssm status Drift
-
-    To stop/restart:
-        nssm stop Drift
-        nssm restart Drift
+    After running this script, control the service with:
+        scripts\drift-service.exe start
+        scripts\drift-service.exe stop
+        scripts\drift-service.exe restart
+        scripts\drift-service.exe status
 
     To uninstall the service entirely:
-        nssm remove Drift confirm
+        scripts\drift-service.exe uninstall
 
 .PARAMETER PythonExe
     Full path to the Python interpreter.  Defaults to the python.exe found on PATH.
-
-.PARAMETER NssmExe
-    Full path to nssm.exe.  Defaults to "nssm" (assumes it is on PATH).
 
 .EXAMPLE
     # Run from an elevated PowerShell prompt in any directory:
     & "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1"
 
 .EXAMPLE
-    # Specify a virtualenv Python and a custom nssm location:
-    & ".\scripts\install-service.ps1" `
-        -PythonExe "C:\Users\ASUS\envs\drift\Scripts\python.exe" `
-        -NssmExe   "C:\tools\nssm\win64\nssm.exe"
+    # Specify a virtualenv Python:
+    & "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1" `
+        -PythonExe "C:\Users\ASUS\envs\drift\Scripts\python.exe"
 #>
 
 [CmdletBinding()]
 param(
-    [string]$PythonExe = "",
-    [string]$NssmExe   = "nssm"
+    [string]$PythonExe = ""
 )
 
 Set-StrictMode -Version Latest
@@ -72,6 +68,32 @@ if (-not (Test-Path $MainPy)) {
     exit 1
 }
 
+# WinSW binary and XML descriptor must share the same base name in the same directory.
+$WinSwExe = Join-Path $PSScriptRoot "drift-service.exe"
+$WinSwXml = Join-Path $PSScriptRoot "drift-service.xml"
+
+# Check that drift-service.xml is present (it is version-controlled, so it should be).
+if (-not (Test-Path $WinSwXml)) {
+    Write-Error "Service descriptor not found: $WinSwXml"
+    exit 1
+}
+
+# Check that drift-service.exe is present; if not, guide the user to download it.
+if (-not (Test-Path $WinSwExe)) {
+    Write-Error @"
+WinSW binary not found: $WinSwExe
+
+To install the Drift service you need the WinSW executable:
+  1. Download WinSW-x64.exe from:
+         https://github.com/winsw/winsw/releases/tag/v2.12.0
+  2. Rename the downloaded file to "drift-service.exe".
+  3. Place it in the scripts\ directory of this repository:
+         $PSScriptRoot\drift-service.exe
+  4. Re-run this script.
+"@
+    exit 1
+}
+
 # Resolve Python interpreter.
 if ($PythonExe -eq "") {
     $found = Get-Command python -ErrorAction SilentlyContinue
@@ -86,95 +108,77 @@ if (-not (Test-Path $PythonExe)) {
     exit 1
 }
 
-# Resolve nssm.
-$nssmCmd = Get-Command $NssmExe -ErrorAction SilentlyContinue
-if ($null -eq $nssmCmd) {
-    Write-Error @"
-nssm not found.  Please:
-  1. Download nssm.exe from https://nssm.cc/download
-  2. Place it on your PATH (e.g. copy to C:\Windows\System32\), OR
-  3. Pass its full path: -NssmExe "C:\path\to\nssm.exe"
-"@
-    exit 1
-}
-
-# Log directory (must exist for NSSM output redirection).
+# Log directory must exist before the service starts writing to it.
 $LogDir = Join-Path $RepoRoot "logs"
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Force $LogDir | Out-Null
 }
 
-$StdoutLog = Join-Path $LogDir "service-stdout.log"
-$StderrLog = Join-Path $LogDir "service-stderr.log"
-
 $ServiceName = "Drift"
 
 Write-Host ""
-Write-Host "Installing Drift as a Windows service via NSSM"
+Write-Host "Installing Drift as a Windows service via WinSW"
 Write-Host "  Service name  : $ServiceName"
 Write-Host "  Python        : $PythonExe"
 Write-Host "  Entry point   : $MainPy"
 Write-Host "  Working dir   : $RepoRoot"
-Write-Host "  stdout log    : $StdoutLog"
-Write-Host "  stderr log    : $StderrLog"
+Write-Host "  Log dir       : $LogDir"
+Write-Host "  WinSW binary  : $WinSwExe"
+Write-Host "  WinSW config  : $WinSwXml"
 Write-Host ""
+
+# ---------------------------------------------------------------------------
+# Patch the XML descriptor with the actual Python path.
+# WinSW does not support environment-variable expansion in <executable>, so
+# we rewrite the placeholder in the XML before calling "install".
+# We operate on a temporary copy so the version-controlled file stays clean.
+# ---------------------------------------------------------------------------
+
+$TempXml = Join-Path $PSScriptRoot "drift-service.xml.tmp"
+(Get-Content $WinSwXml -Encoding UTF8) -replace "PYTHON_EXE_PLACEHOLDER", $PythonExe |
+    Set-Content $TempXml -Encoding UTF8
+
+# WinSW looks for the XML file with the same base name as the .exe in the same
+# directory.  We copy the patched XML over for the duration of the install.
+Copy-Item $TempXml $WinSwXml -Force
+Remove-Item $TempXml -Force
 
 # ---------------------------------------------------------------------------
 # Remove any previous installation of the same service name.
 # ---------------------------------------------------------------------------
-$existing = & $NssmExe status $ServiceName 2>$null
+$statusOutput = & $WinSwExe status 2>&1
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "Existing service '$ServiceName' found — removing before reinstall."
-    & $NssmExe remove $ServiceName confirm
+    Write-Host "Existing service '$ServiceName' found — uninstalling before reinstall."
+    & $WinSwExe stop   2>&1 | Out-Null
+    & $WinSwExe uninstall
 }
 
 # ---------------------------------------------------------------------------
-# Install the service.
+# Install and start the service.
 # ---------------------------------------------------------------------------
+Write-Host "Registering service..."
+& $WinSwExe install
+if ($LASTEXITCODE -ne 0) { Write-Error "WinSW install failed"; exit 1 }
 
-# Core: register the executable and the script argument.
-& $NssmExe install $ServiceName $PythonExe $MainPy
-if ($LASTEXITCODE -ne 0) { Write-Error "nssm install failed"; exit 1 }
-
-# Working directory — ensures relative paths (config.yaml, data/, logs/) resolve correctly.
-& $NssmExe set $ServiceName AppDirectory $RepoRoot
-
-# Restart policy: restart on any exit code (including clean exit 0 and crashes).
-& $NssmExe set $ServiceName AppExit Default Restart
-
-# Delay between restarts in milliseconds (10 seconds).
-& $NssmExe set $ServiceName AppRestartDelay 10000
-
-# Throttle: if the service exits faster than this many milliseconds after starting,
-# NSSM considers it a rapid-crash and applies progressive backoff.  Set to 1500 ms
-# (if the process dies within 1.5 s of starting it is counted as a rapid crash).
-& $NssmExe set $ServiceName AppThrottle 1500
-
-# Redirect stdout and stderr to log files.  RotateBytes = 10 MB, RotateOnline = 1
-# means NSSM rotates the log while the service is running, matching the Python
-# RotatingFileHandler already in place for drift.log.
-& $NssmExe set $ServiceName AppStdout         $StdoutLog
-& $NssmExe set $ServiceName AppStderr         $StderrLog
-& $NssmExe set $ServiceName AppStdoutCreationDisposition 4
-& $NssmExe set $ServiceName AppStderrCreationDisposition 4
-& $NssmExe set $ServiceName AppRotateFiles    1
-& $NssmExe set $ServiceName AppRotateBytes    10485760
-
-# Automatic start on boot.
-& $NssmExe set $ServiceName Start SERVICE_AUTO_START
-
-# Human-readable description visible in services.msc.
-& $NssmExe set $ServiceName Description "Drift autonomous forex bot (Asian Session Scalper)"
+Write-Host "Starting service..."
+& $WinSwExe start
+if ($LASTEXITCODE -ne 0) { Write-Error "WinSW start failed"; exit 1 }
 
 Write-Host ""
-Write-Host "Service '$ServiceName' installed successfully."
+Write-Host "Service '$ServiceName' installed and started successfully."
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Make sure MT5 is running and logged in."
-Write-Host "  2. Start the service:   nssm start $ServiceName"
-Write-Host "  3. Check status:        nssm status $ServiceName"
-Write-Host "  4. Watch the log:       Get-Content -Wait logs\service-stdout.log"
+Write-Host "  2. Check status:        scripts\drift-service.exe status"
+Write-Host "  3. Watch the log:       Get-Content -Wait logs\drift-service.out.log"
 Write-Host ""
-Write-Host "NOTE: NSSM restarts the process after a crash (Python-level or native)."
+Write-Host "Service control commands (run from repo root):"
+Write-Host "  scripts\drift-service.exe start"
+Write-Host "  scripts\drift-service.exe stop"
+Write-Host "  scripts\drift-service.exe restart"
+Write-Host "  scripts\drift-service.exe status"
+Write-Host "  scripts\drift-service.exe uninstall"
+Write-Host ""
+Write-Host "NOTE: WinSW restarts the process on failure (10s/30s/60s backoff, reset after 1h stable)."
 Write-Host "      The global error handler in main.py writes a traceback to logs\drift.log"
 Write-Host "      before exiting, so every Python-level crash leaves evidence."
