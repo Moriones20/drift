@@ -859,110 +859,155 @@ def main() -> None:
     _configure_logging()
     logger.info("Drift bot starting")
 
-    try:
-        config = load_config()
-    except (FileNotFoundError, ValueError) as exc:
-        logger.critical("Config error: %s", exc)
-        sys.exit(1)
-
-    init_db()
-
-    if not connect(config.broker):
-        logger.critical("Cannot connect to MT5 — aborting")
-        sys.exit(1)
-
-    _validate_pairs(config.pairs)
+    # Last-resort references — populated during setup so the crash handler can
+    # attempt notifications even if the crash happens before the main loop.
+    _crash_config = None
+    _crash_bot_app = None
 
     try:
-        balance = get_balance()
-    except RuntimeError:
-        logger.critical("Cannot get balance after connect — aborting")
-        disconnect()
-        sys.exit(1)
+        try:
+            config = load_config()
+        except (FileNotFoundError, ValueError) as exc:
+            logger.critical("Config error: %s", exc)
+            sys.exit(1)
 
-    with get_connection() as db_conn:
-        stats = get_stats(db_conn)
-        peak_from_db = stats.get("peak_balance") or 0.0
+        _crash_config = config
 
-    peak_balance = max(balance, peak_from_db)
-    peak_balance_ref: list[float] = [peak_balance]
-    logger.info("Starting balance=%.2f peak_balance=%.2f", balance, peak_balance)
+        init_db()
 
-    # Per-pair session state — reset at the start of each session (21:00 UTC).
-    session_states: dict[str, SessionState] = {pair: SessionState() for pair in config.pairs}
+        if not connect(config.broker):
+            logger.critical("Cannot connect to MT5 — aborting")
+            sys.exit(1)
 
-    state = BotState()
-    shutdown_event = threading.Event()
+        _validate_pairs(config.pairs)
 
-    tg_loop = asyncio.new_event_loop()
-    global _tg_loop
-    _tg_loop = tg_loop
+        try:
+            balance = get_balance()
+        except RuntimeError:
+            logger.critical("Cannot get balance after connect — aborting")
+            disconnect()
+            sys.exit(1)
 
-    bot_app = tg_loop.run_until_complete(
-        setup_bot(
-            token=config.telegram.bot_token,
-            chat_id=config.telegram.chat_id,
-            state=state,
+        with get_connection() as db_conn:
+            stats = get_stats(db_conn)
+            peak_from_db = stats.get("peak_balance") or 0.0
+
+        peak_balance = max(balance, peak_from_db)
+        peak_balance_ref: list[float] = [peak_balance]
+        logger.info("Starting balance=%.2f peak_balance=%.2f", balance, peak_balance)
+
+        # Per-pair session state — reset at the start of each session (21:00 UTC).
+        session_states: dict[str, SessionState] = {pair: SessionState() for pair in config.pairs}
+
+        state = BotState()
+        shutdown_event = threading.Event()
+
+        tg_loop = asyncio.new_event_loop()
+        global _tg_loop
+        _tg_loop = tg_loop
+
+        bot_app = tg_loop.run_until_complete(
+            setup_bot(
+                token=config.telegram.bot_token,
+                chat_id=config.telegram.chat_id,
+                state=state,
+            )
         )
-    )
-    tg_loop.run_until_complete(bot_app.initialize())
+        tg_loop.run_until_complete(bot_app.initialize())
 
-    tg_thread = threading.Thread(
-        target=_run_telegram_thread,
-        args=(bot_app, tg_loop),
-        daemon=True,
-        name="telegram",
-    )
-    tg_thread.start()
+        _crash_bot_app = bot_app
 
-    monitor_thread = threading.Thread(
-        target=_monitoring_loop,
-        args=(config, state, peak_balance_ref, shutdown_event, bot_app),
-        daemon=True,
-        name="monitor",
-    )
-    monitor_thread.start()
-
-    with get_connection() as db_conn:
-        log_event(db_conn, "start", detail="Drift bot started", balance=balance)
-
-    _fire_and_forget(
-        notify_bot_status(
-            bot_app.bot,
-            config.telegram.chat_id,
-            "started",
-            f"Balance: ${balance:.2f}",
+        tg_thread = threading.Thread(
+            target=_run_telegram_thread,
+            args=(bot_app, tg_loop),
+            daemon=True,
+            name="telegram",
         )
-    )
+        tg_thread.start()
 
-    def _handle_signal(signum, frame) -> None:
-        logger.info("Received signal %d — requesting stop", signum)
-        state.stop_requested = True
+        monitor_thread = threading.Thread(
+            target=_monitoring_loop,
+            args=(config, state, peak_balance_ref, shutdown_event, bot_app),
+            daemon=True,
+            name="monitor",
+        )
+        monitor_thread.start()
 
-    signal.signal(signal.SIGINT, _handle_signal)
-    signal.signal(signal.SIGTERM, _handle_signal)
+        with get_connection() as db_conn:
+            log_event(db_conn, "start", detail="Drift bot started", balance=balance)
 
-    logger.info("Drift bot running — M15 Asian session scheduler active")
+        _fire_and_forget(
+            notify_bot_status(
+                bot_app.bot,
+                config.telegram.chat_id,
+                "started",
+                f"Balance: ${balance:.2f}",
+            )
+        )
 
-    # Track whether we are currently inside a session to detect the B→A transition.
-    _session_active: bool = False
+        def _handle_signal(signum, frame) -> None:
+            logger.info("Received signal %d — requesting stop", signum)
+            state.stop_requested = True
 
-    try:
-        while not state.stop_requested:
-            try:
-                now = datetime.now(timezone.utc)
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
 
-                # --- State A: outside window — sleep until next session start ---
-                if not _in_session_window(now, config):
-                    if _session_active:
-                        # Transitioned from inside → outside — session already closed at 02:00.
-                        _session_active = False
+        logger.info("Drift bot running — M15 Asian session scheduler active")
 
-                    next_start = _next_session_start(now, config)
-                    wait_secs = _seconds_until(next_start) + CANDLE_CLOSE_DELAY_SECONDS
+        # Track whether we are currently inside a session to detect the B→A transition.
+        _session_active: bool = False
+
+        try:
+            while not state.stop_requested:
+                try:
+                    now = datetime.now(timezone.utc)
+
+                    # --- State A: outside window — sleep until next session start ---
+                    if not _in_session_window(now, config):
+                        if _session_active:
+                            # Transitioned from inside → outside — session already closed at 02:00.
+                            _session_active = False
+
+                        next_start = _next_session_start(now, config)
+                        wait_secs = _seconds_until(next_start) + CANDLE_CLOSE_DELAY_SECONDS
+                        logger.info(
+                            "Outside window (state A) — sleeping until %s UTC (%.0fs)",
+                            next_start.strftime("%Y-%m-%d %H:%M"),
+                            wait_secs,
+                        )
+
+                        deadline = time.monotonic() + wait_secs
+                        while time.monotonic() < deadline and not state.stop_requested:
+                            time.sleep(min(10.0, deadline - time.monotonic()))
+
+                        if state.stop_requested:
+                            break
+
+                        # Refresh now; re-check window (DST edge, etc.)
+                        continue
+
+                    # --- Entering session for the first time (B starts) ---
+                    if not _session_active:
+                        _session_active = True
+                        # Reset all session states at session start.
+                        for pair in config.pairs:
+                            session_states[pair] = SessionState()
+                        logger.info("Session started — all session states reset")
+                        _fire_and_forget(
+                            notify_bot_status(
+                                bot_app.bot,
+                                config.telegram.chat_id,
+                                "started",
+                                "Asian session started (21:00 UTC)",
+                            )
+                        )
+
+                    # --- States B + C + D: wait for next M15 close and process tick ---
+                    next_close = _next_m15_close(now)
+                    wait_secs = _seconds_until(next_close) + CANDLE_CLOSE_DELAY_SECONDS
                     logger.info(
-                        "Outside window (state A) — sleeping until %s UTC (%.0fs)",
-                        next_start.strftime("%Y-%m-%d %H:%M"),
+                        "Next M15 close at %s UTC — sleeping %.0fs",
+                        next_close.strftime("%H:%M"),
                         wait_secs,
                     )
 
@@ -973,71 +1018,80 @@ def main() -> None:
                     if state.stop_requested:
                         break
 
-                    # Refresh now; re-check window (DST edge, etc.)
-                    continue
+                    bar_close_time = next_close
+                    _run_m15_tick(
+                        config=config,
+                        state=state,
+                        peak_balance_ref=peak_balance_ref,
+                        session_states=session_states,
+                        bot_app=bot_app,
+                        bar_close_time=bar_close_time,
+                    )
 
-                # --- Entering session for the first time (B starts) ---
-                if not _session_active:
-                    _session_active = True
-                    # Reset all session states at session start.
-                    for pair in config.pairs:
-                        session_states[pair] = SessionState()
-                    logger.info("Session started — all session states reset")
+                    # After state D, the session is over — next iteration will detect
+                    # outside-window and enter state A.
+
+                except Exception:
+                    logger.exception("Unexpected error in main loop — pausing bot and retrying")
+                    state.paused = True
                     _fire_and_forget(
-                        notify_bot_status(
+                        notify_error(
                             bot_app.bot,
                             config.telegram.chat_id,
-                            "started",
-                            "Asian session started (21:00 UTC)",
+                            "Unexpected error in main loop — bot paused. Use /resume after investigation.",  # noqa: E501
                         )
                     )
+                    time.sleep(60)
+        finally:
+            _shutdown(config, state, bot_app, shutdown_event)
 
-                # --- States B + C + D: wait for next M15 close and process tick ---
-                next_close = _next_m15_close(now)
-                wait_secs = _seconds_until(next_close) + CANDLE_CLOSE_DELAY_SECONDS
-                logger.info(
-                    "Next M15 close at %s UTC — sleeping %.0fs",
-                    next_close.strftime("%H:%M"),
-                    wait_secs,
+            if tg_loop.is_running():
+                tg_loop.call_soon_threadsafe(tg_loop.stop)
+            tg_thread.join(timeout=5)
+
+    except SystemExit:
+        # Clean exits via sys.exit() (e.g. config errors, failed MT5 connect) are
+        # intentional — do not treat them as crashes.
+        raise
+
+    except BaseException as exc:
+        # Last-resort handler: any Python-level exception that escaped all inner
+        # handlers (e.g. MemoryError, KeyboardInterrupt reaching this level,
+        # or an unforeseen RuntimeError in a dependency).
+        #
+        # Strategy:
+        #   1. Log the full traceback so the crash leaves evidence in drift.log.
+        #   2. Attempt a best-effort Telegram notification (non-blocking).
+        #   3. Record a DB event if the DB was already initialised.
+        #   4. Re-raise so the process exits with a non-zero code and NSSM can
+        #      restart it.  Never swallow the exception here.
+        logger.exception(
+            "FATAL: unhandled exception in main() — process will exit and NSSM should restart: %s",
+            exc,
+        )
+
+        if _crash_config is not None and _crash_bot_app is not None:
+            _fire_and_forget(
+                notify_error(
+                    _crash_bot_app.bot,
+                    _crash_config.telegram.chat_id,
+                    f"FATAL crash — bot exiting for NSSM restart. Error: {exc!r}",
                 )
+            )
+            # Brief pause so the notification has a chance to dispatch.
+            time.sleep(3)
 
-                deadline = time.monotonic() + wait_secs
-                while time.monotonic() < deadline and not state.stop_requested:
-                    time.sleep(min(10.0, deadline - time.monotonic()))
-
-                if state.stop_requested:
-                    break
-
-                bar_close_time = next_close
-                _run_m15_tick(
-                    config=config,
-                    state=state,
-                    peak_balance_ref=peak_balance_ref,
-                    session_states=session_states,
-                    bot_app=bot_app,
-                    bar_close_time=bar_close_time,
+        try:
+            with get_connection() as db_conn:
+                log_event(
+                    db_conn,
+                    "error",
+                    detail=f"fatal crash: {type(exc).__name__}: {exc}",
                 )
+        except Exception:
+            logger.warning("Could not write crash event to DB — DB may not be initialised yet")
 
-                # After state D, the session is over — next iteration will detect
-                # outside-window and enter state A.
-
-            except Exception:
-                logger.exception("Unexpected error in main loop — pausing bot and retrying")
-                state.paused = True
-                _fire_and_forget(
-                    notify_error(
-                        bot_app.bot,
-                        config.telegram.chat_id,
-                        "Unexpected error in main loop — bot paused. Use /resume after investigation.",  # noqa: E501
-                    )
-                )
-                time.sleep(60)
-    finally:
-        _shutdown(config, state, bot_app, shutdown_event)
-
-        if tg_loop.is_running():
-            tg_loop.call_soon_threadsafe(tg_loop.stop)
-        tg_thread.join(timeout=5)
+        raise
 
 
 if __name__ == "__main__":

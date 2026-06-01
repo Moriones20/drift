@@ -12,9 +12,81 @@ Antes de arrancar el bot, verificá:
 2. **`config.yaml` existe** con tus credenciales reales (broker, telegram).
 3. **Las dependencias están instaladas**: `pip install -r requirements.txt`.
 
-## Arrancar el bot
+## Arrancar el bot (producción — servicio NSSM)
 
-### Modo foreground (para debug)
+Para producción se recomienda correr el bot como servicio Windows con NSSM en vez del método
+`nohup`.  NSSM reinicia el proceso automáticamente si muere (crash de Python o muerte dura), y lo
+levanta al encender el PC.
+
+### Pre-requisitos para el servicio
+
+1. Descargá `nssm.exe` desde <https://nssm.cc/download> y ponelo en el PATH
+   (por ejemplo copialo a `C:\Windows\System32\`).
+2. Abrí PowerShell como Administrador.
+
+### Instalar el servicio (una sola vez)
+
+Desde PowerShell elevado, parado en cualquier directorio:
+
+```powershell
+& "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1"
+```
+
+El script detecta automáticamente el Python del PATH y la raíz del repo.
+Para usar un virtualenv específico:
+
+```powershell
+& "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1" `
+    -PythonExe "C:\Users\ASUS\envs\drift\Scripts\python.exe"
+```
+
+### Controlar el servicio
+
+```powershell
+nssm start   Drift   # iniciar
+nssm stop    Drift   # detener
+nssm restart Drift   # reiniciar
+nssm status  Drift   # ver estado (SERVICE_RUNNING / SERVICE_STOPPED)
+```
+
+### Desinstalar el servicio
+
+```powershell
+nssm remove Drift confirm
+```
+
+### Logs del servicio
+
+NSSM redirige stdout y stderr a archivos separados (además del `logs/drift.log` del bot):
+
+```powershell
+Get-Content -Wait logs\service-stdout.log   # stdout en vivo
+Get-Content -Wait logs\service-stderr.log   # stderr (trazas no capturadas)
+```
+
+### Mecanismo de restart y global error handler
+
+Hay dos capas complementarias de supervivencia:
+
+- **Error handler de Python** (`main.py`): cualquier excepción de Python que escapa todos los
+  handlers internos es capturada en el nivel más alto, logueada con traza completa en
+  `logs/drift.log`, notificada por Telegram, registrada en la DB, y luego el proceso termina con
+  error para que NSSM lo reinicie.
+- **NSSM**: reinicia el proceso si muere por cualquier motivo, incluyendo crashes nativos
+  (segfault en pandas/numpy/MT5) que Python no puede capturar.  Después de 10 segundos de espera
+  el proceso vuelve a arrancar solo.
+
+> **Limitación conocida:** NSSM reinicia procesos *muertos*, no descongela procesos *suspendidos*.
+> Después de un resume desde suspend/hibernate, el proceso sigue vivo pero MT5 puede estar muerto —
+> eso lo maneja el reconnect automático (paso 6 del plan de fixes), no NSSM.
+
+---
+
+## Arrancar el bot (debug / desarrollo manual)
+
+Para debug o desarrollo, podés arrancar sin el servicio.
+
+### Modo foreground
 
 Útil cuando querés ver los logs en vivo en la misma terminal. Bloquea hasta que apagues con Ctrl+C.
 
@@ -22,9 +94,10 @@ Antes de arrancar el bot, verificá:
 python main.py
 ```
 
-### Modo background detached (para sesiones largas)
+### Modo background detached (método legacy — NO recomendado para producción)
 
-Sobrevive aunque cierres la terminal. El log se guarda en `logs/drift.log` y el PID en `.bot.pid` para que sepas a quién matar después.
+Este método sobrevive aunque cierres la terminal, pero NO reinicia si el proceso muere.
+Usarlo solo para pruebas rápidas; en producción usá el servicio NSSM.
 
 ```bash
 nohup python main.py > logs/drift.out 2>&1 &
