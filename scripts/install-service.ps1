@@ -1,184 +1,153 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Installs the Drift forex bot as a Windows service managed by WinSW.
+    Registra el bot Drift como una tarea programada de Windows (Task Scheduler).
 
 .DESCRIPTION
-    Uses WinSW (Windows Service Wrapper) to register Drift as a Windows service
-    named "Drift".  The service:
-      - Runs under the current Python interpreter (overridable via -PythonExe).
-      - Sets the working directory to the repository root so relative paths in
-        main.py (config.yaml, data\, logs\) resolve correctly.
-      - Restarts automatically on failure with a 10-second initial delay and
-        progressive backoff (10s / 30s / 60s), resetting after 1 hour stable.
-      - Captures stdout and stderr to logs\service-*.log with 10 MB rotation.
-      - Starts automatically on Windows boot (Automatic start mode).
+    Usa el modulo ScheduledTasks de PowerShell para registrar una tarea llamada "Drift"
+    que:
+      - Se dispara al iniciar sesion el usuario ASUS (AtLogOn).
+      - Corre en la sesion interactiva del usuario logueado — NO en Session 0 (modo
+        servicio).  Esto es obligatorio: el paquete MetaTrader5 esta instalado en el
+        perfil del usuario y el terminal MT5 corre en la sesion interactiva; un servicio
+        en Session 0 no puede conectar con ese terminal.
+      - Reinicia el proceso hasta 3 veces (cada 1 minuto) si muere.
+      - Tiempo de ejecucion ilimitado (bot de larga duracion).
+      - Se puede iniciar con bateria y no se detiene por inactividad.
 
-    WinSW convention: the .exe and .xml share the same base name and must be
-    in the same directory.  This script expects both files to live in scripts\:
-        scripts\drift-service.exe   <- WinSW binary (see NOTES)
-        scripts\drift-service.xml   <- service descriptor (already in repo)
+    No requiere privilegios de administrador para registrar una tarea del usuario
+    actual.  Ejecutar desde PowerShell normal (no elevado) es suficiente.
 
 .NOTES
-    WinSW is NOT included in this repository.  Download WinSW-x64.exe from:
-        https://github.com/winsw/winsw/releases/tag/v2.12.0
-    Rename the downloaded file to "drift-service.exe" and place it in scripts\.
-
-    After running this script, control the service with:
-        scripts\drift-service.exe start
-        scripts\drift-service.exe stop
-        scripts\drift-service.exe restart
-        scripts\drift-service.exe status
-
-    To uninstall the service entirely:
-        scripts\drift-service.exe uninstall
+    Despues de correr este script, controla la tarea con:
+        Get-ScheduledTask -TaskName Drift          # ver estado
+        Start-ScheduledTask -TaskName Drift        # iniciar manualmente
+        Stop-ScheduledTask  -TaskName Drift        # detener
+        Unregister-ScheduledTask -TaskName Drift   # eliminar la tarea
 
 .PARAMETER PythonExe
-    Full path to the Python interpreter.  Defaults to the python.exe found on PATH.
+    Ruta completa al interprete de Python.  Por defecto usa el interprete de pythoncore
+    que tiene instalados MetaTrader5 y python-telegram-bot.
 
 .EXAMPLE
-    # Run from an elevated PowerShell prompt in any directory:
+    # Ejecutar desde cualquier directorio (PowerShell normal):
     & "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1"
 
 .EXAMPLE
-    # Specify a virtualenv Python:
+    # Especificar un interprete diferente:
     & "C:\Users\ASUS\code\projects\drift\scripts\install-service.ps1" `
         -PythonExe "C:\Users\ASUS\envs\drift\Scripts\python.exe"
 #>
 
 [CmdletBinding()]
 param(
-    [string]$PythonExe = ""
+    [string]$PythonExe = "C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # ---------------------------------------------------------------------------
-# Resolve paths
+# Resolver rutas
 # ---------------------------------------------------------------------------
 
-# Repo root is one directory above this script.
+# La raiz del repo esta un nivel por encima de este script (scripts\).
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
-# Resolve main.py absolute path.
+# Verificar que main.py existe.
 $MainPy = Join-Path $RepoRoot "main.py"
 if (-not (Test-Path $MainPy)) {
-    Write-Error "main.py not found at expected location: $MainPy"
+    Write-Error "main.py no encontrado en la ubicacion esperada: $MainPy"
     exit 1
 }
 
-# WinSW binary and XML descriptor must share the same base name in the same directory.
-$WinSwExe = Join-Path $PSScriptRoot "drift-service.exe"
-$WinSwXml = Join-Path $PSScriptRoot "drift-service.xml"
-
-# Check that drift-service.xml is present (it is version-controlled, so it should be).
-if (-not (Test-Path $WinSwXml)) {
-    Write-Error "Service descriptor not found: $WinSwXml"
-    exit 1
-}
-
-# Check that drift-service.exe is present; if not, guide the user to download it.
-if (-not (Test-Path $WinSwExe)) {
-    Write-Error @"
-WinSW binary not found: $WinSwExe
-
-To install the Drift service you need the WinSW executable:
-  1. Download WinSW-x64.exe from:
-         https://github.com/winsw/winsw/releases/tag/v2.12.0
-  2. Rename the downloaded file to "drift-service.exe".
-  3. Place it in the scripts\ directory of this repository:
-         $PSScriptRoot\drift-service.exe
-  4. Re-run this script.
-"@
-    exit 1
-}
-
-# Resolve Python interpreter.
-if ($PythonExe -eq "") {
-    $found = Get-Command python -ErrorAction SilentlyContinue
-    if ($null -eq $found) {
-        Write-Error "python not found on PATH.  Pass -PythonExe <path\to\python.exe>."
-        exit 1
-    }
-    $PythonExe = $found.Source
-}
+# Verificar que el interprete de Python existe.
 if (-not (Test-Path $PythonExe)) {
-    Write-Error "Python interpreter not found: $PythonExe"
+    Write-Error "Interprete de Python no encontrado: $PythonExe`nPasa -PythonExe con la ruta correcta."
     exit 1
 }
 
-# Log directory must exist before the service starts writing to it.
+# Crear el directorio de logs si no existe.
 $LogDir = Join-Path $RepoRoot "logs"
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Force $LogDir | Out-Null
 }
 
-$ServiceName = "Drift"
+$TaskName = "Drift"
 
 Write-Host ""
-Write-Host "Installing Drift as a Windows service via WinSW"
-Write-Host "  Service name  : $ServiceName"
+Write-Host "Registrando tarea programada '$TaskName' via Task Scheduler"
 Write-Host "  Python        : $PythonExe"
 Write-Host "  Entry point   : $MainPy"
 Write-Host "  Working dir   : $RepoRoot"
-Write-Host "  Log dir       : $LogDir"
-Write-Host "  WinSW binary  : $WinSwExe"
-Write-Host "  WinSW config  : $WinSwXml"
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-# Patch the XML descriptor with the actual Python path.
-# WinSW does not support environment-variable expansion in <executable>, so
-# we rewrite the placeholder in the XML before calling "install".
-# We operate on a temporary copy so the version-controlled file stays clean.
+# Eliminar tarea previa si existe (para reinstalacion limpia).
 # ---------------------------------------------------------------------------
-
-$TempXml = Join-Path $PSScriptRoot "drift-service.xml.tmp"
-(Get-Content $WinSwXml -Encoding UTF8) -replace "PYTHON_EXE_PLACEHOLDER", $PythonExe |
-    Set-Content $TempXml -Encoding UTF8
-
-# WinSW looks for the XML file with the same base name as the .exe in the same
-# directory.  We copy the patched XML over for the duration of the install.
-Copy-Item $TempXml $WinSwXml -Force
-Remove-Item $TempXml -Force
-
-# ---------------------------------------------------------------------------
-# Remove any previous installation of the same service name.
-# ---------------------------------------------------------------------------
-$statusOutput = & $WinSwExe status 2>&1
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "Existing service '$ServiceName' found — uninstalling before reinstall."
-    & $WinSwExe stop   2>&1 | Out-Null
-    & $WinSwExe uninstall
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($null -ne $existing) {
+    Write-Host "Tarea '$TaskName' ya existe - eliminando para reinstalar."
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
 # ---------------------------------------------------------------------------
-# Install and start the service.
+# Definir los componentes de la tarea.
 # ---------------------------------------------------------------------------
-Write-Host "Registering service..."
-& $WinSwExe install
-if ($LASTEXITCODE -ne 0) { Write-Error "WinSW install failed"; exit 1 }
 
-Write-Host "Starting service..."
-& $WinSwExe start
-if ($LASTEXITCODE -ne 0) { Write-Error "WinSW start failed"; exit 1 }
+# Accion: ejecutar python.exe main.py con working directory = repo root.
+$action = New-ScheduledTaskAction `
+    -Execute $PythonExe `
+    -Argument "main.py" `
+    -WorkingDirectory $RepoRoot
 
+# Trigger: al iniciar sesion el usuario ASUS.
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User "ASUS"
+
+# Principal: correr como el usuario interactivo logueado.
+# RunLevel Limited es suficiente para el bot; la clave es que NO sea
+# "run whether user is logged on or not" (eso forzaria Session 0).
+$principal = New-ScheduledTaskPrincipal `
+    -UserId "ASUS" `
+    -LogonType Interactive `
+    -RunLevel Limited
+
+# Configuracion: restart en fallo, sin limite de tiempo, sin restriccion de bateria.
+$settings = New-ScheduledTaskSettingsSet `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -DontStopOnIdleEnd
+
+# ---------------------------------------------------------------------------
+# Registrar la tarea.
+# ---------------------------------------------------------------------------
+Register-ScheduledTask `
+    -TaskName $TaskName `
+    -Action $action `
+    -Trigger $trigger `
+    -Principal $principal `
+    -Settings $settings `
+    -Description "Drift forex bot (Asian Session Scalper). Corre en sesion interactiva del usuario para poder conectar con el terminal MT5." `
+    -Force | Out-Null
+
+Write-Host "Tarea '$TaskName' registrada correctamente."
 Write-Host ""
-Write-Host "Service '$ServiceName' installed and started successfully."
+Write-Host "IMPORTANTE: el terminal MetaTrader 5 debe estar corriendo y logueado en la"
+Write-Host "misma sesion interactiva para que el bot pueda conectarse."
 Write-Host ""
-Write-Host "Next steps:"
-Write-Host "  1. Make sure MT5 is running and logged in."
-Write-Host "  2. Check status:        scripts\drift-service.exe status"
-Write-Host "  3. Watch the log:       Get-Content -Wait logs\drift-service.out.log"
+Write-Host "Proximos pasos:"
+Write-Host "  1. Asegurate de que MT5 este corriendo y logueado."
+Write-Host "  2. Inicia la tarea manualmente para verificar:"
+Write-Host "       Start-ScheduledTask -TaskName Drift"
+Write-Host "  3. Verificar que el bot arrancd mirando el log:"
+Write-Host "       Get-Content -Wait logs\drift.log"
 Write-Host ""
-Write-Host "Service control commands (run from repo root):"
-Write-Host "  scripts\drift-service.exe start"
-Write-Host "  scripts\drift-service.exe stop"
-Write-Host "  scripts\drift-service.exe restart"
-Write-Host "  scripts\drift-service.exe status"
-Write-Host "  scripts\drift-service.exe uninstall"
+Write-Host "Comandos de control de la tarea:"
+Write-Host "  Get-ScheduledTask -TaskName Drift          # ver estado"
+Write-Host "  Start-ScheduledTask -TaskName Drift        # iniciar manualmente"
+Write-Host "  Stop-ScheduledTask  -TaskName Drift        # detener"
+Write-Host "  Unregister-ScheduledTask -TaskName Drift   # eliminar la tarea"
 Write-Host ""
-Write-Host "NOTE: WinSW restarts the process on failure (10s/30s/60s backoff, reset after 1h stable)."
-Write-Host "      The global error handler in main.py writes a traceback to logs\drift.log"
-Write-Host "      before exiting, so every Python-level crash leaves evidence."
+Write-Host "La tarea arrancara automaticamente la proxima vez que inicies sesion en Windows."
