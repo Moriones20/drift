@@ -21,6 +21,15 @@ def open_trade(
         logger.error("open_trade: cannot get tick for %s", pair)
         return None
 
+    symbol_info = mt5.symbol_info(pair)
+    if symbol_info is None:
+        logger.error("open_trade: cannot get symbol_info for %s", pair)
+        return None
+
+    digits = symbol_info.digits
+    stop_loss = round(stop_loss, digits)
+    take_profit = round(take_profit, digits)
+
     if direction.lower() == "buy":
         order_type = mt5.ORDER_TYPE_BUY
         price = tick.ask
