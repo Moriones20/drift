@@ -43,12 +43,13 @@
   ====================================================================== -->
 
   <!-- Absolute path to python.exe — set by install-service.ps1 at install time. -->
-  <executable>PYTHON_EXE_PLACEHOLDER</executable>
+  <executable>C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64\python.exe</executable>
 
   <!-- Arguments passed to python.exe. -->
-  <!-- %BASE% expands to the directory containing drift-service.exe (scripts\).
-       main.py lives one level up, so we use ..\main.py. -->
-  <arguments>..\main.py</arguments>
+  <!-- Resolved relative to <workingdirectory> (the repo root, set below), NOT
+       to %BASE%.  Since the working directory is already the repo root, the
+       entry point is simply main.py — no ..\ prefix. -->
+  <arguments>main.py</arguments>
 
 
   <!-- =====================================================================
