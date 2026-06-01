@@ -697,10 +697,14 @@ def _monitoring_tick(
         mt5_positions = get_open_positions(config.system.magic_number)
         mt5_tickets = {p["ticket"] for p in mt5_positions}
 
-        _detect_closed_trades(known_tickets, mt5_tickets, config, balance, bot_app)
+        pending_tickets = _detect_closed_trades(
+            known_tickets, mt5_tickets, config, balance, bot_app
+        )
 
+        # Re-add tickets whose close deal was not yet available so they are
+        # retried in the next monitoring cycle (~30s).
         known_tickets.clear()
-        known_tickets.update(mt5_tickets)
+        known_tickets |= mt5_tickets | pending_tickets
 
         if mt5_positions:
             process_open_trades(mt5_positions, config.risk)
@@ -741,11 +745,19 @@ def _detect_closed_trades(
     config: DriftConfig,
     balance: float,
     bot_app,
-) -> None:
-    """Find tickets that were open last cycle but are gone now — MT5 closed them (SL/TP)."""
+) -> set[int]:
+    """Find tickets that were open last cycle but are gone now — MT5 closed them (SL/TP).
+
+    Returns the set of tickets whose close deal was not yet available in MT5 history.
+    The caller must re-add these to known_tickets so they are retried next cycle.
+    """
+    import MetaTrader5 as mt5
+
     closed_tickets = known_tickets - mt5_tickets
     if not closed_tickets:
-        return
+        return set()
+
+    pending_tickets: set[int] = set()
 
     for ticket in closed_tickets:
         with get_connection() as db_conn:
@@ -753,23 +765,25 @@ def _detect_closed_trades(
             if trade is None or trade.get("closed_at") is not None:
                 continue
 
-            import MetaTrader5 as mt5
-
             deals = mt5.history_deals_get(position=ticket)
-            if deals:
-                close_deal = deals[-1]
-                exit_price = close_deal.price
-                pnl = close_deal.profit
-                if close_deal.reason == mt5.DEAL_REASON_SL:
-                    close_reason = "stop_loss"
-                elif close_deal.reason == mt5.DEAL_REASON_TP:
-                    close_reason = "take_profit"
-                else:
-                    close_reason = "manual"
-            else:
-                exit_price = 0.0
-                pnl = 0.0
+            if not deals:
+                logger.info(
+                    "Deal not yet available for closed ticket=%d %s — will reconcile next cycle",
+                    ticket,
+                    trade["pair"],
+                )
+                pending_tickets.add(ticket)
+                continue
+
+            close_deal = deals[-1]
+            exit_price = close_deal.price
+            pnl = close_deal.profit
+            if close_deal.reason == mt5.DEAL_REASON_SL:
                 close_reason = "stop_loss"
+            elif close_deal.reason == mt5.DEAL_REASON_TP:
+                close_reason = "take_profit"
+            else:
+                close_reason = "manual"
 
             close_trade_record(db_conn, trade["id"], exit_price, pnl, balance, close_reason)
 
@@ -793,6 +807,8 @@ def _detect_closed_trades(
                 pnl,
                 close_reason,
             )
+
+    return pending_tickets
 
 
 # ---------------------------------------------------------------------------
