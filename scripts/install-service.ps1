@@ -40,7 +40,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$PythonExe = "C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64\python.exe"
+    [string]$PythonExe = "C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64\pythonw.exe"
 )
 
 Set-StrictMode -Version Latest
@@ -94,7 +94,9 @@ if ($null -ne $existing) {
 # Definir los componentes de la tarea.
 # ---------------------------------------------------------------------------
 
-# Accion: ejecutar python.exe main.py con working directory = repo root.
+# Accion: ejecutar pythonw.exe (sin consola) main.py con working directory = repo root.
+# pythonw.exe corre sin ventana de consola, de modo que el bot queda como proceso
+# en segundo plano y no hay ninguna ventana que el usuario pueda cerrar por error.
 $action = New-ScheduledTaskAction `
     -Execute $PythonExe `
     -Argument "main.py" `
