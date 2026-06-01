@@ -11,6 +11,11 @@ from drift.config import BrokerConfig
 
 logger = logging.getLogger(__name__)
 
+# Short waits for the first retries — long enough for MT5 to wake after a
+# PC suspend/resume, short enough to recover within seconds.  Falls back to
+# the configured ``interval`` for any subsequent attempts.
+_RECONNECT_EARLY_WAITS: list[int] = [5, 30]
+
 _TIMEFRAMES: dict[str, int] = {
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
@@ -67,11 +72,17 @@ def get_equity() -> float:
 
 def reconnect(
     config: BrokerConfig,
-    max_retries: int = 3,
+    max_retries: int = 4,
     interval: int = 300,
     shutdown_event: threading.Event | None = None,
 ) -> bool:
-    """Attempt to reconnect to MT5.
+    """Attempt to reconnect to MT5 with progressive backoff.
+
+    The first two retries use short waits (5s, 30s) to recover quickly from a
+    PC suspend/resume where MT5 is still waking up and the first connect attempt
+    returns "Authorization failed" transiently.  Subsequent retries use
+    ``interval`` (the configured steady-state value, default 300s) to handle
+    genuine broker outages without hammering the terminal.
 
     Uses shutdown_event.wait() instead of time.sleep() so the monitoring thread
     can be stopped cleanly without waiting for the full retry interval.
@@ -83,13 +94,15 @@ def reconnect(
         if connect(config):
             return True
         if attempt < max_retries:
-            logger.info("Waiting %ds before next attempt", interval)
+            idx = attempt - 1
+            wait = _RECONNECT_EARLY_WAITS[idx] if idx < len(_RECONNECT_EARLY_WAITS) else interval
+            logger.info("Waiting %ds before next attempt", wait)
             if shutdown_event is not None:
-                if shutdown_event.wait(timeout=interval):
+                if shutdown_event.wait(timeout=wait):
                     logger.info("Shutdown requested — aborting reconnect")
                     return False
             else:
-                time.sleep(interval)
+                time.sleep(wait)
 
     logger.error("All %d reconnect attempts failed", max_retries)
     return False

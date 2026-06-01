@@ -654,7 +654,11 @@ def _monitoring_tick(
 ) -> None:
     if not health_check():
         logger.warning("MT5 health check failed — attempting reconnect")
-        ok = reconnect(config.broker, shutdown_event=shutdown_event)
+        ok = reconnect(
+            config.broker,
+            interval=config.system.mt5_reconnect_interval_seconds,
+            shutdown_event=shutdown_event,
+        )
         if ok:
             with get_connection() as db_conn:
                 log_event(db_conn, "reconnect", detail="MT5 reconnected")
