@@ -50,11 +50,19 @@ def health_check() -> bool:
     return bool(info.connected)
 
 
-def get_balance() -> float:
+def _require_account_info():
     account = mt5.account_info()
     if account is None:
-        raise RuntimeError(f"MT5 not connected — cannot get balance: {mt5.last_error()}")
-    return float(account.balance)
+        raise RuntimeError(f"MT5 not connected — cannot read account: {mt5.last_error()}")
+    return account
+
+
+def get_balance() -> float:
+    return float(_require_account_info().balance)
+
+
+def get_equity() -> float:
+    return float(_require_account_info().equity)
 
 
 def reconnect(

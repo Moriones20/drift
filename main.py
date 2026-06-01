@@ -30,7 +30,15 @@ from drift.db import (
     log_trade,
 )
 from drift.executor import close_trade, get_open_positions, open_trade
-from drift.mt5_client import connect, disconnect, get_balance, get_candles, health_check, reconnect
+from drift.mt5_client import (
+    connect,
+    disconnect,
+    get_balance,
+    get_candles,
+    get_equity,
+    health_check,
+    reconnect,
+)
 from drift.report import generate_weekly_report
 from drift.risk import calculate_position_size, check_all_risk
 from drift.strategy import SessionState, Signal, evaluate_pair, should_close_on_time
@@ -504,13 +512,14 @@ def _run_m15_tick(
 
     try:
         balance = get_balance()
+        equity = get_equity()
     except RuntimeError:
-        logger.exception("Cannot get balance — skipping M15 tick")
+        logger.exception("Cannot get balance/equity — skipping M15 tick")
         return
 
-    if balance > peak_balance_ref[0]:
-        peak_balance_ref[0] = balance
-        logger.info("Peak balance updated: %.2f", peak_balance_ref[0])
+    if equity > peak_balance_ref[0]:
+        peak_balance_ref[0] = equity
+        logger.info("Peak equity updated: %.2f", peak_balance_ref[0])
         with get_connection() as db_conn:
             log_peak_balance(db_conn, peak_balance_ref[0])
 
@@ -664,18 +673,19 @@ def _monitoring_tick(
 
     try:
         balance = get_balance()
+        equity = get_equity()
     except RuntimeError:
-        logger.exception("Cannot get balance in monitoring tick")
+        logger.exception("Cannot get balance/equity in monitoring tick")
         return
 
     with _trade_lock:
-        if balance > peak_balance_ref[0]:
-            peak_balance_ref[0] = balance
+        if equity > peak_balance_ref[0]:
+            peak_balance_ref[0] = equity
             with get_connection() as db_conn:
                 log_peak_balance(db_conn, peak_balance_ref[0])
 
         drawdown_ok, dd_reason = _check_drawdown_pause(
-            balance, peak_balance_ref[0], config, state, bot_app
+            equity, peak_balance_ref[0], config, state, bot_app
         )
         if not drawdown_ok:
             return
@@ -695,20 +705,20 @@ def _monitoring_tick(
 
 
 def _check_drawdown_pause(
-    balance: float,
-    peak_balance: float,
+    equity: float,
+    peak_equity: float,
     config: DriftConfig,
     state: BotState,
     bot_app,
 ) -> tuple[bool, str]:
     from drift.risk import check_drawdown
 
-    ok, reason = check_drawdown(balance, peak_balance, config.risk.max_drawdown_percent)
+    ok, reason = check_drawdown(equity, peak_equity, config.risk.max_drawdown_percent)
     if not ok and not state.paused:
         state.paused = True
         logger.warning("Drawdown limit reached: %s — bot paused", reason)
         with get_connection() as db_conn:
-            log_event(db_conn, "drawdown_alert", detail=reason, balance=balance)
+            log_event(db_conn, "drawdown_alert", detail=reason, balance=equity)
         _fire_and_forget(
             notify_bot_status(
                 bot_app.bot,
@@ -883,8 +893,9 @@ def main() -> None:
 
         try:
             balance = get_balance()
+            equity = get_equity()
         except RuntimeError:
-            logger.critical("Cannot get balance after connect — aborting")
+            logger.critical("Cannot get balance/equity after connect — aborting")
             disconnect()
             sys.exit(1)
 
@@ -892,9 +903,16 @@ def main() -> None:
             stats = get_stats(db_conn)
             peak_from_db = stats.get("peak_balance") or 0.0
 
-        peak_balance = max(balance, peak_from_db)
+        # Peak is equity-based: compare current equity against the stored peak so that
+        # the drawdown brake always measures equity vs equity-peak (apples-to-apples).
+        peak_balance = max(equity, peak_from_db)
         peak_balance_ref: list[float] = [peak_balance]
-        logger.info("Starting balance=%.2f peak_balance=%.2f", balance, peak_balance)
+        logger.info(
+            "Starting balance=%.2f equity=%.2f peak_equity=%.2f",
+            balance,
+            equity,
+            peak_balance,
+        )
 
         # Per-pair session state — reset at the start of each session (21:00 UTC).
         session_states: dict[str, SessionState] = {pair: SessionState() for pair in config.pairs}
