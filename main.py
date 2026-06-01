@@ -338,6 +338,8 @@ def _analyse_pair_m15(
     pair: str,
     balance: float,
     peak_balance: float,
+    equity: float,
+    peak_equity: float,
     config: DriftConfig,
     state: BotState,
     session_states: dict[str, SessionState],
@@ -348,6 +350,19 @@ def _analyse_pair_m15(
 
     Parameters
     ----------
+    balance:
+        Settled account balance (no floating P&L).  Used only for position
+        sizing so that risk-per-trade is computed on realised equity.
+    peak_balance:
+        Kept for backward compatibility but no longer used directly; the
+        drawdown entry gate uses peak_equity instead.
+    equity:
+        Current account equity (balance + floating P&L).  Passed to
+        check_all_risk so the drawdown entry gate matches the monitoring-thread
+        brake, which also operates on equity after commit 52d43ad.
+    peak_equity:
+        Running high-water mark of equity (maintained by _run_m15_tick and the
+        monitoring thread via peak_balance_ref).
     trading_allowed:
         True in state C (23:00-01:59), False in state B (21:00-22:59).
         When False, evaluate_pair is still called so it can update session state
@@ -372,9 +387,10 @@ def _analyse_pair_m15(
                 return
 
             open_trades_db = get_open_trades(db_conn)
+            # Drawdown gate uses equity so it matches the monitoring-thread brake.
             risk_ok, risk_reason = check_all_risk(
-                balance=balance,
-                peak_balance=peak_balance,
+                balance=equity,
+                peak_balance=peak_equity,
                 open_trades=open_trades_db,
                 new_pair=pair,
                 new_direction=signal.action,
@@ -595,6 +611,8 @@ def _run_m15_tick(
                 pair=pair,
                 balance=balance,
                 peak_balance=peak_balance_ref[0],
+                equity=equity,
+                peak_equity=peak_balance_ref[0],
                 config=config,
                 state=state,
                 session_states=session_states,
