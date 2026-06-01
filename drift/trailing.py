@@ -5,7 +5,7 @@ import logging
 import MetaTrader5 as mt5
 
 from drift.config import RiskConfig
-from drift.executor import close_trade, modify_sl
+from drift.executor import modify_sl
 from drift.indicators import compute_atr
 from drift.mt5_client import get_candles
 
@@ -132,31 +132,6 @@ def process_open_trades(positions: list[dict], config: RiskConfig) -> list[dict]
         current_price = _get_current_price(pair, direction)
         if current_price is None:
             logger.warning("process_open_trades: skipping ticket=%d — no price data", ticket)
-            continue
-
-        if check_tp(position, current_price):
-            logger.info(
-                "process_open_trades: ticket=%d %s TP hit at price=%.5f tp=%.5f — closing",
-                ticket,
-                pair,
-                current_price,
-                position["tp"],
-            )
-            success = close_trade(
-                ticket=ticket,
-                pair=pair,
-                lot_size=position["volume"],
-                direction=direction,
-            )
-            actions.append(
-                {
-                    "ticket": ticket,
-                    "action": "tp_closed",
-                    "detail": (
-                        f"price={current_price:.5f} tp={position['tp']:.5f} success={success}"
-                    ),
-                }
-            )
             continue
 
         # Skip trailing stop updates when use_trailing_stop is False (mean reversion mode).

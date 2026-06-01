@@ -13,6 +13,8 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 
 ## D002 — Estrategia: Trend Following
 
+> ⚠️ SUPERSEDIDA por D029 — Asian Session Scalper. Conservada para contexto histórico.
+
 **Decisión:** Trend following como estrategia base.
 **Alternativas consideradas:**
 - Mean reversion — viable pero requiere pares que se muevan en rango, más complejo de calibrar
@@ -53,6 +55,8 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 
 ## D005 — Indicadores: EMA 50/200 + MACD + ATR
 
+> ⚠️ SUPERSEDIDA por D029 — Asian Session Scalper. Conservada para contexto histórico.
+
 **Decisión:** Cruce EMA 50/200 en D1 (dirección) + MACD 12,26,9 en H4 (entrada) + ATR 14 (stop loss).
 **Alternativas consideradas:**
 - Opción A (minimalista): 200 EMA + 20 EMA pullback + ATR — más simple pero menos señales
@@ -86,6 +90,8 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 ---
 
 ## D008 — Take profit: Trailing stop + ratio 1:2
+
+> ⚠️ SUPERSEDIDA por D029 — Asian Session Scalper. Conservada para contexto histórico.
 
 **Decisión:** Dual — trailing stop que sigue al precio + take profit fijo a 1:2 del riesgo. El que se active primero cierra el trade.
 **Alternativas consideradas:**

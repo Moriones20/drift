@@ -1,3 +1,5 @@
+> ⚠️ ESTRATEGIA HISTÓRICA — ya no activa. El bot usa Asian Session Scalper (ver D029 y `docs/knowledge/asian-session-scalper.md`). Este documento se conserva como referencia para una posible estrategia híbrida futura (D023).
+
 # Trend Following Indicators — Guía técnica
 
 ## Estrategia de Drift

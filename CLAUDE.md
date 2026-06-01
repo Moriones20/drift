@@ -1,4 +1,4 @@
-# Drift
+# Drift — Asian Session Scalper
 
 Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion durante la ventana 21:00-02:00 GMT sobre un rango definido en las primeras 2 horas. Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
 
@@ -12,7 +12,7 @@ Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion
 | `docs/ARCHITECTURE.md` | Diagramas, data flow, schema SQL, file structure |
 | `docs/knowledge/mt5-python-api.md` | Referencia de la API de MT5 con Python |
 | `docs/knowledge/telegram-bot-setup.md` | Setup del bot de Telegram y formato de mensajes |
-| `docs/knowledge/trend-following-indicators.md` | Fórmulas e implementación de EMA, MACD, ATR |
+| `docs/knowledge/trend-following-indicators.md` | Fórmulas e implementación de EMA, MACD, ATR (**estrategia histórica — ver encabezado del archivo**) |
 | `docs/user/runbook.md` | Comandos Git Bash para encender, apagar, monitorear y diagnosticar el bot |
 | `docs/user/` | Documentación para el usuario (getting-started, configuration, commands) |
 
@@ -133,5 +133,5 @@ When implementing or modifying a user-facing feature, you MUST update the corres
 Docs are part of the definition of done. A feature without updated docs is not complete.
 
 <!-- Implementation prompt:
-You are implementing Drift, a forex trend following bot. Read CLAUDE.md first, then ROADMAP.md Phase 1. Check PROGRESS.md to know where to start. Begin with the next uncompleted step.
+You are implementing Drift, un bot de forex con estrategia Asian Session Scalper. Read CLAUDE.md first, then ROADMAP.md Phase 1. Check PROGRESS.md to know where to start. Begin with the next uncompleted step.
 -->
