@@ -789,7 +789,7 @@ def _detect_closed_trades(
 def _run_telegram_thread(bot_app, loop: asyncio.AbstractEventLoop) -> None:
     """Run python-telegram-bot polling in a dedicated thread with its own event loop."""
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(bot_app.run_polling(close_loop=False, stop_signals=None))
+    bot_app.run_polling(close_loop=False, stop_signals=None)
 
 
 # ---------------------------------------------------------------------------

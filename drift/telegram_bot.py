@@ -424,6 +424,11 @@ async def _register_command_menu(bot: Bot) -> None:
         logger.exception("Failed to register Telegram command menu")
 
 
+async def _on_telegram_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log transient Telegram network errors as a single-line warning."""
+    logger.warning("Telegram update error: %s", context.error)
+
+
 async def setup_bot(
     token: str,
     chat_id: str,
@@ -436,6 +441,8 @@ async def setup_bot(
     handlers = _make_handlers(chat_id, state, db_path)
     for command, handler in handlers.items():
         app.add_handler(CommandHandler(command, handler))
+
+    app.add_error_handler(_on_telegram_error)
 
     await _register_command_menu(app.bot)
 
