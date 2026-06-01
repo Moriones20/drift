@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import logging.handlers
+import math
 import signal
 import sys
 import threading
@@ -185,7 +186,7 @@ def _pip_multiplier(pair: str) -> float:
     return 100.0 if "JPY" in pair.upper() else 10000.0
 
 
-def _pip_value(pair: str) -> float:
+def _pip_value(pair: str, info=None) -> float:
     """Return USD pip value per standard lot using MT5 symbol info.
 
     Uses `trade_tick_value` (USD per tick on one standard lot) and converts to
@@ -193,10 +194,17 @@ def _pip_value(pair: str) -> float:
 
     Falls back to $10 if MT5 has no info for the pair, but this is a safety net,
     not a default — every configured pair should resolve through MT5 in practice.
-    """
-    import MetaTrader5 as mt5
 
-    info = mt5.symbol_info(pair)
+    Parameters
+    ----------
+    info:
+        Pre-fetched ``mt5.symbol_info`` result.  When provided the function skips
+        the MT5 call so callers that already hold the object avoid a second IPC round-trip.
+    """
+    if info is None:
+        import MetaTrader5 as mt5
+
+        info = mt5.symbol_info(pair)
     if info is None or info.trade_tick_value <= 0:
         logger.warning("No tick_value for %s — falling back to $10/pip/lot", pair)
         return 10.0
@@ -379,8 +387,14 @@ def _analyse_pair_m15(
                 session_states[pair].traded = False
                 return
 
+            import MetaTrader5 as mt5
+
+            # Fetch symbol_info once; reuse it for both pip value and volume
+            # constraint validation to avoid two IPC calls to the MT5 terminal.
+            sym_info = mt5.symbol_info(pair)
+
             pip_mult = _pip_multiplier(pair)
-            pip_val = _pip_value(pair)
+            pip_val = _pip_value(pair, info=sym_info)
             sl_pips = abs(signal.entry_price - signal.sl) * pip_mult
 
             lot_size = calculate_position_size(
@@ -396,6 +410,57 @@ def _analyse_pair_m15(
                 session_states[pair].traded = False
                 return
 
+            # Validate lot_size against the broker's real volume constraints for
+            # this symbol.  risk.py returns a mathematically correct raw value but
+            # deliberately knows nothing about MT5 — the adjustment lives here
+            # where symbol_info is already available.
+            if sym_info is not None:
+                vol_step = sym_info.volume_step
+                vol_min = sym_info.volume_min
+                vol_max = sym_info.volume_max
+
+                # Round down to the nearest volume_step.
+                if vol_step > 0:
+                    adjusted = round(math.floor(lot_size / vol_step) * vol_step, 10)
+                    if adjusted != lot_size:
+                        logger.info(
+                            "%s | lot_size %.4f rounded down to %.4f (volume_step=%.4f)",
+                            pair,
+                            lot_size,
+                            adjusted,
+                            vol_step,
+                        )
+                    lot_size = adjusted
+
+                # Skip if still below volume_min.
+                if lot_size < vol_min:
+                    logger.warning(
+                        "%s | lot_size %.4f is below volume_min %.4f — skipping trade",
+                        pair,
+                        lot_size,
+                        vol_min,
+                    )
+                    log_signal(
+                        db_conn,
+                        signal,
+                        trade_id=None,
+                        rejection_reason="lot_below_min",
+                    )
+                    session_states[pair].traded = False
+                    return
+
+                # Cap to volume_max.  A capped trade still respects risk on the
+                # downside (actual risk is lower than targeted); skipping would be
+                # overly conservative for a small max.
+                if lot_size > vol_max:
+                    logger.warning(
+                        "%s | lot_size %.4f exceeds volume_max %.4f — capping",
+                        pair,
+                        lot_size,
+                        vol_max,
+                    )
+                    lot_size = vol_max
+
             ticket = open_trade(
                 pair=pair,
                 direction=signal.action,
@@ -410,8 +475,6 @@ def _analyse_pair_m15(
                 log_signal(db_conn, signal, trade_id=None)
                 session_states[pair].traded = False
                 return
-
-            import MetaTrader5 as mt5
 
             entry_price = signal.entry_price
             positions = mt5.positions_get(ticket=ticket)
