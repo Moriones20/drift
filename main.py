@@ -87,6 +87,13 @@ def _configure_logging() -> None:
     file_handler.setFormatter(fmt)
     root.addHandler(file_handler)
 
+    # Suppress INFO-level output from httpx and httpcore.  Without this, every
+    # Telegram API request (e.g. getUpdates every 10 s) is logged at INFO with
+    # the full URL, which embeds the bot token — an active credential leak.
+    # WARNING level keeps genuine errors (timeouts, 4xx/5xx) visible.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 logger = logging.getLogger(__name__)
 
