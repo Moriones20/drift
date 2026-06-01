@@ -12,6 +12,9 @@ logs/*.out
 .bot.pid
 backups/
 
+# WinSW service binary (download per scripts/install-service.ps1, not versioned)
+scripts/drift-service.exe
+
 # Backtest output
 backtest/results/*.html
 
