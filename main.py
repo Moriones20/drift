@@ -31,6 +31,7 @@ from drift.db import (
     log_trade,
 )
 from drift.executor import close_trade, get_open_positions, open_trade
+from drift.formatting import parse_utc_offset, set_display_tz
 from drift.mt5_client import (
     connect,
     disconnect,
@@ -365,6 +366,7 @@ def _analyse_pair_m15(
     session_states: dict[str, SessionState],
     bot_app,
     trading_allowed: bool,
+    server_offset: timedelta,
 ) -> None:
     """Fetch M15+H4 data and evaluate the pair for the current M15 close.
 
@@ -403,7 +405,7 @@ def _analyse_pair_m15(
     with _trade_lock:
         with get_connection() as db_conn:
             if not trading_allowed or signal.action not in ("buy", "sell"):
-                log_signal(db_conn, signal, trade_id=None)
+                log_signal(db_conn, signal, trade_id=None, server_offset=server_offset)
                 return
 
             open_trades_db = get_open_trades(db_conn)
@@ -418,7 +420,13 @@ def _analyse_pair_m15(
             )
             if not risk_ok:
                 logger.info("%s | risk check failed: %s", pair, risk_reason)
-                log_signal(db_conn, signal, trade_id=None, rejection_reason=f"risk: {risk_reason}")
+                log_signal(
+                    db_conn,
+                    signal,
+                    trade_id=None,
+                    rejection_reason=f"risk: {risk_reason}",
+                    server_offset=server_offset,
+                )
                 # Roll back traded flag: risk rejected, so we have not really traded.
                 session_states[pair].traded = False
                 return
@@ -442,7 +450,13 @@ def _analyse_pair_m15(
 
             if lot_size <= 0:
                 logger.warning("%s | position size is 0 — skipping trade", pair)
-                log_signal(db_conn, signal, trade_id=None, rejection_reason="lot_size_zero")
+                log_signal(
+                    db_conn,
+                    signal,
+                    trade_id=None,
+                    rejection_reason="lot_size_zero",
+                    server_offset=server_offset,
+                )
                 session_states[pair].traded = False
                 return
 
@@ -481,6 +495,7 @@ def _analyse_pair_m15(
                         signal,
                         trade_id=None,
                         rejection_reason="lot_below_min",
+                        server_offset=server_offset,
                     )
                     session_states[pair].traded = False
                     return
@@ -508,7 +523,7 @@ def _analyse_pair_m15(
 
             if ticket is None:
                 logger.error("%s | open_trade failed", pair)
-                log_signal(db_conn, signal, trade_id=None)
+                log_signal(db_conn, signal, trade_id=None, server_offset=server_offset)
                 session_states[pair].traded = False
                 return
 
@@ -529,7 +544,7 @@ def _analyse_pair_m15(
                 mt5_ticket=ticket,
             )
 
-            log_signal(db_conn, signal, trade_id=trade_id)
+            log_signal(db_conn, signal, trade_id=trade_id, server_offset=server_offset)
 
             # session_states[pair].traded is already True (set inside evaluate_pair).
 
@@ -566,6 +581,7 @@ def _run_m15_tick(
     session_states: dict[str, SessionState],
     bot_app,
     bar_close_time: datetime,
+    server_offset: timedelta,
 ) -> None:
     """Process one M15 candle close.
 
@@ -641,6 +657,7 @@ def _run_m15_tick(
                 session_states=session_states,
                 bot_app=bot_app,
                 trading_allowed=trading_allowed,
+                server_offset=server_offset,
             )
         except Exception:
             logger.exception("Unhandled error analysing %s", pair)
@@ -1007,6 +1024,16 @@ def main() -> None:
 
         _crash_config = config
 
+        # User-facing times are rendered in the configured display timezone
+        # (default UTC-5).  DB always stores real UTC; this only affects display.
+        try:
+            set_display_tz(parse_utc_offset(config.reports.timezone))
+        except ValueError:
+            logger.warning(
+                "Invalid reports.timezone %r — falling back to UTC-5",
+                config.reports.timezone,
+            )
+
         init_db()
 
         if not connect(config.broker):
@@ -1188,6 +1215,7 @@ def main() -> None:
                         session_states=session_states,
                         bot_app=bot_app,
                         bar_close_time=bar_close_time,
+                        server_offset=_server_offset,
                     )
 
                     # After state D, the session is over — next iteration will detect

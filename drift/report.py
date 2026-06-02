@@ -10,15 +10,16 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from drift.formatting import UTC_MINUS_5, format_duration, pnl_str
+from drift.formatting import format_duration, get_display_tz, pnl_str
 
 logger = logging.getLogger(__name__)
 
 
 def _period_label(since: datetime) -> str:
-    """Return 'May 19 - May 25, 2026' style label in UTC-5."""
-    now_local = datetime.now(UTC_MINUS_5)
-    since_local = since.astimezone(UTC_MINUS_5)
+    """Return 'May 19 - May 25, 2026' style label in the display timezone."""
+    display_tz = get_display_tz()
+    now_local = datetime.now(display_tz)
+    since_local = since.astimezone(display_tz)
     end_local = now_local - timedelta(days=1)
 
     if since_local.year == now_local.year:

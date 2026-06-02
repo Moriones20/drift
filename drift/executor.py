@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 
@@ -189,7 +189,7 @@ def modify_sl(ticket: int, pair: str, new_sl: float) -> bool:
     return True
 
 
-def get_open_positions(magic: int) -> list[dict]:
+def get_open_positions(magic: int, server_offset: timedelta = timedelta(0)) -> list[dict]:
     all_positions = mt5.positions_get()
     if all_positions is None:
         logger.warning(
@@ -204,7 +204,9 @@ def get_open_positions(magic: int) -> list[dict]:
             continue
 
         direction = "buy" if pos.type == 0 else "sell"
-        time_open = datetime.fromtimestamp(pos.time, tz=timezone.utc)
+        # pos.time is a server-time epoch read as UTC; subtract the server offset
+        # to get the real-UTC open instant (D039), consistent with trades/signals.
+        time_open = datetime.fromtimestamp(pos.time, tz=timezone.utc) - server_offset
 
         result.append(
             {

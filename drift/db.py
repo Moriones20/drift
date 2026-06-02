@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -446,11 +446,19 @@ def log_signal(
     signal: Signal,
     trade_id: int | None = None,
     rejection_reason: str | None = None,
+    server_offset: timedelta = timedelta(0),
 ) -> int:
     """Insert a signal record derived from a Signal dataclass. Returns signal ID.
 
     Pass rejection_reason when a risk check (not the strategy) caused the signal to be
     discarded — it overrides the decision to 'rejected' and replaces the reason string.
+
+    The strategy computes candle/analysis timestamps in MT5 server time but tags them
+    as UTC (+00:00) because MT5 returns epochs in server time (see D039).  Pass
+    server_offset (e.g. GMT+3 → timedelta(hours=3)) so the three datetimes are converted
+    to real UTC before persistence: subtracting the offset while keeping the +00:00 tag
+    yields the correct UTC instant, matching trades.opened_at/closed_at which already use
+    real UTC.  Defaults to zero offset (no conversion) for backward compatibility.
     """
     if rejection_reason is not None:
         decision = "rejected"
@@ -459,9 +467,9 @@ def log_signal(
         decision = "accepted" if signal.action != "none" else "rejected"
         reason = signal.reason
 
-    analyzed_at = signal.timestamp.isoformat()
-    m15_candle_time = signal.m15_candle_time.isoformat()
-    h4_candle_time = signal.h4_candle_time.isoformat()
+    analyzed_at = (signal.timestamp - server_offset).isoformat()
+    m15_candle_time = (signal.m15_candle_time - server_offset).isoformat()
+    h4_candle_time = (signal.h4_candle_time - server_offset).isoformat()
 
     cursor = conn.execute(
         """

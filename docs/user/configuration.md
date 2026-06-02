@@ -108,7 +108,7 @@ Configuracion de la zona horaria y el reporte semanal automatico.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `timezone` | string | `"UTC-5"` | Zona horaria para mostrar horas en los reportes y para interpretar `weekly_report_hour`. Solo afecta la presentacion — internamente todo se maneja en UTC. |
+| `timezone` | string | `"UTC-5"` | Zona horaria para mostrar horas en los reportes, en los mensajes de Telegram (estado, trades) y para interpretar `weekly_report_hour`. Formatos aceptados: `UTC`, `UTC-5`, `UTC+3`. Solo afecta la presentacion — internamente todo se guarda en UTC. |
 | `weekly_report_day` | string | `"sunday"` | Dia de la semana del reporte automatico (en ingles, minusculas). Con los valores por defecto (`sunday` / `20` / `UTC-5`), el disparo ocurre el domingo a las 20:00 UTC-5, que equivale al lunes a la 01:00 UTC. |
 | `weekly_report_hour` | entero | `20` | Hora del reporte en la zona horaria configurada (`timezone`). Cambiar este valor mueve el disparo proporcionalmente. |
 
