@@ -87,6 +87,52 @@ class TestOpenTradeRetry(unittest.TestCase):
         self.assertIsNone(ticket)
         self.assertEqual(fake.order_send.call_count, 1)
 
+    def test_guard_abandons_when_price_reverts_on_retry(self):
+        # Attempt 1 rejected (market closed); on retry the bid has reverted
+        # above the buy boundary -> abandon WITHOUT sending a second order.
+        fake = _fake_mt5([_result(MARKET_CLOSED), _result(DONE, order=777)])
+        fake.symbol_info_tick.side_effect = [
+            SimpleNamespace(ask=1.10010, bid=1.10000),  # attempt 1: at the floor
+            SimpleNamespace(ask=1.10060, bid=1.10050),  # attempt 2: reverted up
+        ]
+        with mock.patch.object(executor, "mt5", fake):
+            ticket = executor.open_trade(
+                "EURGBP",
+                "buy",
+                0.1,
+                1.0980,
+                1.1010,
+                magic=234000,
+                max_retries=3,
+                retry_delay_seconds=0,
+                guard_boundary=1.10000,
+            )
+        self.assertIsNone(ticket)
+        self.assertEqual(fake.order_send.call_count, 1)  # no 2nd send
+
+    def test_guard_allows_retry_when_still_at_extreme(self):
+        # Attempt 1 rejected; on retry the bid is still at/below the boundary
+        # -> proceed and fill.
+        fake = _fake_mt5([_result(MARKET_CLOSED), _result(DONE, order=888)])
+        fake.symbol_info_tick.side_effect = [
+            SimpleNamespace(ask=1.10010, bid=1.10000),  # attempt 1
+            SimpleNamespace(ask=1.10005, bid=0.99995),  # attempt 2: still <= boundary
+        ]
+        with mock.patch.object(executor, "mt5", fake):
+            ticket = executor.open_trade(
+                "EURGBP",
+                "buy",
+                0.1,
+                1.0980,
+                1.1010,
+                magic=234000,
+                max_retries=3,
+                retry_delay_seconds=0,
+                guard_boundary=1.10000,
+            )
+        self.assertEqual(ticket, 888)
+        self.assertEqual(fake.order_send.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

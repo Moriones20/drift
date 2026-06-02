@@ -461,4 +461,6 @@ Relacionado: [[D037]] (scheduler en hora servidor), [[D018]] (UTC interno — ma
 
 **Trade-offs asumidos:** el reintento bloquea el tick M15 hasta ~75s por par que falla. Aceptable: la cadencia entre velas es 900s y el rollover ocurre como mucho una vez por sesión. Si se agotan los intentos, el rollback de `traded` (ya existente en `main.py`) permite que la vela 00:15 reintente. Backtest no modela el halt; esta es robustez de ejecución en vivo, no cambia la lógica de señales.
 
+**Guardia de precio (anti-entrada-tardía):** un fill tardío podría entrar a un precio peor mientras el SL/TP siguen anclados al cierre de la señal, degradando el R:R. Para evitarlo, `open_trade` recibe `guard_boundary` (range_low en buy, range_high en sell) y **solo en los reintentos** (no en el primer intento, para no abandonar por el spread bid/ask) abandona la orden si el bid actual ya revirtió hacia dentro del rango (buy: bid > range_low; sell: bid < range_high). Las velas y la condición de entrada son bid-based, por eso la guardia compara contra el bid. Así solo se entra tarde si el extremo sigue válido; si revirtió, se abandona y la vela siguiente reevalúa.
+
 Relacionado: memoria `broker-rollover-market-closed`.

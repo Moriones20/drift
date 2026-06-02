@@ -26,6 +26,7 @@ def open_trade(
     magic: int,
     max_retries: int = 0,
     retry_delay_seconds: float = 0.0,
+    guard_boundary: float | None = None,
 ) -> int | None:
     """Send a market order, retrying on transient broker rejections.
 
@@ -34,6 +35,11 @@ def open_trade(
     re-reading a fresh price each time (the market may have reopened and moved).
     Fatal retcodes (invalid stops, no money, etc.) fail immediately without
     retrying.  Defaults (0 retries) preserve single-shot behaviour.
+
+    guard_boundary is the range edge the entry fired at (range_low for a buy,
+    range_high for a sell).  On retries only, the order is abandoned if the
+    market has reverted back inside the range — so a delayed fill never chases
+    a degraded setup.  See D040.
     """
     symbol_info = mt5.symbol_info(pair)
     if symbol_info is None:
@@ -51,12 +57,33 @@ def open_trade(
             logger.error("open_trade: cannot get tick for %s", pair)
             return None
 
-        if direction.lower() == "buy":
+        is_buy = direction.lower() == "buy"
+        if is_buy:
             order_type = mt5.ORDER_TYPE_BUY
             price = tick.ask
         else:
             order_type = mt5.ORDER_TYPE_SELL
             price = tick.bid
+
+        # Price-validity guard (retries only): abandon if the market has
+        # reverted off the signalled extreme.  Candle closes and the entry
+        # condition are bid-based, so compare the current bid to the boundary.
+        # Skipped on attempt 1 (price just fired) to avoid a spurious abandon
+        # on the bid/ask spread.  See D040.
+        if attempt > 1 and guard_boundary is not None:
+            reverted = (is_buy and tick.bid > guard_boundary) or (
+                not is_buy and tick.bid < guard_boundary
+            )
+            if reverted:
+                logger.warning(
+                    "open_trade: abandoned %s %s — price reverted off extreme "
+                    "(bid=%.5f boundary=%.5f) after rollover wait",
+                    direction,
+                    pair,
+                    tick.bid,
+                    guard_boundary,
+                )
+                return None
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,

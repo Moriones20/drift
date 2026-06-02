@@ -521,6 +521,7 @@ def _analyse_pair_m15(
                 magic=config.system.magic_number,
                 max_retries=config.system.order_retry_attempts,
                 retry_delay_seconds=config.system.order_retry_delay_seconds,
+                guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
             )
 
             if ticket is None:
