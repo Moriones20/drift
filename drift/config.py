@@ -63,6 +63,10 @@ class SystemConfig:
     loop_check_interval_seconds: int = 30
     mt5_reconnect_interval_seconds: int = 300
     magic_number: int = 234000
+    # Order execution retry on transient broker rejections (e.g. retcode 10018
+    # "market closed" during the ~00:00 server-time daily rollover). See D040.
+    order_retry_attempts: int = 3
+    order_retry_delay_seconds: float = 25.0
 
 
 DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]
@@ -161,6 +165,10 @@ def _parse_system(raw: dict) -> SystemConfig:
             raw.get("mt5_reconnect_interval_seconds", defaults.mt5_reconnect_interval_seconds)
         ),
         magic_number=int(raw.get("magic_number", defaults.magic_number)),
+        order_retry_attempts=int(raw.get("order_retry_attempts", defaults.order_retry_attempts)),
+        order_retry_delay_seconds=float(
+            raw.get("order_retry_delay_seconds", defaults.order_retry_delay_seconds)
+        ),
     )
 
 

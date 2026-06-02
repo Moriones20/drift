@@ -519,6 +519,8 @@ def _analyse_pair_m15(
                 stop_loss=signal.sl,
                 take_profit=signal.tp,
                 magic=config.system.magic_number,
+                max_retries=config.system.order_retry_attempts,
+                retry_delay_seconds=config.system.order_retry_delay_seconds,
             )
 
             if ticket is None:

@@ -49,3 +49,5 @@ system:
   loop_check_interval_seconds: 30    # How often to check trailing stops and health
   mt5_reconnect_interval_seconds: 300  # 5 minutes between reconnection attempts
   magic_number: 234000               # Identifies Drift orders in MT5
+  order_retry_attempts: 3            # Retries on transient broker rejects (e.g. 00:00 rollover); see D040
+  order_retry_delay_seconds: 25.0    # Wait between order retries (rollover halt is ~1-2 min)

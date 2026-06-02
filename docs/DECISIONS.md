@@ -445,3 +445,20 @@ Relacionado: [[D023]] (híbrido con filtro de régimen — complementario: D023 
 **Datos demo previos:** las señales ya escritas en demo quedan en la base mixta antigua; no se migran (es data demo desechable). A partir de este cambio todo queda en UTC real.
 
 Relacionado: [[D037]] (scheduler en hora servidor), [[D018]] (UTC interno — matizada aquí).
+
+---
+
+## D040 — Reintento de órdenes ante rechazos transitorios del broker (rollover 00:00)
+
+**Decisión:** `open_trade` reintenta el `order_send` ante retcodes **transitorios** del broker, hasta `system.order_retry_attempts` veces (default 3), esperando `system.order_retry_delay_seconds` (default 25.0) entre intentos y releyendo precio fresco en cada uno. Retcodes transitorios: `10004` requote, `10018` market closed, `10021` price off, `10024` too many requests, `10031` no connection. Los retcodes fatales (stops inválidos, sin fondos, volumen inválido) fallan de inmediato sin reintentar.
+
+**Bug que corrige (observado en demo 2026-06-02):** Una señal de compra VÁLIDA de EURJPY (todas las condiciones cumplidas) disparó a las **00:00:00 hora servidor** y la orden fue rechazada con `retcode=10018 "Market closed"`. Las 00:00 servidor es el **rollover diario de ICMarkets** (halt de ~1-2 min en la medianoche del servidor), y cae dentro de la ventana de entrada del Asian Scalper (23:00-01:59 servidor). Con un único `order_send` se perdía la entrada. 3 intentos × 25s cubren ~75s → el mercado reabre y la orden entra.
+
+**Alternativas consideradas:**
+- Saltar proactivamente la vela 00:00 — más simple pero nunca opera ese extremo y diverge del backtest.
+- Solo logging limpio — no recupera el trade.
+- **Reintentar (elegida)** — recupera la entrada, es general (cualquier halt breve), no hardcodea las 00:00.
+
+**Trade-offs asumidos:** el reintento bloquea el tick M15 hasta ~75s por par que falla. Aceptable: la cadencia entre velas es 900s y el rollover ocurre como mucho una vez por sesión. Si se agotan los intentos, el rollback de `traded` (ya existente en `main.py`) permite que la vela 00:15 reintente. Backtest no modela el halt; esta es robustez de ejecución en vivo, no cambia la lógica de señales.
+
+Relacionado: memoria `broker-rollover-market-closed`.

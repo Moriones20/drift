@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 
 logger = logging.getLogger(__name__)
+
+# Broker retcodes that are transient: the request can succeed on a later
+# attempt without changing it.  Most relevant here is 10018 (market closed),
+# returned during ICMarkets' ~00:00 server-time daily rollover, which falls
+# inside the Asian Scalper entry window (23:00-01:59 server).  See D040.
+#   10004 requote · 10018 market closed · 10021 price off (no quotes)
+#   10024 too many requests · 10031 no connection
+_TRANSIENT_RETCODES = frozenset({10004, 10018, 10021, 10024, 10031})
 
 
 def open_trade(
@@ -15,12 +24,17 @@ def open_trade(
     stop_loss: float,
     take_profit: float,
     magic: int,
+    max_retries: int = 0,
+    retry_delay_seconds: float = 0.0,
 ) -> int | None:
-    tick = mt5.symbol_info_tick(pair)
-    if tick is None:
-        logger.error("open_trade: cannot get tick for %s", pair)
-        return None
+    """Send a market order, retrying on transient broker rejections.
 
+    On a transient retcode (see _TRANSIENT_RETCODES) the order is re-sent up to
+    max_retries extra times, sleeping retry_delay_seconds between attempts and
+    re-reading a fresh price each time (the market may have reopened and moved).
+    Fatal retcodes (invalid stops, no money, etc.) fail immediately without
+    retrying.  Defaults (0 retries) preserve single-shot behaviour.
+    """
     symbol_info = mt5.symbol_info(pair)
     if symbol_info is None:
         logger.error("open_trade: cannot get symbol_info for %s", pair)
@@ -30,42 +44,78 @@ def open_trade(
     stop_loss = round(stop_loss, digits)
     take_profit = round(take_profit, digits)
 
-    if direction.lower() == "buy":
-        order_type = mt5.ORDER_TYPE_BUY
-        price = tick.ask
-    else:
-        order_type = mt5.ORDER_TYPE_SELL
-        price = tick.bid
+    total_attempts = max_retries + 1
+    for attempt in range(1, total_attempts + 1):
+        tick = mt5.symbol_info_tick(pair)
+        if tick is None:
+            logger.error("open_trade: cannot get tick for %s", pair)
+            return None
 
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": pair,
-        "volume": lot_size,
-        "type": order_type,
-        "price": price,
-        "sl": stop_loss,
-        "tp": take_profit,
-        "deviation": 20,
-        "magic": magic,
-        "comment": "Drift",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
-    }
+        if direction.lower() == "buy":
+            order_type = mt5.ORDER_TYPE_BUY
+            price = tick.ask
+        else:
+            order_type = mt5.ORDER_TYPE_SELL
+            price = tick.bid
 
-    result = mt5.order_send(request)
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pair,
+            "volume": lot_size,
+            "type": order_type,
+            "price": price,
+            "sl": stop_loss,
+            "tp": take_profit,
+            "deviation": 20,
+            "magic": magic,
+            "comment": "Drift",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
 
-    if result is None:
+        result = mt5.order_send(request)
+
+        if result is None:
+            logger.error(
+                "open_trade: order_send returned None for %s %s, last_error=%s",
+                direction,
+                pair,
+                mt5.last_error(),
+            )
+            return None
+
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info(
+                "open_trade: opened %s %s ticket=%d lot=%.2f price=%.5f sl=%.5f tp=%.5f",
+                direction,
+                pair,
+                result.order,
+                lot_size,
+                price,
+                stop_loss,
+                take_profit,
+            )
+            return result.order
+
+        retryable = result.retcode in _TRANSIENT_RETCODES and attempt < total_attempts
+        if retryable:
+            logger.warning(
+                "open_trade: transient reject %s %s retcode=%d comment=%s — retry %d/%d in %.0fs",
+                direction,
+                pair,
+                result.retcode,
+                result.comment,
+                attempt,
+                max_retries,
+                retry_delay_seconds,
+            )
+            if retry_delay_seconds > 0:
+                time.sleep(retry_delay_seconds)
+            continue
+
         logger.error(
-            "open_trade: order_send returned None for %s %s, last_error=%s",
-            direction,
-            pair,
-            mt5.last_error(),
-        )
-        return None
-
-    if result.retcode != mt5.TRADE_RETCODE_DONE:
-        logger.error(
-            "open_trade: failed %s %s lot=%.2f sl=%.5f tp=%.5f retcode=%d comment=%s",
+            "open_trade: failed %s %s lot=%.2f sl=%.5f tp=%.5f retcode=%d comment=%s "
+            "(attempt %d/%d)",
             direction,
             pair,
             lot_size,
@@ -73,20 +123,12 @@ def open_trade(
             take_profit,
             result.retcode,
             result.comment,
+            attempt,
+            total_attempts,
         )
         return None
 
-    logger.info(
-        "open_trade: opened %s %s ticket=%d lot=%.2f price=%.5f sl=%.5f tp=%.5f",
-        direction,
-        pair,
-        result.order,
-        lot_size,
-        price,
-        stop_loss,
-        take_profit,
-    )
-    return result.order
+    return None
 
 
 def close_trade(
