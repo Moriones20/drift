@@ -199,6 +199,8 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 
 ## D018 — Zona horaria: UTC interno, UTC-5 presentación
 
+> ⚠️ MATIZADA por [[D037]] y [[D039]]. El *cálculo de sesión* NO usa UTC sino hora de servidor MT5 (GMT+3). UTC se mantiene como base de **almacenamiento** y el reporte semanal sí dispara en UTC. Ver D039 para las tres capas (servidor / UTC / Bogotá).
+
 **Decisión:** El sistema trabaja internamente en UTC. Todas las notificaciones y reportes se presentan en UTC-5 (Colombia).
 **Por qué:** UTC es estándar para sistemas financieros. La conversión a UTC-5 es solo para la capa de presentación al usuario.
 
@@ -399,3 +401,45 @@ Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw 
 **Reporte semanal no afectado.** `_check_weekly_report` sigue usando `datetime.now(timezone.utc)` (UTC real) porque su trigger está configurado en la zona horaria del usuario (UTC-5) y no tiene relación con la sesión de broker.
 
 **Nota geográfica:** El docstring original y D029 describen la ventana 21:00-02:00 GMT como "sesión asiática tranquila". En UTC real eso es 18:00-23:00 UTC (tarde NY / apertura Sydney), no la sesión asiática de libro. El edge fue validado fuera de muestra en exactamente esta ventana en tiempo de servidor, así que la ventana se mantiene. Solo el nombre es geográficamente impreciso; la lógica y los números son correctos.
+
+---
+
+## D038 — (FUTURO, no implementar aún) Pipeline multi-estrategia por sesión horaria
+
+**Estado:** Idea anotada para implementación futura. **No tocar hasta que el bot actual (Asian Scalper en 1 sola ventana) lleve ≥2 meses estable en demo y luego en live** (D016). Esta nota existe solo para no perder la idea; no es un compromiso de diseño.
+
+**Idea:** Generalizar Drift de "un bot con una estrategia y una ventana horaria fija" a "un orquestador que corre N estrategias, cada una activa en su propia ventana de sesión". Ejemplo del usuario:
+- Madrugada (hora local) → estrategia tipo Asian Session (mean reversion en rango, la actual).
+- Tarde (hora local) → estrategia tipo London Session (breakout / momentum de apertura europea).
+- Y así sucesivamente (NY session, overlap London-NY, etc.).
+
+**Por qué se anota y no se hace ya:**
+1. Cada sesión tiene un régimen de mercado distinto → cada una necesita su propia estrategia *validada con su propio backtest* antes de ir a live. Hoy solo tenemos UNA estrategia validada (Asian Scalper, D029). Añadir London sin backtest sería exactamente el "operar a conveniencia" que queremos evitar.
+2. Multiplica el estado y la superficie de bugs (varias `SessionState` por par × estrategia, varias ventanas, posible solape). La infraestructura de riesgo (`risk.py`, `max_open_trades`, D024) tendría que arbitrar entre estrategias que compiten por los mismos pares/cupos.
+3. La lección de D037 (desalineación de zona horaria) se multiplica: cada ventana debe razonar en hora de servidor MT5, no en hora local ni GMT.
+
+**Esbozo de diseño (cuando llegue el momento, re-litigar aquí):**
+- Una interfaz `Strategy` común: `define_window()`, `evaluate_pair()`, `should_close()`, su propio bloque de params en `config.yaml` (p. ej. `strategies: { asian: {...}, london: {...} }`).
+- El scheduler de `main.py` deja de hardcodear horas (21/22/23/0/1/2) y las deriva de la estrategia activa en cada tick → resuelve también el acoplamiento parcial detectado en la auditoría 2026-06-02 (ver más abajo).
+- Un router que, dado el "server_now", decide qué estrategia(s) están en ventana y reparte el cupo de riesgo global.
+- Cada estrategia nueva entra solo con: backtest out-of-sample propio + ≥2 meses demo, igual que la primera.
+
+Relacionado: [[D023]] (híbrido con filtro de régimen — complementario: D023 elige estrategia por *régimen detectado*, D038 por *franja horaria*). Ambas pueden converger.
+
+---
+
+## D039 — Arquitectura de zonas horarias: tres capas (servidor / UTC / Bogotá)
+
+**Decisión:** Separar explícitamente tres capas de tiempo y no mezclarlas nunca:
+
+1. **CALCULAR sesiones → hora de servidor MT5 (GMT+3 fijo, sin DST).** La ventana 21:00-02:00 y el lock del rango se evalúan contra los timestamps de las velas, que el servidor estampa en su hora local. El scheduler usa `server_now(offset)` (D037). Esta capa queda **intacta** — es la que hace que el rango se lockee correctamente y está cubierta por `tests/test_strategy.py`.
+2. **GUARDAR en DB → UTC real, siempre (ISO 8601).** Es la base canónica: estable ante cambios de broker/offset/DST, hace comparables trades y señales, y desacopla "cuándo pasó" de "cómo se muestra".
+3. **MOSTRAR al usuario → Bogotá (UTC-5), configurable vía `reports.timezone`.** El usuario nunca ve UTC ni hora-servidor.
+
+**Bug que corrige:** El índice de velas (`mt5_client.py`, `pd.to_datetime(..., utc=True)` sobre el epoch del servidor) queda en hora-servidor **mal etiquetada como UTC**. Esos timestamps se persistían tal cual en `signals` (`m15_candle_time`, `h4_candle_time`, `analyzed_at`), mientras que `trades.opened_at/closed_at` usan `datetime.now(timezone.utc)` = **UTC real**. Resultado: dos columnas que dicen `+00:00` pero en bases distintas (3h de diferencia). Al pasar ambas por `format_time` (UTC→UTC-5), los trades mostraban la hora Bogotá correcta pero las señales aparecían +3h.
+
+**Implementación (enfoque de borde, no de núcleo):** No se toca la lógica de sesión (evita re-romper D037 y reescribir ~200 asserts). Se convierte server→UTC **en el momento exacto de persistir** (`db.log_signal` recibe el `server_offset` y resta el offset antes de `isoformat()`; `executor` convierte el `time_open` derivado de `pos.time`). `formatting.py` lee la zona de `reports.timezone` y convierte UTC→Bogotá al mostrar. Regla: **server-time nunca se guarda ni se muestra crudo.**
+
+**Datos demo previos:** las señales ya escritas en demo quedan en la base mixta antigua; no se migran (es data demo desechable). A partir de este cambio todo queda en UTC real.
+
+Relacionado: [[D037]] (scheduler en hora servidor), [[D018]] (UTC interno — matizada aquí).
