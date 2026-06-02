@@ -61,7 +61,7 @@ Las horas de la estrategia están en **hora del servidor MT5 (GMT+3)**. El sched
 
 ## Pares y por qué
 
-Los pares ideales son los que **no tienen actividad fuerte durante la sesión asiática temprana**:
+Los pares ideales son los que **se mueven en rango (sin tendencia fuerte) durante la ventana operativa** (18:00-23:00 UTC):
 
 | Par | Comportamiento esperado |
 |---|---|
@@ -89,7 +89,7 @@ Los pares ideales son los que **no tienen actividad fuerte durante la sesión as
 
 Portfolio total: +9% sobre $2500 (5 pares × $500) en 2 años, peor drawdown < 1%, 708 trades.
 
-USDJPY fue descartado tras la optimización (Tokyo opera USDJPY durante la sesión asiática, rompe la hipótesis de mercado tranquilo). Detalle en D029.
+USDJPY fue descartado tras la optimización: tiene actividad direccional fuerte durante la ventana operativa (PF 0.89 → 0.75). Detalle en D029.
 
 ## Riesgos conocidos
 
