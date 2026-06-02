@@ -4,15 +4,15 @@ Referencia técnica de la estrategia activa del bot Drift. Para el código que l
 
 ## Idea base
 
-El mercado forex tiene tres sesiones principales: **Asian (Tokyo)**, **London** y **New York**. Durante las horas previas y al inicio de la sesión asiática (21:00-02:00 GMT) el mercado está muy tranquilo — Londres ya cerró, New York está cerrando y Tokyo aún no opera con fuerza. En esa calma los precios se mueven dentro de un rango estrecho y tienden a volver al centro (mean reversion).
+La estrategia opera una ventana horaria fija definida en **hora del servidor MT5** (ICMarkets = GMT+3 fijo, sin DST): **21:00-02:00 hora servidor**. Identifica el rango de las primeras dos horas y, cuando el precio toca un extremo con confirmación de sobreventa/sobrecompra, apuesta a que regresará al medio (mean reversion).
 
-La estrategia identifica el rango de la noche y, cuando el precio toca un extremo con confirmación de sobreventa/sobrecompra, apuesta a que regresará al medio.
+> ⚠️ **Corrección de la hipótesis original (2026-06-01).** El nombre "Asian Session" y la justificación de "mercado tranquilo de la sesión asiática" son **geográficamente incorrectos**. La hora servidor 21:00-02:00 equivale en **UTC real** a **18:00-23:00**, que es la **tarde de Nueva York entrando al cierre y la apertura de Sydney** — no la sesión asiática profunda. El edge es real (validado out-of-sample el 2026-06-01: PF 7.56 in-sample → 6.98 out-of-sample, retención 92%), pero el *porqué* funciona no es la calma asiática que sugiere el nombre. El edge es además **sensible a la hora** (mover la ventana ±1h reduce el PF ~61%), lo que indica que explota un límite de régimen intradía específico en esa franja. El nombre se conserva por compatibilidad histórica; la mecánica es lo que importa.
 
 ## Reglas paso a paso
 
-### 1. Definir el rango (21:00-23:00 GMT)
+### 1. Definir el rango (21:00-23:00 hora servidor)
 - Durante las primeras 2 horas el bot solo observa: registra el high y low de cada vela M15
-- A las 23:00 el rango se "lockea" con el high y low acumulados
+- A las 23:00 (hora servidor) el rango se "lockea" con el high y low acumulados
 
 ### 2. Validar el rango
 - **Filtro de ancho**: el rango debe medir entre `1.0x` y `3.0x` el ATR(14) en M15
@@ -24,7 +24,7 @@ La estrategia identifica el rango de la noche y, cuando el precio toca un extrem
 - ADX mide la fuerza de la tendencia: si está alto, el mercado va en tendencia y la mean reversion no funciona
 - El ADX se calcula sobre el H4 anterior (shifted) para evitar look-ahead bias
 
-### 4. Entrar al trade (ventana 23:00-01:59 GMT)
+### 4. Entrar al trade (ventana 23:00-01:59 hora servidor)
 - **BUY**: precio toca o rompe el piso del rango **Y** RSI(14) en M15 < `30` (sobreventa confirma extremo)
 - **SELL**: precio toca o rompe el techo del rango **Y** RSI(14) en M15 > `70` (sobrecompra confirma)
 - **Máximo 1 trade por sesión por par** — si la primera señal falla, no se insiste
@@ -32,7 +32,7 @@ La estrategia identifica el rango de la noche y, cuando el precio toca un extrem
 ### 5. Salir del trade
 - **Take Profit**: precio cruza el **medio del rango** (la media donde tiende a regresar)
 - **Stop Loss**: `1.5x ATR(14)` por debajo del entry (BUY) o por encima (SELL)
-- **Time stop**: si a las **02:00 GMT** el trade sigue abierto, se cierra — la ventana segura termina y comienza la volatilidad pre-London
+- **Time stop**: si a las **02:00 (hora servidor)** el trade sigue abierto, se cierra — fin de la ventana operativa
 
 ## Parámetros configurables
 
@@ -49,13 +49,15 @@ Estos son los valores universales tras la optimización con grid search de 1620 
 
 ## Tiempos clave (fijos, no configurables)
 
-| Hora GMT | Qué pasa |
-|---|---|
-| 21:00 | Se abre nueva sesión, empieza a medir el rango |
-| 23:00 | Se lockea el rango, se empiezan a buscar entries |
-| 02:00 | Se cierra todo — fin de la ventana segura |
+Las horas de la estrategia están en **hora del servidor MT5 (GMT+3)**. El scheduler de `main.py` deriva el offset del servidor al arrancar (`get_server_utc_offset`) y se alinea a hora servidor para que coincida con los timestamps de las velas (ver D037).
 
-Todos los horarios se manejan internamente en UTC. La presentación al usuario (Telegram) usa UTC-5.
+| Hora servidor | UTC real | Local (UTC-5) | Qué pasa |
+|---|---|---|---|
+| 21:00 | 18:00 | 13:00 | Se abre nueva sesión, empieza a medir el rango |
+| 23:00 | 20:00 | 15:00 | Se lockea el rango, se empiezan a buscar entries |
+| 02:00 | 23:00 | 18:00 | Se cierra todo — fin de la ventana operativa |
+
+**Importante para operación:** la ventana activa del bot en hora local es **13:00-18:00 (UTC-5)**. Si el PC se enciende después de las 13:00 local, se pierde parte o toda la definición de rango y la sesión no opera. La presentación al usuario (Telegram) usa UTC-5.
 
 ## Pares y por qué
 
@@ -73,7 +75,7 @@ Los pares ideales son los que **no tienen actividad fuerte durante la sesión as
 
 | Par | Por qué falla |
 |---|---|
-| USDJPY | Tokyo opera USDJPY activamente desde las 23:00 GMT — rompe la hipótesis de mercado tranquilo. En el primer backtest dio PF 0.89. |
+| USDJPY | Descartado: comportamiento perdedor en la ventana (PF 0.89 en el primer backtest, PF 0.75 con parámetros universales). Ver D029. |
 
 ## Métricas tras optimización (datos reales MT5, 2 años de M15, parámetros universales)
 
@@ -93,8 +95,8 @@ USDJPY fue descartado tras la optimización (Tokyo opera USDJPY durante la sesi�
 
 1. **Holidays japoneses** (Golden Week en mayo, Año Nuevo): los spreads explotan y la liquidez desaparece. Sin filtro de calendario implementado todavía.
 2. **Anuncios del BOJ** (Banco de Japón): pueden ocurrir durante la ventana y mover los JPY crosses violentamente.
-3. **NFP americano** (viernes 12:30 GMT): no cae en la ventana, pero el gap del viernes de la semana siguiente sí. El cierre automático del viernes a las 20:00 UTC protege contra esto.
-4. **Cambio DST**: el horario GMT no cambia, pero los pares contra USD/EUR sí experimentan cambios de actividad alrededor del cambio de hora. Sin ajuste necesario porque comparamos contra UTC, no contra hora local.
+3. **NFP americano** (viernes 12:30 UTC): no cae en la ventana operativa (que en UTC real es 18:00-23:00).
+4. **Cambio DST**: el servidor MT5 usa un offset GMT+3 **fijo, sin DST** (verificado sobre 2 años de datos). El scheduler se alinea a la hora del servidor (D037), así que la ventana operativa siempre cae en las mismas velas del servidor independientemente del DST de USA/Europa. La actividad real de mercado dentro de la ventana sí se desplaza ±1h en UTC con el DST, pero la lógica de sesión no requiere ajuste porque sigue al reloj del servidor.
 
 ## Lecturas relacionadas
 
