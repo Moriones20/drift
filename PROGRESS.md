@@ -109,4 +109,12 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - Resultados de optimización: EURCHF PF 8.17, AUDNZD PF 4.29 sobre 2 años de datos M15 reales (ver D029 para tabla completa y parámetros universales finales).
 - USDJPY descartado por empirismo: PF 0.75 con parámetros universales (ver D029). Pares finales: AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP.
 - **Phase 2 complete.** Infraestructura de backtest lista; estrategia activa: Asian Session Scalper M15.
+
+### Mantenimiento 2026-06-02 — auditoría, zonas horarias y ejecución (demo en marcha)
+- **Auditoría de estrategia y docs.** Confirmado que el código sigue fielmente la spec (D029); el "desfase" era documental, no de ejecución. Corregidos en 14 archivos: etiquetas de zona horaria (UTC/GMT → hora servidor MT5 GMT+3), prosa de parámetros pre-optimización en el knowledge doc (→ 4.0x / ADX 35 / RSI 35-65 / SL 2.5x), columnas EMA/MACD fantasma en ROADMAP/ARCHITECTURE, `check_tp_hit` muerta, pares 6→5, datos operativos (server name, log 10MB, ruta DB, drawdown). `fixes-audit.md` archivado.
+- **D039 — arquitectura de zonas horarias.** Tres capas: calcular sesión en hora servidor (intacto), guardar en UTC real, mostrar en Bogotá (UTC-5 configurable vía `reports.timezone`). Fix de borde: `db.log_signal` convierte server→UTC al persistir; `formatting.format_time` lee la zona. Corrige señales que se guardaban +3h. Lógica de sesión y reporte semanal sin tocar.
+- **D040 — ejecución robusta en rollover.** `open_trade` reintenta ante retcodes transitorios (10018 market closed del rollover 00:00 servidor, etc.) hasta `system.order_retry_attempts`×`order_retry_delay_seconds` (3×25s), con **guardia de precio** que abandona el reintento si el bid revirtió fuera del extremo (no persigue entradas tardías degradadas). Origen: señal válida de EURJPY perdida el 2026-06-02 por retcode 10018.
+- Tests: 113 pasan (nuevos `test_timezones.py` y `test_executor.py`). Bot demo reiniciado para cargar los tres fixes; prueba real en la sesión completa del día siguiente.
+- Pendientes anotados: verificar stack pandas (`fixes-audit.md` paso 3), config "muerta" `session_start_hour`/`range_definition_hours` (hardcodeada en strategy/main — refactor junto al pipeline multi-sesión D038).
+
 - Next session starts at Step 22 (Phase 3: Go Live).
