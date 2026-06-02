@@ -1,3 +1,5 @@
+> ⚠️ PLAN EJECUTADO / ARCHIVADO (2026-06-02). Conservado como histórico. Notas: (a) El Paso 1 proponía NSSM como servicio Windows; se descartó — producción usa **Windows Task Scheduler** (ver docs/user/runbook.md y D037-era ops). (b) El Paso 11 (D1-D3: headers de deprecación, eliminación de friday_close_hour_utc, sellos 'SUPERSEDIDA por D029') ya está completo.
+
 # Plan de Fixes — Auditoría de Seguridad/Bugs (2026-05-31)
 
 Plan ejecutable derivado de una auditoría completa del bot Drift, **re-auditando cada hallazgo

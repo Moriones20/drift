@@ -22,7 +22,7 @@ if not mt5.initialize():
 authorized = mt5.login(
     login=12345678,
     password="password",
-    server="ICMarketsSC-MT5"  # Servidor de ICMarkets (Seychelles)
+    server="ICMarketsSC-Demo"  # Servidor real de Drift; el nombre exacto lo da el broker (terminal MT5 → Login)
 )
 
 if not authorized:

@@ -1,6 +1,6 @@
 # Asian Session Scalper — Guía de la estrategia
 
-Referencia técnica de la estrategia activa del bot Drift. Para el código que la implementa en backtest, ver `backtest/asian_engine.py`. Para el plan de migración al bot live, ver `docs/plans/asian-session-scalper-live.md`.
+Referencia técnica de la estrategia activa del bot Drift. Para el código que la implementa en backtest, ver `backtest/asian_engine.py`. Para el rationale de los parámetros universales, ver D029 en `docs/DECISIONS.md`.
 
 ## Idea base
 
@@ -15,23 +15,23 @@ La estrategia opera una ventana horaria fija definida en **hora del servidor MT5
 - A las 23:00 (hora servidor) el rango se "lockea" con el high y low acumulados
 
 ### 2. Validar el rango
-- **Filtro de ancho**: el rango debe medir entre `1.0x` y `3.0x` el ATR(14) en M15
+- **Filtro de ancho**: el rango debe medir entre `1.0x` y `4.0x` el ATR(14) en M15
   - Menor a 1x ATR → demasiado estrecho, sin espacio para mover el TP
-  - Mayor a 3x ATR → noche volátil, hipótesis rota, no es seguro entrar
+  - Mayor a 4x ATR → noche volátil, hipótesis rota, no es seguro entrar
 
 ### 3. Filtro de régimen — ADX H4
-- El ADX(14) calculado en velas H4 debe estar **por debajo de `25`**
+- El ADX(14) calculado en velas H4 debe estar **por debajo de `35`**
 - ADX mide la fuerza de la tendencia: si está alto, el mercado va en tendencia y la mean reversion no funciona
 - El ADX se calcula sobre el H4 anterior (shifted) para evitar look-ahead bias
 
 ### 4. Entrar al trade (ventana 23:00-01:59 hora servidor)
-- **BUY**: precio toca o rompe el piso del rango **Y** RSI(14) en M15 < `30` (sobreventa confirma extremo)
-- **SELL**: precio toca o rompe el techo del rango **Y** RSI(14) en M15 > `70` (sobrecompra confirma)
+- **BUY**: precio toca o rompe el piso del rango **Y** RSI(14) en M15 < `35` (sobreventa confirma extremo)
+- **SELL**: precio toca o rompe el techo del rango **Y** RSI(14) en M15 > `65` (sobrecompra confirma)
 - **Máximo 1 trade por sesión por par** — si la primera señal falla, no se insiste
 
 ### 5. Salir del trade
 - **Take Profit**: precio cruza el **medio del rango** (la media donde tiende a regresar)
-- **Stop Loss**: `1.5x ATR(14)` por debajo del entry (BUY) o por encima (SELL)
+- **Stop Loss**: `2.5x ATR(14)` por debajo del entry (BUY) o por encima (SELL)
 - **Time stop**: si a las **02:00 (hora servidor)** el trade sigue abierto, se cierra — fin de la ventana operativa
 
 ## Parámetros configurables
@@ -45,7 +45,7 @@ La estrategia opera una ventana horaria fija definida en **hora del servidor MT5
 | `range_atr_min` | 1.0 | Ancho mínimo del rango en múltiplos de ATR |
 | `range_atr_max` | 4.0 | Ancho máximo del rango |
 
-Estos son los valores universales tras la optimización con grid search de 1620 combinaciones × 6 pares + búsqueda universal. Detalle en D029 y `docs/plans/asian-session-scalper-live.md`.
+Estos son los valores universales tras la optimización con grid search de 1620 combinaciones × 6 pares + búsqueda universal. Detalle en D029 (`docs/DECISIONS.md`).
 
 ## Tiempos clave (fijos, no configurables)
 

@@ -116,16 +116,21 @@ ps -W | grep python.exe | grep -v grep
 
 ¿Está en ventana activa? ¿Cuándo es la próxima sesión?
 
+`_in_session_window` y `_next_session_start` esperan hora del **servidor MT5** (GMT+3), no UTC real. Hay que conectar a MT5 y usar `server_now(get_server_utc_offset(...))`:
+
 ```bash
 python -c "
-from datetime import datetime, timezone
 from main import _in_session_window, _next_session_start
 from drift.config import load_config
+from drift.mt5_client import connect, disconnect, get_server_utc_offset, server_now
 cfg = load_config()
-now = datetime.now(timezone.utc)
-print(f'UTC now    : {now.strftime(\"%A %Y-%m-%d %H:%M\")}')
+connect(cfg.broker)
+offset = get_server_utc_offset(cfg.pairs[0] if cfg.pairs else 'EURUSD')
+now = server_now(offset)
+print(f'Server now : {now.strftime(\"%A %Y-%m-%d %H:%M\")} (server time, GMT+3)')
 print(f'In window  : {_in_session_window(now, cfg)}')
-print(f'Next start : {_next_session_start(now, cfg).strftime(\"%A %Y-%m-%d %H:%M UTC\")}')
+print(f'Next start : {_next_session_start(now, cfg).strftime(\"%A %Y-%m-%d %H:%M server time\")}')
+disconnect()
 "
 ```
 
@@ -334,7 +339,7 @@ Después reiniciá el bot.
 
 Si `health_check` falla repetidamente:
 1. Abrí MT5 manualmente y verificá que estés logueado.
-2. Si el servidor cambió (ej. `ICMarketsSC-Demo` → `ICMarketsSC-MT5-Demo`), actualizá `config.yaml`.
+2. Verificá que `broker.server` en `config.yaml` sea el valor vigente correcto: `ICMarketsSC-Demo`. Si quedó un nombre viejo (ej. `ICMarketsSC-MT5-Demo`), corregilo a `ICMarketsSC-Demo`.
 3. Si el broker te desautenticó, volvé a loguear desde la terminal MT5.
 
 ### Bot no responde a comandos Telegram

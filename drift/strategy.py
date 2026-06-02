@@ -3,13 +3,15 @@
 Ports the logic from backtest/asian_engine.py (AsianSessionStrategy.next(), lines 160-258)
 to a stateless-friendly function interface suitable for the live scheduler.
 
-Session window (UTC):
+Session window (MT5 server time, GMT+3 — NOT UTC):
   21:00-22:59  Range definition — accumulate high/low, no entries.
   23:00-01:59  Trading window — evaluate entries once range is locked.
   02:00        Time stop — force-close any open position, reset state.
   02:01-20:59  Outside window — skip.
 
-All datetimes must be UTC-aware.  Never localize.
+Candle timestamps arrive in server time but are labeled UTC-aware; the session
+logic reasons over that server-time clock, not real UTC.  Timestamps must still
+be tz-aware.  Never localize.
 """
 
 from __future__ import annotations
@@ -37,9 +39,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SessionState:
-    """Per-pair tracking across a single Asian session (21:00 UTC to 02:00 UTC next day)."""
+    """Per-pair tracking across one Asian session (21:00→02:00 next day, server time GMT+3)."""
 
-    session_date: int | None = None  # ordinal of session-start UTC day
+    session_date: int | None = None  # ordinal of session-start day (server time)
     high: float = float("-inf")  # running high during 21:00-22:59
     low: float = float("inf")  # running low during 21:00-22:59
     locked: bool = False  # True after 23:00 if range is valid

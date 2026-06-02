@@ -1,6 +1,6 @@
 # Drift — Asian Session Scalper
 
-Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion durante la ventana 21:00-02:00 GMT sobre un rango definido en las primeras 2 horas. Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
+Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion durante la ventana 21:00-02:00 hora servidor MT5 (GMT+3) sobre un rango definido en las primeras 2 horas. (El nombre engaña: en Bogotá es una franja de tarde, 13:00-18:00, no madrugada.) Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
 
 ## Key Documents
 
@@ -29,7 +29,7 @@ Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion
 ## Core Architecture
 
 ```
-main.py (M15 loop dentro de ventana 21:00-02:00 GMT)
+main.py (M15 loop dentro de ventana 21:00-02:00 hora servidor MT5)
   → mt5_client.py    (datos de mercado)
   → indicators.py    (RSI, ATR, ADX)
   → strategy.py      (¿comprar/vender/nada?)
@@ -50,7 +50,7 @@ main.py (M15 loop dentro de ventana 21:00-02:00 GMT)
 
 ## Conventions
 
-- Zona horaria interna: UTC. Presentación al usuario: UTC-5
+- Tres capas horarias: el cálculo de la ventana de sesión usa hora de servidor MT5 (GMT+3, sin DST), el almacenamiento en DB es UTC real (ISO 8601), y la presentación al usuario es UTC-5 (Bogotá)
 - Cada módulo es un archivo independiente en `drift/`
 - Config en `config.yaml`, nunca hardcodeado
 - Credenciales no se versionan — usar `config.example.yaml` como template

@@ -12,10 +12,10 @@ strategy:
   rsi_overbought: 65.0
   # ADX regime filter: trade ONLY when H4 ADX < adx_max_threshold (ranging market)
   adx_max_threshold: 35.0
-  # Asian Session Scalper — session window (UTC hours)
-  session_start_hour: 21       # begin observing range at 21:00 UTC
-  range_definition_hours: 2    # 21:00-23:00 UTC: define range, no entries
-  session_end_hour: 2          # close all session trades at 02:00 UTC
+  # Asian Session Scalper — session window (MT5 server time, GMT+3 — NOT UTC; see D039)
+  session_start_hour: 21       # begin observing range at 21:00 server (= 13:00 Bogotá)
+  range_definition_hours: 2    # 21:00-23:00 server: define range, no entries
+  session_end_hour: 2          # close all session trades at 02:00 server (= 18:00 Bogotá)
   # Asian Session Scalper — range quality filter (multiples of ATR)
   range_atr_min: 1.0           # minimum session range width (ATR units); below = too quiet
   range_atr_max: 4.0           # maximum session range width (ATR units); above = too volatile

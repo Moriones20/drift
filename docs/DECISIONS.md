@@ -300,6 +300,8 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 
 ## D029 — Cambio de estrategia a Asian Session Scalper
 
+> ⚠️ Nota horaria: donde D029 dice 'GMT' léase hora de servidor MT5 (GMT+3); la hipótesis de 'sesión asiática tranquila' fue corregida — ver [[D037]] y [[D039]].
+
 **Decisión:** Reemplazar la estrategia activa (mean reversion H4 con filtro MLP) por Asian Session Scalper en M15, operando solo durante la ventana 21:00-02:00 GMT. Ver `docs/plans/asian-session-scalper-live.md` para el plan de implementación y `docs/knowledge/asian-session-scalper.md` para las reglas.
 
 **Recorrido hasta llegar aquí:**

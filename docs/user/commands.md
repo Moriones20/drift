@@ -42,7 +42,7 @@ Muestra los ultimos 5 trades cerrados.
 - Par y direccion.
 - Precio de entrada y salida.
 - P&L realizado.
-- Motivo de cierre: `stop_loss`, `take_profit`, `session_close` (cierre forzado 02:00 UTC), `manual` (cerrado via `/stop`), o `drawdown_pause`.
+- Motivo de cierre: `stop_loss`, `take_profit`, `session_close` (cierre forzado 02:00 hora servidor MT5 = 18:00 Bogota), `manual` (cerrado via `/stop`), o `drawdown_pause`.
 - Duracion del trade.
 - Hora de cierre.
 
@@ -85,7 +85,7 @@ Para reanudar, usar `/resume`.
 Reanuda el bot despues de una pausa.
 
 **Comportamiento:**
-- El bot vuelve a analizar señales en el siguiente cierre de vela M15 dentro de la ventana activa (23:00-01:59 UTC).
+- El bot vuelve a analizar señales en el siguiente cierre de vela M15 dentro de la ventana activa (23:00-01:59 hora servidor MT5 = 15:00-17:59 Bogota).
 - Funciona tanto para pausas manuales (via `/pause`) como para pausas automaticas por drawdown.
 - Si el bot no esta pausado, informa que ya esta corriendo.
 

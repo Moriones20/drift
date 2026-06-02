@@ -10,7 +10,7 @@ Credenciales para conectarse a MetaTrader 5. Los tres campos son **obligatorios*
 
 | Campo | Tipo | Descripcion |
 |---|---|---|
-| `server` | string | Nombre exacto del servidor MT5. Verificar en MT5: File > Open an Account. Para demo ICMarkets: `ICMarketsSC-MT5-Demo` |
+| `server` | string | Nombre exacto del servidor MT5. Verificar en MT5: File > Open an Account. Para demo ICMarkets: `ICMarketsSC-Demo` |
 | `login` | entero | Numero de cuenta MT5 |
 | `password` | string | Password de la cuenta MT5 |
 
@@ -30,17 +30,17 @@ Parametros de los indicadores tecnicos. Todos tienen valores por defecto y no es
 
 ### Asian Session Scalper — ventana de sesion
 
-La estrategia opera solo durante la sesion asiatica, cuando el mercado es mas tranquilo y los precios tienden a moverse en rango. Todo en UTC.
+La estrategia opera solo durante la sesion asiatica, cuando el mercado es mas tranquilo y los precios tienden a moverse en rango. Las horas son hora del servidor MT5 (GMT+3), no UTC.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `session_start_hour` | entero | `21` | Hora UTC de inicio de la sesion. A las 21:00 UTC el bot comienza a observar el rango del precio. No se abren trades aun. |
-| `range_definition_hours` | entero | `2` | Duracion en horas de la fase de definicion del rango (21:00-23:00 UTC). Durante este periodo solo se actualiza el maximo y minimo de la sesion. |
-| `session_end_hour` | entero | `2` | Hora UTC de cierre de la sesion. A las 02:00 UTC se cierran todos los trades abiertos de la sesion y el estado se reinicia. |
+| `session_start_hour` | entero | `21` | Hora del servidor MT5 (GMT+3) de inicio de la sesion. A las 21:00 hora servidor (= 13:00 Bogota) el bot comienza a observar el rango del precio. No se abren trades aun. |
+| `range_definition_hours` | entero | `2` | Duracion en horas de la fase de definicion del rango (21:00-23:00 hora servidor MT5 = 13:00-15:00 Bogota). Durante este periodo solo se actualiza el maximo y minimo de la sesion. |
+| `session_end_hour` | entero | `2` | Hora del servidor MT5 (GMT+3) de cierre de la sesion. A las 02:00 hora servidor (= 18:00 Bogota) se cierran todos los trades abiertos de la sesion y el estado se reinicia. |
 
 ### Asian Session Scalper — filtro de calidad del rango
 
-El rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 UTC) debe ser suficientemente amplio para tener margen de beneficio, pero no tan amplio que indique volatilidad excesiva.
+El rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 hora servidor MT5, GMT+3) debe ser suficientemente amplio para tener margen de beneficio, pero no tan amplio que indique volatilidad excesiva.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|

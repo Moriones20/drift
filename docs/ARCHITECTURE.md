@@ -34,10 +34,10 @@
 ┌────────────────────────┐        │
 │ strategy.py            │────────┘
 │                        │
-│ • evaluate_pair()      → Signal (buy/sell/none)
+│ • evaluate_pair()      → Signal (buy/sell/none;
+│                          TP = range midpoint)
 │ • update_session_state()→ SessionState per pair
-│ • should_close_on_time()→ true at 02:00 GMT
-│ • check_tp_hit()       → TP at range midpoint
+│ • should_close_on_time()→ true at 02:00 server (GMT+3)
 │                        │
 │ SessionState (per pair):│
 │   session_date, high,  │
@@ -59,7 +59,7 @@
 ┌─────────────────────────────────┤
 │         main.py (Scheduler)     │
 │                                 │
-│ 4-state machine (UTC):          │
+│ 4-state machine (server, GMT+3):│
 │  A — Outside (02:00-20:59):     │
 │      Long sleep until 21:00.    │
 │      Stop-aware (10s slices).   │
@@ -105,7 +105,7 @@
 └─────────────────────────────────┘
 ```
 
-## Data Flow — Ciclo de análisis (cada M15 dentro de ventana 21:00-02:00 UTC)
+## Data Flow — Ciclo de análisis (cada M15 dentro de ventana 21:00-02:00 server MT5, GMT+3)
 
 ```
 Cierre vela M15 (dentro de ventana activa)
@@ -156,7 +156,7 @@ Para cada par en config.pairs:
       │     ▼
       │   NOTIFICAR por Telegram
       │
-      ├─→ [Estado D — 02:00 UTC] Cerrar trades de sesión abiertos → reset SessionState
+      ├─→ [Estado D — 02:00 server (GMT+3)] Cerrar trades de sesión abiertos → reset SessionState
       │
       └─→ siguiente par
 ```
@@ -180,7 +180,7 @@ Cada 30 segundos (thread daemon):
       └─→ ¿Domingo 8pm UTC-5? ──Sí──→ Generar y enviar reporte semanal
 
 Nota: trailing stop desactivado (use_trailing_stop: false).
-      Cierre por tiempo (02:00 UTC) lo maneja el scheduler principal, no este thread.
+      Cierre por tiempo (02:00 server, GMT+3) lo maneja el scheduler principal, no este thread.
       Viernes no se opera (skip-Friday rule en el scheduler).
 ```
 
@@ -190,9 +190,9 @@ Nota: trailing stop desactivado (use_trailing_stop: false).
 Thread principal (main.py):
       │
       ├─→ 4-state scheduler (ver diagrama System Diagram):
-      │   • Estado A: sleep hasta 21:00 UTC (stop-aware, slices de 10s)
+      │   • Estado A: sleep hasta 21:00 server (GMT+3) (stop-aware, slices de 10s)
       │   • Estado B/C: esperar próximo cierre M15, analizar 5 pares
-      │   • Estado D: cerrar sesión a las 02:00 UTC, reset SessionState
+      │   • Estado D: cerrar sesión a las 02:00 server (GMT+3), reset SessionState
       │   Salta viernes completamente (skip-Friday rule)
       │
       └─→ Thread secundario (daemon):
@@ -216,7 +216,7 @@ Thread Telegram (daemon):
 | Strategy | `drift/strategy.py` | Asian Session Scalper: SessionState, evaluate_pair(), time stop |
 | Risk Manager | `drift/risk.py` | Position sizing, límites de trades, drawdown |
 | Executor | `drift/executor.py` | Abrir/cerrar trades, configurar SL/TP |
-| Trailing Stop | `drift/trailing.py` | Monitorear y actualizar stops de trades abiertos |
+| Trailing Stop | `drift/trailing.py` | Monitorear y actualizar stops de trades abiertos (desactivado — `use_trailing_stop: false`) |
 | Database | `drift/db.py` | SQLite CRUD: trades, señales, eventos |
 | Telegram | `drift/telegram_bot.py` | Notificaciones y comandos |
 | Config | `drift/config.py` | Cargar y validar config.yaml |
@@ -299,13 +299,13 @@ CREATE TABLE signals (
     pair TEXT NOT NULL,
     analyzed_at TEXT NOT NULL,
     m15_candle_time TEXT NOT NULL,
+    h4_candle_time TEXT NOT NULL,
     range_high REAL,
     range_low REAL,
     range_atr_ratio REAL,
-    m15_rsi REAL,
-    m15_atr REAL,
+    rsi REAL,
+    atr_value REAL,
     h4_adx REAL,
-    session_traded_count INTEGER,
     decision TEXT NOT NULL CHECK(decision IN ('accepted', 'rejected')),
     reason TEXT NOT NULL,
     trade_id INTEGER REFERENCES trades(id)
@@ -314,7 +314,7 @@ CREATE TABLE signals (
 CREATE TABLE bot_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_at TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK(event_type IN ('start', 'stop', 'pause', 'resume', 'error', 'reconnect', 'drawdown_alert')),
+    event_type TEXT NOT NULL CHECK(event_type IN ('start', 'stop', 'pause', 'resume', 'error', 'reconnect', 'drawdown_alert', 'peak_balance')),
     detail TEXT,
     balance REAL
 );

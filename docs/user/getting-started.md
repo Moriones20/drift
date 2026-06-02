@@ -45,7 +45,7 @@ Abrir `config.yaml` en un editor de texto y completar los campos obligatorios:
 
 ```yaml
 broker:
-  server: "ICMarketsSC-MT5-Demo"  # Nombre exacto del servidor (File > Open an Account en MT5)
+  server: "ICMarketsSC-Demo"  # Nombre exacto del servidor (File > Open an Account en MT5)
   login: 12345678                  # Numero de cuenta MT5
   password: "tu_password"
 
@@ -77,19 +77,19 @@ python main.py
 Al arrancar, Drift ejecuta la siguiente secuencia:
 
 1. **Carga la configuracion** desde `config.yaml` y valida todos los campos.
-2. **Inicializa la base de datos** SQLite en `drift.db` (se crea automaticamente si no existe).
+2. **Inicializa la base de datos** SQLite en `data/drift.db` (se crea automaticamente si no existe).
 3. **Conecta con MT5** usando las credenciales del broker. Si falla, el bot se detiene con un error.
 4. **Valida los pares configurados** — avisa en el log si algun par no esta disponible en MT5.
 5. **Inicia el bot de Telegram** y empieza a escuchar comandos.
 6. **Inicia el hilo de monitoreo** (cada 30 segundos por defecto) para detectar trades cerrados y verificar drawdown.
 7. **Envia notificacion de inicio** a Telegram con el balance actual.
-8. **Espera el proximo inicio de sesion asiatica (21:00 UTC)** — el bot duerme hasta las 21:00 GMT de la proxima sesion valida (lunes a jueves). Los viernes no se opera.
+8. **Espera el proximo inicio de sesion asiatica (21:00 hora servidor MT5, GMT+3 = 13:00 Bogota)** — el bot duerme hasta las 21:00 hora servidor MT5 de la proxima sesion valida (lunes a jueves). Los viernes no se opera.
 
 El mensaje de inicio en Telegram confirma que todo funciona correctamente.
 
 ### Verificar que funciona
 
-- El log en consola debe mostrar `Drift bot running — waiting for next session start (21:00 UTC)`.
+- El log en consola debe mostrar `Drift bot running — M15 Asian session scheduler active`.
 - En Telegram debes recibir el mensaje de inicio con el balance de la cuenta.
 - El comando `/status` en Telegram debe responder con el estado del bot y la conexion MT5.
 
@@ -97,13 +97,13 @@ El mensaje de inicio en Telegram confirma que todo funciona correctamente.
 
 ## Modo demo vs live
 
-Por defecto, `config.yaml` apunta al servidor demo de ICMarkets (`ICMarketsSC-MT5-Demo`). Para operar en cuenta real, cambiar el campo `broker.server` al servidor live correspondiente y usar las credenciales de la cuenta live.
+Por defecto, `config.yaml` apunta al servidor demo de ICMarkets (`ICMarketsSC-Demo`). Para operar en cuenta real, cambiar el campo `broker.server` al servidor live correspondiente y usar las credenciales de la cuenta live.
 
 Antes de pasar a live, se recomienda:
 
 1. Correr al menos dos semanas en demo sin errores.
 2. Revisar el historial de trades con `/history` y el reporte con `/report`.
-3. Verificar que el drawdown nunca supero el 5% en demo.
+3. Verificar el drawdown en demo. El limite configurado que pausa el bot es 10% (`risk.max_drawdown_percent`); como meta conservadora, idealmente no deberia acercarse a ese limite.
 
 ---
 
@@ -112,5 +112,5 @@ Antes de pasar a live, se recomienda:
 | Archivo/Directorio | Descripcion |
 |---|---|
 | `config.yaml` | Configuracion principal (no se versiona) |
-| `drift.db` | Base de datos SQLite con todo el historial |
-| `logs/drift.log` | Log rotativo (hasta 50MB, 5 archivos) |
+| `data/drift.db` | Base de datos SQLite con todo el historial |
+| `logs/drift.log` | Log rotativo (hasta 10MB, 5 archivos) |

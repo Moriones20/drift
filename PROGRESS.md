@@ -21,7 +21,7 @@
 ### Session 4: Database + Telegram (Steps 11-13)
 - [x] 11. Base de datos SQLite — schema, CRUD trades/señales/eventos
 - [x] 12. Módulo de Telegram — bot, comandos, notificaciones
-- [x] 13. Loop principal — orquestador M15, ciclo completo (ventana 21:00-02:00 UTC)
+- [x] 13. Loop principal — orquestador M15, ciclo completo (ventana 21:00-02:00 hora servidor MT5 (GMT+3))
 
 ### Session 5: Safety + Testing (Steps 14-16)
 - [x] 14. Sistemas de seguridad — drawdown, max trades, correlación, reconexión, error handling
