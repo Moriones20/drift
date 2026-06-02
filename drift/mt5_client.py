@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -106,6 +107,64 @@ def reconnect(
 
     logger.error("All %d reconnect attempts failed", max_retries)
     return False
+
+
+def get_server_utc_offset(symbol: str = "EURUSD") -> timedelta:
+    """Return the MT5 server UTC offset as a fixed timedelta.
+
+    Compares the last tick's epoch (which the MT5 server stamps in server time)
+    against real UTC.  The result is rounded to the nearest hour because all
+    known MT5 server offsets are whole-hour increments.
+
+    Falls back to timedelta(hours=3) and logs a warning when no tick data is
+    available (e.g. weekend, market closed).  GMT+3 is ICMarkets' documented
+    fixed offset (no DST).
+
+    Parameters
+    ----------
+    symbol:
+        Any actively-traded symbol whose tick is reliably available.  Defaults
+        to EURUSD which is always in Market Watch for ICMarkets accounts.
+    """
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        logger.warning(
+            "get_server_utc_offset: no tick for %s — falling back to GMT+3 (ICMarkets default)",
+            symbol,
+        )
+        return timedelta(hours=3)
+
+    # tick.time is a Unix epoch stamped by the server in its local wall time.
+    # Interpreting that integer as UTC gives us the server's "apparent UTC"
+    # time.  The difference between that and real UTC is the server offset.
+    server_epoch_as_utc = datetime.fromtimestamp(tick.time, tz=timezone.utc)
+    real_utc = datetime.now(timezone.utc)
+
+    raw_offset_seconds = (server_epoch_as_utc - real_utc).total_seconds()
+
+    # Round to nearest hour to eliminate sub-second jitter and clock skew.
+    rounded_hours = round(raw_offset_seconds / 3600)
+    offset = timedelta(hours=rounded_hours)
+
+    logger.info(
+        "MT5 server offset derived: UTC%+d (raw=%.1fs)",
+        rounded_hours,
+        raw_offset_seconds,
+    )
+    return offset
+
+
+def server_now(server_utc_offset: timedelta) -> datetime:
+    """Return the current MT5 server time as a timezone-aware datetime.
+
+    Parameters
+    ----------
+    server_utc_offset:
+        The fixed offset returned by ``get_server_utc_offset``.  Pass the
+        value derived once at startup rather than calling the MT5 API on every
+        tick.
+    """
+    return datetime.now(timezone.utc) + server_utc_offset
 
 
 def get_candles(symbol: str, timeframe: str, count: int = 250) -> pd.DataFrame:

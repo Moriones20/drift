@@ -387,3 +387,15 @@ Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw 
 **Decisión:** `config.py:DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]`.
 
 **Por qué:** El fallback listaba `[AUDCAD, NZDCAD, AUDNZD, EURCHF, EURGBP]`, divergente de los 5 pares finales de D029 y de `config.yaml`/`CLAUDE.md`. Aunque `config.yaml` siempre manda, un fallback divergente es una trampa.
+
+## D037 — Scheduler alineado al tiempo del servidor MT5 (GMT+3)
+
+**Decisión:** El scheduler (`main.py`) ahora razona en tiempo del servidor MT5, no en UTC real. El offset se deriva una sola vez al inicio usando `get_server_utc_offset()` en `drift/mt5_client.py` (compara el epoch del último tick contra UTC real y redondea al entero de horas más cercano). `server_now(offset)` genera el "now" de servidor que se pasa a `_in_session_window`, `_next_session_start`, `_next_m15_close` y `_seconds_until`.
+
+**Bug que corrige:** El servidor ICMarkets usa GMT+3 fijo (sin DST — verificado sobre 2 años de datos de velas). El scheduler anterior usaba `datetime.now(timezone.utc)` (UTC real) mientras que las velas de MT5 llevan timestamps en hora de servidor. Al comparar hora del scheduler con `bar_time.hour` en la estrategia, había un desajuste de +3 horas: cuando el scheduler creía que eran las 21:00 UTC, la vela leía las 00:00 servidor. Resultado: el rango nunca se bloqueaba y el bot nunca operaba.
+
+**Las horas de sesión no cambian.** `session_start_hour=21`, `session_end_hour=2`, `trading_allowed` en (23, 0, 1) son todos tiempo de servidor — exactamente la convención del backtest y el edge validado. No se tocan los valores, solo se garantiza que el scheduler habla el mismo idioma que las velas.
+
+**Reporte semanal no afectado.** `_check_weekly_report` sigue usando `datetime.now(timezone.utc)` (UTC real) porque su trigger está configurado en la zona horaria del usuario (UTC-5) y no tiene relación con la sesión de broker.
+
+**Nota geográfica:** El docstring original y D029 describen la ventana 21:00-02:00 GMT como "sesión asiática tranquila". En UTC real eso es 18:00-23:00 UTC (tarde NY / apertura Sydney), no la sesión asiática de libro. El edge fue validado fuera de muestra en exactamente esta ventana en tiempo de servidor, así que la ventana se mantiene. Solo el nombre es geográficamente impreciso; la lógica y los números son correctos.

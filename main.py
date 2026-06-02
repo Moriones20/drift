@@ -37,8 +37,10 @@ from drift.mt5_client import (
     get_balance,
     get_candles,
     get_equity,
+    get_server_utc_offset,
     health_check,
     reconnect,
+    server_now,
 )
 from drift.report import generate_weekly_report
 from drift.risk import calculate_position_size, check_all_risk
@@ -112,7 +114,10 @@ logger = logging.getLogger(__name__)
 
 
 def _next_m15_close(now: datetime) -> datetime:
-    """Return the next M15 boundary strictly after *now* (HH:00, HH:15, HH:30, HH:45). UTC."""
+    """Return the next M15 boundary strictly after *now* (HH:00, HH:15, HH:30, HH:45).
+
+    *now* must be in MT5 server time so the result aligns with candle close timestamps.
+    """
     minute = now.minute
     # Compute next 15-minute slot strictly after current minute
     next_slot = ((minute // 15) + 1) * 15
@@ -126,17 +131,22 @@ def _next_m15_close(now: datetime) -> datetime:
 
 
 def _in_session_window(now: datetime, config: DriftConfig) -> bool:
-    """Return True iff the current UTC time is inside an active Asian session.
+    """Return True iff the current MT5 server time is inside an active Asian session.
+
+    *now* must be in MT5 server time (GMT+3 for ICMarkets).  The session hours
+    (session_start_hour=21, session_end_hour=2) are defined in server time to match
+    candle timestamps and the validated backtest window.
 
     A session spans `session_start_hour` (21) on day N to `session_end_hour` (2) on
     day N+1.  The session is identified by its start day:
 
       - Sessions starting Mon-Thu and Sun are valid.
-      - Sessions starting Fri are skipped (ICMarkets Sydney close around 22:00 UTC Fri
-        leaves less than the 2-hour range-definition window).
+      - Sessions starting Fri are skipped (ICMarkets Sydney close around 22:00 server
+        time leaves less than the 2-hour range-definition window).
       - Sessions starting Sat are skipped (market closed).
 
-    So Friday 00:00-01:59 UTC is allowed because it is the tail of Thursday's session.
+    So Friday 00:00-01:59 server time is allowed because it is the tail of
+    Thursday's session.
     """
     h = now.hour
     start = config.strategy.session_start_hour
@@ -153,11 +163,15 @@ def _in_session_window(now: datetime, config: DriftConfig) -> bool:
 
 
 def _next_session_start(now: datetime, config: DriftConfig) -> datetime:
-    """Return the next session_start_hour:00 UTC strictly after *now*.
+    """Return the next session_start_hour:00 server time strictly after *now*.
+
+    *now* must be in MT5 server time.  The returned datetime is also in server
+    time so callers can compute a consistent delta without timezone conversion.
 
     Skips Friday and Saturday session starts (no market / not enough window).
-    Sunday 21:00 UTC IS a valid session start — it is the Sydney open of the new
-    trading week.  A call on Friday 22:00 UTC returns Sunday 21:00 UTC.
+    Sunday 21:00 server time IS a valid session start — it is the Sydney open
+    of the new trading week.  A call on Friday 22:00 server time returns Sunday
+    21:00 server time.
     """
     start_hour = config.strategy.session_start_hour
     # Start from current day's session_start_hour candidate
@@ -172,8 +186,14 @@ def _next_session_start(now: datetime, config: DriftConfig) -> datetime:
     return candidate
 
 
-def _seconds_until(target: datetime) -> float:
-    return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+def _seconds_until(target: datetime, server_offset: timedelta) -> float:
+    """Return seconds until *target* (in MT5 server time) from now.
+
+    The sleep duration is a pure delta — server-to-server subtraction equals
+    the real wall-clock duration because server time = UTC + fixed offset and
+    the offset cancels out.
+    """
+    return max(0.0, (target - server_now(server_offset)).total_seconds())
 
 
 # ---------------------------------------------------------------------------
@@ -553,9 +573,12 @@ def _run_m15_tick(
     """
     hour = bar_close_time.hour
 
-    # State D — session close at session_end_hour (02:00 UTC)
+    # State D — session close at session_end_hour (02:00 server time)
     if should_close_on_time(bar_close_time, config.strategy):
-        logger.info("=== Session close (state D) at %s UTC ===", bar_close_time.strftime("%H:%M"))
+        logger.info(
+            "=== Session close (state D) at %s server time ===",
+            bar_close_time.strftime("%H:%M"),
+        )
         try:
             balance = get_balance()
         except RuntimeError:
@@ -568,7 +591,7 @@ def _run_m15_tick(
                 bot_app.bot,
                 config.telegram.chat_id,
                 "stopped",
-                "Asian session closed (02:00 UTC) — sleeping until next session",
+                "Asian session closed (02:00 server time) — sleeping until next session",
             )
         )
         return
@@ -584,7 +607,7 @@ def _run_m15_tick(
         return
 
     logger.info(
-        "=== M15 tick (state %s) %s UTC ===",
+        "=== M15 tick (state %s) %s server time ===",
         "C" if trading_allowed else "B",
         bar_close_time.strftime("%H:%M"),
     )
@@ -990,6 +1013,16 @@ def main() -> None:
             logger.critical("Cannot connect to MT5 — aborting")
             sys.exit(1)
 
+        # Derive the MT5 server UTC offset once at startup so every scheduler
+        # decision uses server time and matches the candle timestamps returned
+        # by MT5 (which are also in server time).  The offset is fixed for the
+        # entire session — ICMarkets uses a permanent GMT+3 with no DST.
+        _server_offset = get_server_utc_offset(config.pairs[0] if config.pairs else "EURUSD")
+        logger.info(
+            "MT5 server offset: UTC%+d — scheduler aligned to server time",
+            round(_server_offset.total_seconds() / 3600),
+        )
+
         _validate_pairs(config.pairs)
 
         try:
@@ -1015,7 +1048,7 @@ def main() -> None:
             peak_balance,
         )
 
-        # Per-pair session state — reset at the start of each session (21:00 UTC).
+        # Per-pair session state — reset at the start of each session (21:00 server time).
         session_states: dict[str, SessionState] = {pair: SessionState() for pair in config.pairs}
 
         state = BotState()
@@ -1079,7 +1112,13 @@ def main() -> None:
         try:
             while not state.stop_requested:
                 try:
-                    now = datetime.now(timezone.utc)
+                    # All session-window decisions use MT5 server time so they
+                    # align with the candle timestamps and the strategy's hour
+                    # checks (session_start_hour=21, session_end_hour=2 are
+                    # defined in server time).  The weekly-report trigger in
+                    # _check_weekly_report continues to use real UTC so it fires
+                    # on the user's configured wall-clock schedule.
+                    now = server_now(_server_offset)
 
                     # --- State A: outside window — sleep until next session start ---
                     if not _in_session_window(now, config):
@@ -1088,9 +1127,11 @@ def main() -> None:
                             _session_active = False
 
                         next_start = _next_session_start(now, config)
-                        wait_secs = _seconds_until(next_start) + CANDLE_CLOSE_DELAY_SECONDS
+                        wait_secs = (
+                            _seconds_until(next_start, _server_offset) + CANDLE_CLOSE_DELAY_SECONDS
+                        )
                         logger.info(
-                            "Outside window (state A) — sleeping until %s UTC (%.0fs)",
+                            "Outside window (state A) — sleeping until %s server time (%.0fs)",
                             next_start.strftime("%Y-%m-%d %H:%M"),
                             wait_secs,
                         )
@@ -1102,7 +1143,7 @@ def main() -> None:
                         if state.stop_requested:
                             break
 
-                        # Refresh now; re-check window (DST edge, etc.)
+                        # Refresh now; re-check window.
                         continue
 
                     # --- Entering session for the first time (B starts) ---
@@ -1117,15 +1158,17 @@ def main() -> None:
                                 bot_app.bot,
                                 config.telegram.chat_id,
                                 "started",
-                                "Asian session started (21:00 UTC)",
+                                "Asian session started (21:00 server time)",
                             )
                         )
 
                     # --- States B + C + D: wait for next M15 close and process tick ---
                     next_close = _next_m15_close(now)
-                    wait_secs = _seconds_until(next_close) + CANDLE_CLOSE_DELAY_SECONDS
+                    wait_secs = (
+                        _seconds_until(next_close, _server_offset) + CANDLE_CLOSE_DELAY_SECONDS
+                    )
                     logger.info(
-                        "Next M15 close at %s UTC — sleeping %.0fs",
+                        "Next M15 close at %s server time — sleeping %.0fs",
                         next_close.strftime("%H:%M"),
                         wait_secs,
                     )
