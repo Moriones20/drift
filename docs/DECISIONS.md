@@ -552,6 +552,10 @@ Mismo período de datos pero ~3× los trades entre A y C → la diferencia era d
 
 **Implicación:** el edge **sigue siendo positivo y robusto** (5 pares PF 2.07-5.83, DD < 1%, +8.75% en ~2 años), pero **es menor que lo que D029 anunció** (EURCHF "8.17" → 4.14 real). La decisión de D029 (elegir esta estrategia) sigue siendo válida; solo la magnitud estaba sobreestimada.
 
-**Pendiente:** la validación out-of-sample citada en el spec ("PF 7.56 in-sample → 6.98 out-of-sample") también provino de un snapshot no reproducible — re-confirmar con un split in/out-of-sample limpio antes de ir a live.
+**Validación out-of-sample (2026-06-03, `backtest/validate_oos.py`):** Split cronológico por par (IS 70% / OOS 30%, ~7 meses no vistos: oct-2025 → jun-2026). Dos modos:
+- *Walk-forward* (riguroso): grid-search SOLO en IS, params congelados, evaluados en OOS nunca visto. **Resultado: 5/5 pares rentables OOS, retención media de PF 1.12 (3 de 5 mejoran en OOS), portfolio OOS +2.92%.** Los params óptimos de IS caen cerca de los universales (EURCHF idéntico: 2.5/35/35·65/1-4), lo que confirma que la elección de [[D029]] no es un artefacto del full-sample.
+- *Frozen* (params de `config.yaml`): 5/5 rentables OOS, retención media 1.17, portfolio OOS +3.04%.
+
+**Veredicto: el edge generaliza** — no hay colapso out-of-sample, que es el patrón que delataría overfitting. Reemplaza la cita previa no reproducible ("PF 7.56 → 6.98"). Caveats: (a) AUDNZD es el más débil — retención 0.46 por un IS PF inflado (ventana corta), aunque sigue rentable OOS (PF 3.72, +4.35%); (b) el retorno OOS anualiza ~5%, menor que el +8.75%/2a in-sample — realista, no eufórico.
 
 Relacionado: [[D029]], [[D033]], [[D041]].
