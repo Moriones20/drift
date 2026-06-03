@@ -314,6 +314,8 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 | 4 | Mean reversion H4 + MLP regime filter (walk-forward) | AUDCAD PF 1.74, WR 60%, solo 10 trades en 6 meses |
 | 5 | **Asian Session Scalper M15** | **EURCHF PF 8.17, AUDNZD PF 4.29, 277 trades en 2 años** |
 
+> ⚠️ **Cifras infladas — ver [[D043]].** Estos números (PF 8.17, 277 trades) NO se reproducen: salieron de un snapshot con parámetros más restrictivos que los que corre el bot. Las métricas reproducibles reales (params universales de `config.yaml`, snapshot 2026-06-03): EURCHF **4.14**, AUDNZD **5.83**, portfolio **+8.75% / PF ~3.0 / DD -0.74%** sobre 5 pares. El edge sigue siendo válido pero menor que lo anunciado aquí.
+
 **Alternativas consideradas:**
 - Coexistir ambas estrategias en paralelo — añade complejidad de estado, riesgo de conflicto en pares compartidos (EURCHF/EURGBP/AUDNZD aparecen en ambas), no aporta beneficio claro dado que la nueva es mucho mejor
 - Quedarnos con mean reversion + MLP — el PF 1.74 es marginal, requiere muchos trades para validar estadísticamente, y la diferencia con Asian Scalper es de orden de magnitud
@@ -517,3 +519,39 @@ Relacionado: [[D037]], [[D039]], [[D029]].
 **Registro histórico:** Las entradas previas del log (D029, D030, D035, etc.) conservan el nombre "Asian Session Scalper" porque documentan decisiones tomadas cuando ese era el nombre. Esta entrada (D042) es el punto de renombrado; no se reescribe el historial.
 
 Relacionado: [[D041]], [[D029]].
+
+---
+
+## D043 — Reconciliación de métricas: las cifras de D029 estaban infladas
+
+**Decisión (2026-06-03):** Reconciliar todas las métricas de backtest publicadas a un único snapshot reproducible, tras descubrir que las cifras de D029 (EURCHF PF 8.17, 277 trades) no se reproducen.
+
+**Qué se encontró:** Había ≥3 snapshots de métricas incoherentes entre docs y JSON:
+- **A — D029 + JSON commiteados:** EURCHF PF 8.17 / 46 trades, total 277. Generado con parámetros más restrictivos que los del bot (probablemente los defaults "planos" pre-[[D033]]: ADX 25, RSI 30/70, rango 1-3).
+- **B — tabla del spec (`daily-lull-scalper.md`):** coincidía con los params universales reales en 4/5 pares.
+- **C — re-run actual:** params universales de `config.yaml` (2.5/35/35·65/1-4) sobre data fresca.
+
+Mismo período de datos pero ~3× los trades entre A y C → la diferencia era de **parámetros**, no de datos. Los JSON de `results_lull/` estaban stale (no coincidían con código+config+datos actuales); se regeneraron.
+
+**Causa raíz:** las cifras "de venta" de D029 (PF hasta 8.17) salieron de un set de parámetros distinto al que el bot ejecuta. Los JSON nunca se regeneraron tras fijar los params universales ([[D033]]) y re-descargar datos.
+
+**Métricas reproducibles (snapshot 2026-06-03; 6 pares re-descargados de MT5, params universales):**
+
+| Par | Return | PF | Trades | Sharpe |
+|---|---|---|---|---|
+| AUDNZD¹ | +16.15% | 5.83 | 198 | 7.32 |
+| EURCHF | +12.65% | 4.14 | 141 | 4.18 |
+| GBPJPY | +5.63% | 2.68 | 137 | 2.96 |
+| EURGBP | +4.89% | 2.77 | 139 | 3.00 |
+| EURJPY | +4.43% | 2.07 | 148 | 1.91 |
+| USDJPY (descartado) | -1.82% | 0.75 | 140 | -0.96 |
+
+**Portfolio (5 pares vivos, $2500): +8.75% ($+218.77), PF medio ~3.0, peor DD -0.74%, 763 trades.** Reproducible: `python backtest/run_lull.py`.
+
+¹ Limitación de datos: el broker (ICMarkets demo) solo tiene M15 de AUDNZD desde **2025-01-02** (~1.4 años); el resto cubre 2 años. No es corregible (límite del broker), documentado.
+
+**Implicación:** el edge **sigue siendo positivo y robusto** (5 pares PF 2.07-5.83, DD < 1%, +8.75% en ~2 años), pero **es menor que lo que D029 anunció** (EURCHF "8.17" → 4.14 real). La decisión de D029 (elegir esta estrategia) sigue siendo válida; solo la magnitud estaba sobreestimada.
+
+**Pendiente:** la validación out-of-sample citada en el spec ("PF 7.56 in-sample → 6.98 out-of-sample") también provino de un snapshot no reproducible — re-confirmar con un split in/out-of-sample limpio antes de ir a live.
+
+Relacionado: [[D029]], [[D033]], [[D041]].

@@ -6,7 +6,7 @@ Referencia técnica de la estrategia activa del bot Drift. Para el código que l
 
 La estrategia opera una ventana horaria fija definida en **hora del servidor MT5** (ICMarkets = GMT+2 invierno / GMT+3 verano, anclado al cierre de NY; ver D041): **21:00-02:00 hora servidor**. Esta franja es el *daily lull* — el período de menor liquidez del día forex, entre el cierre de Nueva York y la apertura de Tokio. Identifica el rango de las primeras dos horas y, cuando el precio toca un extremo con confirmación de sobreventa/sobrecompra, apuesta a que regresará al medio (mean reversion).
 
-> 📍 **Qué es esta ventana realmente (corroborado 2026-06-02, ver D041).** El nombre original era "Asian Session Scalper", pero era geográficamente incorrecto: la hora servidor 21:00-02:00 equivale en **UTC real** a **18:00-23:00 (verano) / 19:00-00:00 (invierno)** — el *daily lull* entre el cierre de Nueva York y la apertura de Tokio (la ventana **termina** cuando Tokio abre a las 00:00 UTC). De hecho captura la apertura de Sídney, aún más tranquila que Tokio. El edge es real (validado out-of-sample el 2026-06-01: PF 7.56 in-sample → 6.98 out-of-sample, retención 92%) y **sensible a la hora** (mover la ventana ±1h reduce el PF ~61%), lo que confirma que explota un límite de régimen intradía específico, no la "calma asiática" del nombre viejo. Renombrada a *Daily Lull Scalper* (ver D042).
+> 📍 **Qué es esta ventana realmente (corroborado 2026-06-02, ver D041).** El nombre original era "Asian Session Scalper", pero era geográficamente incorrecto: la hora servidor 21:00-02:00 equivale en **UTC real** a **18:00-23:00 (verano) / 19:00-00:00 (invierno)** — el *daily lull* entre el cierre de Nueva York y la apertura de Tokio (la ventana **termina** cuando Tokio abre a las 00:00 UTC). De hecho captura la apertura de Sídney, aún más tranquila que Tokio. El edge es real y **sensible a la hora** (mover la ventana ±1h reduce el PF fuertemente), lo que confirma que explota un límite de régimen intradía específico, no la "calma asiática" del nombre viejo. Renombrada a *Daily Lull Scalper* (ver D042). ⚠️ La validación out-of-sample previa ("PF 7.56 → 6.98") provino del mismo snapshot no reproducible que las métricas viejas — **pendiente de re-confirmar** con un split in/out-of-sample limpio (ver D043).
 
 ## Reglas paso a paso
 
@@ -77,19 +77,23 @@ Los pares ideales son los que **se mueven en rango (sin tendencia fuerte) durant
 |---|---|
 | USDJPY | Descartado: comportamiento perdedor en la ventana (PF 0.89 en el primer backtest, PF 0.75 con parámetros universales). Ver D029. |
 
-## Métricas tras optimización (datos reales MT5, 2 años de M15, parámetros universales)
+## Métricas (datos reales MT5, snapshot 2026-06-03, parámetros universales de `config.yaml`)
+
+> Reproducibles con `python backtest/run_lull.py`. Las cifras previas de D029 (EURCHF "PF 8.17", 277 trades) venían de un snapshot no reproducible con parámetros distintos — reconciliado en D043.
 
 | Par | Return | Win Rate | PF | Max DD | Trades | Sharpe |
 |---|---|---|---|---|---|---|
-| AUDNZD | +16.16% | 78.1% | **6.03** | -0.30% | 196 | **7.41** |
-| EURCHF | +12.52% | 77.7% | 4.11 | -0.66% | 139 | 4.15 |
-| EURJPY | +5.61% | 70.1% | 3.55 | -0.79% | 97 | 2.66 |
-| GBPJPY | +5.61% | 67.9% | 2.68 | -0.65% | 137 | 2.95 |
-| EURGBP | +4.69% | 68.3% | 2.69 | -0.54% | 139 | 2.90 |
+| AUDNZD¹ | +16.15% | 77.8% | 5.83 | -0.26% | 198 | 7.32 |
+| EURCHF | +12.65% | 78.0% | 4.14 | -0.74% | 141 | 4.18 |
+| GBPJPY | +5.63% | 67.9% | 2.68 | -0.66% | 137 | 2.96 |
+| EURGBP | +4.89% | 69.1% | 2.77 | -0.46% | 139 | 3.00 |
+| EURJPY | +4.43% | 61.5% | 2.07 | -0.73% | 148 | 1.91 |
 
-Portfolio total: +9% sobre $2500 (5 pares × $500) en 2 años, peor drawdown < 1%, 708 trades.
+¹ AUDNZD: el broker (ICMarkets demo) solo tiene M15 desde **2025-01-02** (~1.4 años); el resto cubre 2 años completos (2024-06-03 → 2026-06-03). Límite del broker, no corregible.
 
-USDJPY fue descartado tras la optimización: tiene actividad direccional fuerte durante la ventana operativa (PF 0.89 → 0.75). Detalle en D029.
+Portfolio (5 pares vivos × $500 = $2500): **+8.75%** ($+218.77), PF medio ~3.0, peor drawdown -0.74%, 763 trades.
+
+USDJPY descartado: actividad direccional fuerte en la ventana (PF 0.75, -1.82%, WR 42.9%). Ver D029/D043.
 
 ## Riesgos conocidos
 
