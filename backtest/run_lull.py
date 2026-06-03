@@ -1,4 +1,4 @@
-"""Run Asian Session Scalper backtests across all Asian pairs and produce a comparison report.
+"""Run Daily Lull Scalper backtests across all lull pairs and produce a comparison report.
 
 Flow:
   1. Ensure CSV data exists in backtest/data/ — generates synthetic data if missing.
@@ -7,7 +7,7 @@ Flow:
   4. Print an overall portfolio summary with keep/review/drop recommendations.
 
 Usage:
-    python backtest/run_asian.py
+    python backtest/run_lull.py
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backtest.asian_engine import (
-    ASIAN_PAIRS,
+from backtest.download_data import download_lull_all, load_lull_data
+from backtest.lull_engine import (
+    LULL_PAIRS,
     format_results,
-    prepare_asian_data,
-    run_asian_backtest,
+    prepare_lull_data,
+    run_lull_backtest,
     save_results,
 )
-from backtest.download_data import download_asian_all, load_asian_data
 from drift.config import load_config
 
 logging.basicConfig(
@@ -37,13 +37,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent / "data"
-RESULTS_DIR = Path(__file__).parent / "results_asian"
+RESULTS_DIR = Path(__file__).parent / "results_lull"
 
 CASH: float = 500.0
 COMMISSION: float = 0.00007
 
 
-def _asian_data_complete(pairs: list[str], data_dir: Path) -> bool:
+def _lull_data_complete(pairs: list[str], data_dir: Path) -> bool:
     for symbol in pairs:
         if not (data_dir / f"{symbol}_H4.csv").exists():
             return False
@@ -83,7 +83,7 @@ def _print_comparison_table(rows: list[dict]) -> None:
     sep = "-" * len(header)
     print()
     print("=" * len(header))
-    print("   ASIAN SESSION SCALPER BACKTEST — ALL PAIRS")
+    print("   DAILY LULL SCALPER BACKTEST — ALL PAIRS")
     print("=" * len(header))
 
     starts = [r["start"] for r in rows if r["start"] != "?"]
@@ -196,26 +196,26 @@ def main() -> None:
     config = load_config()
     strategy = config.strategy
 
-    if not _asian_data_complete(ASIAN_PAIRS, DATA_DIR):
-        logger.info("Asian data missing — running download_asian_all()")
-        download_asian_all(ASIAN_PAIRS, DATA_DIR)
+    if not _lull_data_complete(LULL_PAIRS, DATA_DIR):
+        logger.info("lull data missing — running download_lull_all()")
+        download_lull_all(LULL_PAIRS, DATA_DIR)
     else:
-        logger.info("All Asian CSV files present in %s", DATA_DIR)
+        logger.info("All lull CSV files present in %s", DATA_DIR)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     summary_rows: list[dict] = []
 
-    for symbol in ASIAN_PAIRS:
+    for symbol in LULL_PAIRS:
         print()
         print(f"{'=' * 50}")
-        print(f"  Processing {symbol} (Asian Session Scalper)")
+        print(f"  Processing {symbol} (Daily Lull Scalper)")
         print(f"{'=' * 50}")
 
-        df_h4, df_m15 = load_asian_data(symbol, DATA_DIR)
-        df_bt = prepare_asian_data(df_h4, df_m15)
+        df_h4, df_m15 = load_lull_data(symbol, DATA_DIR)
+        df_bt = prepare_lull_data(df_h4, df_m15)
 
-        stats, _bt = run_asian_backtest(
+        stats, _bt = run_lull_backtest(
             df_bt,
             cash=CASH,
             commission=COMMISSION,
@@ -249,7 +249,7 @@ def main() -> None:
     _print_portfolio_summary(summary_rows)
 
     print()
-    logger.info("All Asian results saved to %s", RESULTS_DIR)
+    logger.info("All lull results saved to %s", RESULTS_DIR)
 
 
 if __name__ == "__main__":

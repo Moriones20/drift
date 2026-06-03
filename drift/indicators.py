@@ -33,7 +33,7 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
-# Wilder-smoothing implementations for Asian Session Scalper
+# Wilder-smoothing implementations for Daily Lull Scalper
 # These mirror backtest/_indicators.py exactly to ensure live/backtest parity.
 # ---------------------------------------------------------------------------
 

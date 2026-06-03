@@ -1,6 +1,6 @@
-# Drift — Asian Session Scalper
+# Drift — Daily Lull Scalper
 
-Bot de forex autónomo. Estrategia: Asian Session Scalper en M15, mean reversion durante la ventana 21:00-02:00 hora servidor MT5 (GMT+3) sobre un rango definido en las primeras 2 horas. (El nombre engaña: en Bogotá es una franja de tarde, 13:00-18:00, no madrugada.) Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
+Bot de forex autónomo. Estrategia: Daily Lull Scalper en M15, mean reversion durante la ventana 21:00-02:00 hora servidor MT5 (GMT+2 invierno/+3 verano) sobre un rango definido en las primeras 2 horas. (La ventana es el *daily lull*: cierre de NY → antes de Tokio, la franja más tranquila del día; en Bogotá es una franja de tarde, 13:00-18:00. Antes se llamaba "Asian Session Scalper" — ver D041/D042.) Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
 
 ## Key Documents
 
@@ -50,7 +50,7 @@ main.py (M15 loop dentro de ventana 21:00-02:00 hora servidor MT5)
 
 ## Conventions
 
-- Tres capas horarias: el cálculo de la ventana de sesión usa hora de servidor MT5 (GMT+3, sin DST), el almacenamiento en DB es UTC real (ISO 8601), y la presentación al usuario es UTC-5 (Bogotá)
+- Tres capas horarias: el cálculo de la ventana de sesión usa hora de servidor MT5 (GMT+2 invierno/+3 verano, anclado al cierre NY; ver D041), el almacenamiento en DB es UTC real (ISO 8601), y la presentación al usuario es UTC-5 (Bogotá)
 - Cada módulo es un archivo independiente en `drift/`
 - Config en `config.yaml`, nunca hardcodeado
 - Credenciales no se versionan — usar `config.example.yaml` como template
@@ -133,5 +133,5 @@ When implementing or modifying a user-facing feature, you MUST update the corres
 Docs are part of the definition of done. A feature without updated docs is not complete.
 
 <!-- Implementation prompt:
-You are implementing Drift, un bot de forex con estrategia Asian Session Scalper. Read CLAUDE.md first, then ROADMAP.md Phase 1. Check PROGRESS.md to know where to start. Begin with the next uncompleted step.
+You are implementing Drift, un bot de forex con estrategia Daily Lull Scalper. Read CLAUDE.md first, then ROADMAP.md Phase 1. Check PROGRESS.md to know where to start. Begin with the next uncompleted step.
 -->

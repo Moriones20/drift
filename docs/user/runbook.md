@@ -116,7 +116,7 @@ ps -W | grep python.exe | grep -v grep
 
 ¿Está en ventana activa? ¿Cuándo es la próxima sesión?
 
-`_in_session_window` y `_next_session_start` esperan hora del **servidor MT5** (GMT+3), no UTC real. Hay que conectar a MT5 y usar `server_now(get_server_utc_offset(...))`:
+`_in_session_window` y `_next_session_start` esperan hora del **servidor MT5** (GMT+2/+3), no UTC real. Hay que conectar a MT5 y usar `server_now(get_server_utc_offset(...))`:
 
 ```bash
 python -c "
@@ -127,7 +127,7 @@ cfg = load_config()
 connect(cfg.broker)
 offset = get_server_utc_offset(cfg.pairs[0] if cfg.pairs else 'EURUSD')
 now = server_now(offset)
-print(f'Server now : {now.strftime(\"%A %Y-%m-%d %H:%M\")} (server time, GMT+3)')
+print(f'Server now : {now.strftime(\"%A %Y-%m-%d %H:%M\")} (server time, GMT+2/+3)')
 print(f'In window  : {_in_session_window(now, cfg)}')
 print(f'Next start : {_next_session_start(now, cfg).strftime(\"%A %Y-%m-%d %H:%M server time\")}')
 disconnect()

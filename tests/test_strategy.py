@@ -1,4 +1,4 @@
-"""Unit tests for the Asian Session Scalper strategy module.
+"""Unit tests for the Daily Lull Scalper strategy module.
 
 Covers: SessionState lifecycle, time-window gating, entry conditions,
 one-trade-per-session guard, time stop, TP detection, and scheduler helpers.

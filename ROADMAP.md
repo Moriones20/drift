@@ -2,7 +2,7 @@
 
 ## Vision
 
-Bot de forex autónomo que opera en MT5 con ICMarkets usando la estrategia Asian Session Scalper (mean reversion sobre un rango en ventana nocturna fija — el nombre es histórico: en UTC esa ventana corresponde al cierre de NY / apertura de Sydney, no a la sesión asiática de Tokio), gestionando riesgo de forma estricta para generar retornos consistentes con mínima intervención.
+Bot de forex autónomo que opera en MT5 con ICMarkets usando la estrategia Daily Lull Scalper (mean reversion sobre un rango en una ventana nocturna fija = el *daily lull*: en UTC corresponde al cierre de NY / apertura de Sydney, antes de la sesión asiática de Tokio; antes se llamaba "Asian Session Scalper", ver D041/D042), gestionando riesgo de forma estricta para generar retornos consistentes con mínima intervención.
 
 **Audiencia:** Uso personal — trader retail con $500 de capital inicial operando desde Colombia.
 
@@ -27,17 +27,17 @@ Bot de forex autónomo que opera en MT5 con ICMarkets usando la estrategia Asian
 
 ## Arquitectura
 
-### Estrategia: Asian Session Scalper (mean reversion sobre rango en ventana nocturna fija — nombre histórico, no es la sesión asiática real)
+### Estrategia: Daily Lull Scalper (mean reversion sobre rango en ventana nocturna fija — el *daily lull* cierre-NY → pre-Tokio; antes "Asian Session Scalper", ver D041/D042)
 
-Ver `docs/knowledge/asian-session-scalper.md` para las reglas completas y `docs/DECISIONS.md` (D029) para el historial de iteraciones que llevaron a esta estrategia.
+Ver `docs/knowledge/daily-lull-scalper.md` para las reglas completas y `docs/DECISIONS.md` (D029) para el historial de iteraciones que llevaron a esta estrategia.
 
-- **Ventana operativa:** 21:00-02:00 hora servidor MT5 (GMT+3). Se salta el viernes completamente.
+- **Ventana operativa:** 21:00-02:00 hora servidor MT5 (GMT+2/+3). Se salta el viernes completamente.
 - **Definición de rango (21:00-23:00):** Se registran los high/low de cada vela M15 durante las primeras 2 horas.
 - **Filtro de régimen:** ADX(14) en H4 debe estar por debajo de 35. Si el mercado va en tendencia, no se opera.
 - **Señal de entrada (23:00-01:59):** BUY si precio toca el piso del rango y RSI M15 < 35. SELL si toca el techo y RSI M15 > 65.
 - **Stop Loss:** 2.5x ATR(14) M15.
 - **Take Profit:** Precio cruza el midpoint del rango (mean reversion al centro).
-- **Time stop:** Si a las 02:00 hora servidor MT5 (GMT+3) el trade sigue abierto, se cierra.
+- **Time stop:** Si a las 02:00 hora servidor MT5 (GMT+2/+3) el trade sigue abierto, se cierra.
 - **Sin trailing stop** (use_trailing_stop: false).
 - **Position sizing:** Dinámico — 1% del balance actual por trade.
 
@@ -45,7 +45,7 @@ Ver `docs/knowledge/asian-session-scalper.md` para las reglas completas y `docs/
 
 AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP
 
-USDJPY descartado: con parámetros universales da PF 0.75 (perdedor). Nota: la hipótesis original de "mercado tranquilo / sesión asiática" fue corregida — la ventana se razona en hora servidor MT5 (GMT+3) y no corresponde a la sesión asiática real (ver D029, D037, D039).
+USDJPY descartado: con parámetros universales da PF 0.75 (perdedor). Nota: la hipótesis original de "mercado tranquilo / sesión asiática" fue corregida — la ventana se razona en hora servidor MT5 (GMT+2/+3) y es el *daily lull* (cierre NY → pre-Tokio), no la sesión asiática real (ver D029, D037, D039, D041).
 
 ### Gestión de riesgo
 
@@ -58,15 +58,15 @@ USDJPY descartado: con parámetros universales da PF 0.75 (perdedor). Nota: la h
 
 ### Fin de semana
 
-- El viernes no se abre sesión asiática (skip-Friday rule en el scheduler).
-- No quedan trades abiertos al entrar el fin de semana por diseño (el time stop los cierra a las 02:00 hora servidor MT5 (GMT+3)).
+- El viernes no se abre sesión (skip-Friday rule en el scheduler).
+- No quedan trades abiertos al entrar el fin de semana por diseño (el time stop los cierra a las 02:00 hora servidor MT5 (GMT+2/+3)).
 
 ### Operación
 
-- Horario efectivo: lunes-jueves 21:00-02:00 hora servidor MT5 (GMT+3) (≈5 horas/noche)
+- Horario efectivo: lunes-jueves 21:00-02:00 hora servidor MT5 (GMT+2/+3) (≈5 horas/noche)
 - Ciclo: analiza los 5 pares en cada cierre de vela M15 dentro de la ventana
 - Infraestructura: PC personal durante demo, VPS Windows para live
-- Zonas horarias (tres capas, ver D039): cálculo de sesión en hora servidor MT5 (GMT+3, sin DST); almacenamiento en UTC real; presentación al usuario en UTC-5 (Bogotá)
+- Zonas horarias (tres capas, ver D039/D041): cálculo de sesión en hora servidor MT5 (GMT+2 invierno/+3 verano, anclado al cierre NY); almacenamiento en UTC real; presentación al usuario en UTC-5 (Bogotá)
 
 ### Notificaciones (Telegram)
 

@@ -1,9 +1,9 @@
-"""Asian Session Scalper backtest engine — mean reversion during quiet Asian hours.
+"""Daily Lull Scalper backtest engine — mean reversion during quiet daily lull.
 
 Strategy rules:
   - Timeframe: M15 (15-minute candles)
   - Trading window: 21:00-02:00 MT5 server time (NY-anchored, GMT+2/+3 w/DST; the
-    quiet NY-close → pre-Asia lull — see D041. NOT the Asian session despite the name)
+    quiet NY-close → pre-Asia lull — see D041. NOT the Daily Lull session despite the name)
   - Session range: High/Low of the 21:00-23:00 definition window
   - BUY when price <= session low AND RSI(14) < rsi_oversold (default 35)
   - SELL when price >= session high AND RSI(14) > rsi_overbought (default 65)
@@ -13,8 +13,8 @@ Strategy rules:
   - Max 1 trade per session per pair
 
 Usage:
-    from backtest.asian_engine import (
-        prepare_asian_data, run_asian_backtest, format_results, save_results
+    from backtest.lull_engine import (
+        prepare_lull_data, run_lull_backtest, format_results, save_results
     )
 """
 
@@ -37,7 +37,7 @@ from backtest._results import format_results, save_results
 
 logger = logging.getLogger(__name__)
 
-ASIAN_PAIRS = ["EURCHF", "EURGBP", "AUDNZD", "USDJPY", "GBPJPY", "EURJPY"]
+LULL_PAIRS = ["EURCHF", "EURGBP", "AUDNZD", "USDJPY", "GBPJPY", "EURJPY"]
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ ASIAN_PAIRS = ["EURCHF", "EURGBP", "AUDNZD", "USDJPY", "GBPJPY", "EURJPY"]
 # ---------------------------------------------------------------------------
 
 
-def prepare_asian_data(
+def prepare_lull_data(
     df_h4: pd.DataFrame,
     df_m15: pd.DataFrame,
     rsi_period: int = 14,
@@ -91,7 +91,7 @@ def prepare_asian_data(
 
     df_merged = df_merged.dropna(subset=["h4_adx", "rsi", "atr", "Open", "High", "Low", "Close"])
 
-    logger.info("Prepared Asian M15 DataFrame: %d rows", len(df_merged))
+    logger.info("Prepared lull M15 DataFrame: %d rows", len(df_merged))
     return df_merged
 
 
@@ -100,8 +100,8 @@ def prepare_asian_data(
 # ---------------------------------------------------------------------------
 
 
-class AsianSessionStrategy(Strategy):
-    """Asian session scalper — mean reversion to session range midpoint.
+class DailyLullStrategy(Strategy):
+    """Daily Lull session scalper — mean reversion to session range midpoint.
 
     Entries only between 23:00-02:00 server time after the 21:00-23:00 range is set.
     """
@@ -264,7 +264,7 @@ class AsianSessionStrategy(Strategy):
 # ---------------------------------------------------------------------------
 
 
-def run_asian_backtest(
+def run_lull_backtest(
     df: pd.DataFrame,
     cash: float = 500,
     commission: float = 0.00007,
@@ -275,13 +275,13 @@ def run_asian_backtest(
     range_atr_min: float = 1.0,
     range_atr_max: float = 4.0,
 ) -> tuple[pd.Series, Backtest]:
-    """Run the Asian Session Scalper backtest and return (stats, bt).
+    """Run the Daily Lull Scalper backtest and return (stats, bt).
 
     bt is kept so the caller can invoke bt.plot() or bt.optimize().
     """
     bt = Backtest(
         df,
-        AsianSessionStrategy,
+        DailyLullStrategy,
         cash=cash,
         commission=commission,
         exclusive_orders=True,
@@ -295,7 +295,7 @@ def run_asian_backtest(
         range_atr_max=range_atr_max,
     )
     logger.info(
-        "Asian backtest complete — %d trades, return %.2f%%",
+        "Daily Lull backtest complete — %d trades, return %.2f%%",
         int(stats.get("# Trades", 0)),
         float(stats.get("Return [%]", float("nan"))),
     )
@@ -303,10 +303,10 @@ def run_asian_backtest(
 
 
 __all__ = [
-    "ASIAN_PAIRS",
-    "prepare_asian_data",
-    "AsianSessionStrategy",
-    "run_asian_backtest",
+    "LULL_PAIRS",
+    "prepare_lull_data",
+    "DailyLullStrategy",
+    "run_lull_backtest",
     "format_results",
     "save_results",
 ]

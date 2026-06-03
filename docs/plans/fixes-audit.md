@@ -292,7 +292,7 @@ mercado (peor que el TP exacto).
   `open_trade`) es la autoridad. `_detect_closed_trades` ya etiqueta correctamente los cierres por TP
   vía `DEAL_REASON_TP`, así que el reporte sigue intacto.
 - Resultado: con `use_trailing_stop: false`, `process_open_trades` queda como monitor puro (no cierra
-  activamente, solo el broker lo hace) — diseño correcto para el Asian Scalper.
+  activamente, solo el broker lo hace) — diseño correcto para el Daily Lull Scalper.
 
 **Verificación:**
 - Confirmar que un trade que alcanza TP se cierra una sola vez (server-side), sin error de cierre
@@ -338,13 +338,13 @@ cálculo ATR (ej. `1.083745123…`) sin redondear a `symbol_info.digits`. ICMark
 
 ## Paso 11 — D1-D3: Reconciliar documentación 🔵
 
-**Problema:** La estrategia cambió a Asian Session Scalper (D029) pero quedan rastros de la anterior
+**Problema:** La estrategia cambió a Daily Lull Scalper (D029) pero quedan rastros de la anterior
 (trend-following EMA/MACD).
 
 **Fixes (un solo paso de higiene documental):**
 
 1. **D1 — CLAUDE.md:**
-   - Línea 1: "forex **trend-following** bot" → "Asian Session Scalper forex bot" (o equivalente).
+   - Línea 1: "forex **trend-following** bot" → "Daily Lull Scalper forex bot" (o equivalente).
    - Línea 136 (prompt de implementación): "a forex **trend following** bot" → corregir.
    - Tabla de documentos (línea 15): la referencia a `trend-following-indicators.md` se mantiene pero
      marcada como histórica (ver punto 4).
@@ -356,13 +356,13 @@ cálculo ATR (ej. `1.083745123…`) sin redondear a `symbol_info.digits`. ICMark
 
 3. **D3 — marcar decisiones supersedidas en `docs/DECISIONS.md`:**
    - Añadir al encabezado de **D002** (Trend Following), **D005** (EMA 50/200 + MACD), **D008**
-     (Trailing + 1:2) una nota: **"⚠️ SUPERSEDIDA por D029 — Asian Session Scalper. Conservada para
+     (Trailing + 1:2) una nota: **"⚠️ SUPERSEDIDA por D029 — Daily Lull Scalper. Conservada para
      contexto histórico."**
 
 4. **D1 — `docs/knowledge/trend-following-indicators.md`:**
    - **Conservar** el archivo (útil si se explora la estrategia híbrida futura, D023) pero añadir un
-     encabezado destacado al inicio: **"⚠️ ESTRATEGIA HISTÓRICA — ya no activa. El bot usa Asian Session
-     Scalper (ver D029 y `docs/knowledge/asian-session-scalper.md`). Este documento se conserva como
+     encabezado destacado al inicio: **"⚠️ ESTRATEGIA HISTÓRICA — ya no activa. El bot usa Daily Lull session
+     Scalper (ver D029 y `docs/knowledge/daily-lull-scalper.md`). Este documento se conserva como
      referencia para una posible estrategia híbrida futura (D023)."**
 
 **Verificación:**

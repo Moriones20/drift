@@ -131,7 +131,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Principal $principal `
     -Settings $settings `
-    -Description "Drift forex bot (Asian Session Scalper). Corre en sesion interactiva del usuario para poder conectar con el terminal MT5." `
+    -Description "Drift forex bot (Daily Lull Scalper). Corre en sesion interactiva del usuario para poder conectar con el terminal MT5." `
     -Force | Out-Null
 
 Write-Host "Tarea '$TaskName' registrada correctamente."

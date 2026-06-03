@@ -28,26 +28,26 @@ Parametros de los indicadores tecnicos. Todos tienen valores por defecto y no es
 | `rsi_oversold` | decimal | `35.0` | Nivel de RSI por debajo del cual se considera que el precio esta sobrevendido. Las entradas de compra requieren RSI < este valor. |
 | `rsi_overbought` | decimal | `65.0` | Nivel de RSI por encima del cual se considera que el precio esta sobrecomprado. Las entradas de venta requieren RSI > este valor. |
 
-### Asian Session Scalper — ventana de sesion
+### Daily Lull Scalper — ventana de sesion
 
-La estrategia opera solo durante la sesion asiatica, cuando el mercado es mas tranquilo y los precios tienden a moverse en rango. Las horas son hora del servidor MT5 (GMT+3), no UTC.
+La estrategia opera solo durante el *daily lull* — la franja de menor liquidez del dia forex (cierre de Nueva York, antes de la apertura de Tokio), cuando el mercado es mas tranquilo y los precios tienden a moverse en rango. Las horas son hora del servidor MT5 (GMT+2 invierno / GMT+3 verano), no UTC.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `session_start_hour` | entero | `21` | Hora del servidor MT5 (GMT+3) de inicio de la sesion. A las 21:00 hora servidor (= 13:00 Bogota) el bot comienza a observar el rango del precio. No se abren trades aun. |
+| `session_start_hour` | entero | `21` | Hora del servidor MT5 (GMT+2/+3) de inicio de la sesion. A las 21:00 hora servidor (= 13:00 Bogota) el bot comienza a observar el rango del precio. No se abren trades aun. |
 | `range_definition_hours` | entero | `2` | Duracion en horas de la fase de definicion del rango (21:00-23:00 hora servidor MT5 = 13:00-15:00 Bogota). Durante este periodo solo se actualiza el maximo y minimo de la sesion. |
-| `session_end_hour` | entero | `2` | Hora del servidor MT5 (GMT+3) de cierre de la sesion. A las 02:00 hora servidor (= 18:00 Bogota) se cierran todos los trades abiertos de la sesion y el estado se reinicia. |
+| `session_end_hour` | entero | `2` | Hora del servidor MT5 (GMT+2/+3) de cierre de la sesion. A las 02:00 hora servidor (= 18:00 Bogota) se cierran todos los trades abiertos de la sesion y el estado se reinicia. |
 
-### Asian Session Scalper — filtro de calidad del rango
+### Daily Lull Scalper — filtro de calidad del rango
 
-El rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 hora servidor MT5, GMT+3) debe ser suficientemente amplio para tener margen de beneficio, pero no tan amplio que indique volatilidad excesiva.
+El rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 hora servidor MT5, GMT+2/+3) debe ser suficientemente amplio para tener margen de beneficio, pero no tan amplio que indique volatilidad excesiva.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
 | `range_atr_min` | decimal | `1.0` | Ancho minimo del rango como multiplo del ATR. Si el rango es menor a `1.0 x ATR`, el mercado es demasiado quieto y no se opera esa sesion. |
 | `range_atr_max` | decimal | `4.0` | Ancho maximo del rango como multiplo del ATR. Si el rango supera `4.0 x ATR`, hay demasiada volatilidad (noticia o evento) y se salta la sesion. |
 
-### Asian Session Scalper — parametros de riesgo e indicadores
+### Daily Lull Scalper — parametros de riesgo e indicadores
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|

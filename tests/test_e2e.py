@@ -165,9 +165,9 @@ def _make_signal(
     pair: str = "AUDCAD",
     action: str = "buy",
     trend: str = "ranging",  # kept for call-site compatibility; unused
-    reason: str = "asian_scalper_buy range_low=0.8950 rsi=28.0 adx=15.0",
+    reason: str = "lull_scalper_buy range_low=0.8950 rsi=28.0 adx=15.0",
 ) -> "Signal":  # noqa: F821
-    """Build a minimal Signal for the Asian Session Scalper schema."""
+    """Build a minimal Signal for the Daily Lull Scalper schema."""
     from drift.strategy import Signal
 
     now = datetime.now(timezone.utc)
@@ -430,7 +430,7 @@ class TestDrawdownPause(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # Test 5 (deleted): Friday close logic
-# The Asian Session Scalper never opens positions on Friday (skip-Friday rule in
+# The Daily Lull Scalper never opens positions on Friday (skip-Friday rule in
 # _in_session_window), so _check_friday_close is a no-op for this strategy.
 # Tests for the filtering algorithm are removed. See DECISIONS.md D029 / Step 6.
 # ---------------------------------------------------------------------------
@@ -648,7 +648,7 @@ class TestSignalLoggingCompleteness(unittest.TestCase):
         self.assertEqual(row["reason"], "trending_market")
 
     def test_all_indicator_values_stored(self) -> None:
-        """Asian Scalper signal fields (range_high, range_low, h4_adx, etc.) are persisted."""
+        """Daily Lull Scalper signal fields (range_high, range_low, h4_adx, etc.) are persisted."""
         signal = _make_signal(action="buy")
         sig_id = log_signal(self.conn, signal, trade_id=None)
 

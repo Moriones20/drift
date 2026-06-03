@@ -1,6 +1,6 @@
-"""Asian Session Scalper — live strategy module.
+"""Daily Lull Scalper — live strategy module.
 
-Ports the logic from backtest/asian_engine.py (AsianSessionStrategy.next(), lines 160-258)
+Ports the logic from backtest/lull_engine.py (DailyLullStrategy.next(), lines 160-258)
 to a stateless-friendly function interface suitable for the live scheduler.
 
 Session window (MT5 server time, GMT+3 — NOT UTC):
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SessionState:
-    """Per-pair tracking across one Asian session (21:00→02:00 next day, server time GMT+3)."""
+    """Per-pair tracking across one Daily Lull session (21:00→02:00 next day, server time GMT+3)."""
 
     session_date: int | None = None  # ordinal of session-start day (server time)
     high: float = float("-inf")  # running high during 21:00-22:59
@@ -76,7 +76,7 @@ class Signal:
 
 
 # ---------------------------------------------------------------------------
-# Session key helper (mirrors AsianSessionStrategy._session_key)
+# Session key helper (mirrors DailyLullStrategy._session_key)
 # ---------------------------------------------------------------------------
 
 
@@ -190,7 +190,7 @@ def evaluate_pair(
 ) -> Signal:
     """Evaluate one M15 bar close for *symbol* and return a Signal.
 
-    Mirrors AsianSessionStrategy.next() in backtest/asian_engine.py lines 160-258.
+    Mirrors DailyLullStrategy.next() in backtest/lull_engine.py lines 160-258.
 
     Parameters
     ----------
@@ -239,7 +239,7 @@ def evaluate_pair(
     rsi_series = _rsi(m15_close, config.m15_rsi_period)
     atr_series = _atr(m15_high, m15_low, m15_close, config.m15_atr_period)
 
-    # H4 ADX: shift by 1 to prevent look-ahead bias (mirrors prepare_asian_data)
+    # H4 ADX: shift by 1 to prevent look-ahead bias (mirrors prepare_lull_data)
     h4_adx_series = _adx(h4_df["high"], h4_df["low"], h4_df["close"], config.h4_adx_period)
     h4_adx_shifted = h4_adx_series.shift(1)
 
@@ -346,7 +346,7 @@ def evaluate_pair(
         sl = curr_close - sl_dist
         tp = mid
         session_state.traded = True
-        reason = f"asian_scalper_buy range_low={range_low:.5f} rsi={rsi_val:.1f} adx={adx_val:.1f}"
+        reason = f"lull_scalper_buy range_low={range_low:.5f} rsi={rsi_val:.1f} adx={adx_val:.1f}"
         logger.info(
             "%s | action=buy entry=%.5f sl=%.5f tp=%.5f rsi=%.1f adx=%.1f",
             symbol,
@@ -367,7 +367,7 @@ def evaluate_pair(
         tp = mid
         session_state.traded = True
         reason = (
-            f"asian_scalper_sell range_high={range_high:.5f} rsi={rsi_val:.1f} adx={adx_val:.1f}"
+            f"lull_scalper_sell range_high={range_high:.5f} rsi={rsi_val:.1f} adx={adx_val:.1f}"
         )
         logger.info(
             "%s | action=sell entry=%.5f sl=%.5f tp=%.5f rsi=%.1f adx=%.1f",

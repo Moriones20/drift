@@ -52,7 +52,7 @@ def _make_signal(ts: datetime) -> Signal:
         atr_value=0.05,
         h4_adx=15.0,
         action="buy",
-        reason="asian_scalper_buy",
+        reason="lull_scalper_buy",
     )
 
 

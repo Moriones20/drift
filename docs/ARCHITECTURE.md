@@ -37,7 +37,7 @@
 │ • evaluate_pair()      → Signal (buy/sell/none;
 │                          TP = range midpoint)
 │ • update_session_state()→ SessionState per pair
-│ • should_close_on_time()→ true at 02:00 server (GMT+3)
+│ • should_close_on_time()→ true at 02:00 server (GMT+2/+3)
 │                        │
 │ SessionState (per pair):│
 │   session_date, high,  │
@@ -59,7 +59,7 @@
 ┌─────────────────────────────────┤
 │         main.py (Scheduler)     │
 │                                 │
-│ 4-state machine (server, GMT+3):│
+│ 4-state machine (server, GMT+2/+3):│
 │  A — Outside (02:00-20:59):     │
 │      Long sleep until 21:00.    │
 │      Stop-aware (10s slices).   │
@@ -105,7 +105,7 @@
 └─────────────────────────────────┘
 ```
 
-## Data Flow — Ciclo de análisis (cada M15 dentro de ventana 21:00-02:00 server MT5, GMT+3)
+## Data Flow — Ciclo de análisis (cada M15 dentro de ventana 21:00-02:00 server MT5, GMT+2/+3)
 
 ```
 Cierre vela M15 (dentro de ventana activa)
@@ -156,7 +156,7 @@ Para cada par en config.pairs:
       │     ▼
       │   NOTIFICAR por Telegram
       │
-      ├─→ [Estado D — 02:00 server (GMT+3)] Cerrar trades de sesión abiertos → reset SessionState
+      ├─→ [Estado D — 02:00 server (GMT+2/+3)] Cerrar trades de sesión abiertos → reset SessionState
       │
       └─→ siguiente par
 ```
@@ -180,7 +180,7 @@ Cada 30 segundos (thread daemon):
       └─→ ¿Domingo 8pm UTC-5? ──Sí──→ Generar y enviar reporte semanal
 
 Nota: trailing stop desactivado (use_trailing_stop: false).
-      Cierre por tiempo (02:00 server, GMT+3) lo maneja el scheduler principal, no este thread.
+      Cierre por tiempo (02:00 server, GMT+2/+3) lo maneja el scheduler principal, no este thread.
       Viernes no se opera (skip-Friday rule en el scheduler).
 ```
 
@@ -190,9 +190,9 @@ Nota: trailing stop desactivado (use_trailing_stop: false).
 Thread principal (main.py):
       │
       ├─→ 4-state scheduler (ver diagrama System Diagram):
-      │   • Estado A: sleep hasta 21:00 server (GMT+3) (stop-aware, slices de 10s)
+      │   • Estado A: sleep hasta 21:00 server (GMT+2/+3) (stop-aware, slices de 10s)
       │   • Estado B/C: esperar próximo cierre M15, analizar 5 pares
-      │   • Estado D: cerrar sesión a las 02:00 server (GMT+3), reset SessionState
+      │   • Estado D: cerrar sesión a las 02:00 server (GMT+2/+3), reset SessionState
       │   Salta viernes completamente (skip-Friday rule)
       │
       └─→ Thread secundario (daemon):
@@ -213,7 +213,7 @@ Thread Telegram (daemon):
 |---|---|---|
 | MT5 Client | `drift/mt5_client.py` | Conexión, datos de mercado, estado de cuenta |
 | Indicators | `drift/indicators.py` | Cálculo de RSI(14) y ATR(14) en M15, ADX(14) en H4 |
-| Strategy | `drift/strategy.py` | Asian Session Scalper: SessionState, evaluate_pair(), time stop |
+| Strategy | `drift/strategy.py` | Daily Lull Scalper: SessionState, evaluate_pair(), time stop |
 | Risk Manager | `drift/risk.py` | Position sizing, límites de trades, drawdown |
 | Executor | `drift/executor.py` | Abrir/cerrar trades, configurar SL/TP |
 | Trailing Stop | `drift/trailing.py` | Monitorear y actualizar stops de trades abiertos (desactivado — `use_trailing_stop: false`) |
@@ -235,7 +235,7 @@ drift/
 │   ├── config.py            # Carga y validación de config
 │   ├── mt5_client.py        # Conexión y datos de MT5 (M15 + H4)
 │   ├── indicators.py        # Cálculos técnicos (RSI, ATR, ADX)
-│   ├── strategy.py          # Asian Session Scalper (SessionState, evaluate_pair)
+│   ├── strategy.py          # Daily Lull Scalper (SessionState, evaluate_pair)
 │   ├── risk.py              # Position sizing y gestión de riesgo
 │   ├── executor.py          # Ejecución de trades en MT5
 │   ├── trailing.py          # Trailing stop manager (desactivado en estrategia actual)
@@ -251,17 +251,17 @@ drift/
 │   ├── test_risk.py
 │   └── test_db.py
 ├── backtest/
-│   ├── asian_engine.py                  # Asian Session Scalper (fuente de verdad del backtest)
-│   ├── run_asian.py                     # Runner del backtest asiático
-│   ├── optimize_asian.py                # Optimización de parámetros
-│   └── results_asian_opt/              # Resultados de optimización (parámetros D029)
+│   ├── lull_engine.py                  # Daily Lull Scalper (fuente de verdad del backtest)
+│   ├── run_lull.py                     # Runner del backtest Daily Lull
+│   ├── optimize_lull.py                # Optimización de parámetros
+│   └── results_lull_opt/              # Resultados de optimización (parámetros D029)
 ├── docs/
 │   ├── DECISIONS.md
 │   ├── ARCHITECTURE.md
 │   ├── knowledge/
 │   │   ├── mt5-python-api.md
 │   │   ├── telegram-bot-setup.md
-│   │   ├── asian-session-scalper.md    # Estrategia activa — reglas y parámetros
+│   │   ├── daily-lull-scalper.md    # Estrategia activa — reglas y parámetros
 │   │   └── trend-following-indicators.md
 │   └── user/
 │       ├── getting-started.md

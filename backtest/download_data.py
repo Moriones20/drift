@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 PAIRS = ["AUDCAD", "NZDCAD", "AUDNZD", "EURCHF", "EURGBP"]
 
-ASIAN_PAIRS = ["EURCHF", "EURGBP", "AUDNZD", "USDJPY", "GBPJPY", "EURJPY"]
+LULL_PAIRS = ["EURCHF", "EURGBP", "AUDNZD", "USDJPY", "GBPJPY", "EURJPY"]
 
 _BASE_PRICES: dict[str, float] = {
     "AUDCAD": 0.90,
@@ -37,7 +37,7 @@ _BASE_PRICES: dict[str, float] = {
     "EURGBP": 0.86,
 }
 
-_BASE_PRICES_ASIAN: dict[str, float] = {
+_BASE_PRICES_LULL: dict[str, float] = {
     "EURCHF": 0.95,
     "EURGBP": 0.86,
     "AUDNZD": 1.08,
@@ -193,7 +193,7 @@ def generate_synthetic_data(symbol: str, years: int = 2) -> tuple[pd.DataFrame, 
 
 
 def generate_synthetic_m15(symbol: str, years: int = 2) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Generate synthetic H4 and M15 data for Asian-session pairs.
+    """Generate synthetic H4 and M15 data for Daily Lull pairs.
 
     Creates M15 bars by subdividing each H4 bar into 16 M15 bars using linear
     interpolation of the price path with proportional noise.  The H4 frame is
@@ -202,7 +202,7 @@ def generate_synthetic_m15(symbol: str, years: int = 2) -> tuple[pd.DataFrame, p
     logger.info("Generating synthetic M15 data for %s", symbol)
 
     rng = np.random.default_rng(seed=_SEEDS[symbol])
-    base_price = _BASE_PRICES_ASIAN[symbol]
+    base_price = _BASE_PRICES_LULL[symbol]
     m15_vol = _M15_VOLATILITY[symbol]
     h4_vol = m15_vol * 4  # approximate H4 volatility from M15 vol
 
@@ -315,10 +315,10 @@ def save_data(symbol: str, df_d1: pd.DataFrame, df_h4: pd.DataFrame, output_dir:
     logger.info("Saved %s: D1=%d bars, H4=%d bars", symbol, len(df_d1), len(df_h4))
 
 
-def save_asian_data(
+def save_lull_data(
     symbol: str, df_h4: pd.DataFrame, df_m15: pd.DataFrame, output_dir: Path
 ) -> None:
-    """Save H4 and M15 DataFrames for an Asian-session pair to CSV files."""
+    """Save H4 and M15 DataFrames for an Daily Lull pair to CSV files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     path_h4 = output_dir / f"{symbol}_H4.csv"
@@ -327,7 +327,7 @@ def save_asian_data(
     df_h4.to_csv(path_h4)
     df_m15.to_csv(path_m15)
 
-    logger.info("Saved Asian %s: H4=%d bars, M15=%d bars", symbol, len(df_h4), len(df_m15))
+    logger.info("Saved lull %s: H4=%d bars, M15=%d bars", symbol, len(df_h4), len(df_m15))
 
 
 def load_data(symbol: str, data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -350,8 +350,8 @@ def load_data(symbol: str, data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     return df_d1, df_h4
 
 
-def load_asian_data(symbol: str, data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load H4 and M15 data for an Asian-session pair from CSV files.
+def load_lull_data(symbol: str, data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load H4 and M15 data for an Daily Lull pair from CSV files.
 
     Returns (df_h4, df_m15) with UTC-aware DatetimeIndex named 'time'.
     """
@@ -392,12 +392,12 @@ def download_all(pairs: list[str], output_dir: Path, years: int = 2) -> None:
     print(f"\nDone. Data saved to {output_dir}")
 
 
-def download_asian_all(pairs: list[str], output_dir: Path, years: int = 2) -> None:
-    """Download or generate H4 and M15 data for all Asian-session pairs and save to CSV."""
+def download_lull_all(pairs: list[str], output_dir: Path, years: int = 2) -> None:
+    """Download or generate H4 and M15 data for all Daily Lull pairs and save to CSV."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for symbol in pairs:
-        print(f"Processing Asian pair {symbol}...")
+        print(f"Processing lull pair {symbol}...")
 
         df_h4_mt5 = download_mt5_data(symbol, "H4", years)
         df_m15_mt5 = download_mt5_data(symbol, "M15", years)
@@ -410,9 +410,9 @@ def download_asian_all(pairs: list[str], output_dir: Path, years: int = 2) -> No
             logger.info("Falling back to synthetic M15 data for %s", symbol)
             df_h4, df_m15 = generate_synthetic_m15(symbol, years)
 
-        save_asian_data(symbol, df_h4, df_m15, output_dir)
+        save_lull_data(symbol, df_h4, df_m15, output_dir)
 
-    print(f"\nDone. Asian data saved to {output_dir}")
+    print(f"\nDone. lull data saved to {output_dir}")
 
 
 if __name__ == "__main__":

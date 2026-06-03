@@ -300,9 +300,9 @@ Registro de todas las decisiones tomadas durante el diseño. Cada decisión tien
 
 ## D029 — Cambio de estrategia a Asian Session Scalper
 
-> ⚠️ Nota horaria: donde D029 dice 'GMT' léase hora de servidor MT5 (GMT+3); la hipótesis de 'sesión asiática tranquila' fue corregida — ver [[D037]] y [[D039]].
+> ⚠️ Nota: donde D029 dice 'GMT' léase hora de servidor MT5 (GMT+2/+3 con DST, [[D041]]). La hipótesis de 'sesión asiática tranquila' fue corregida — la ventana es el *daily lull* (cierre NY → pre-Tokio), no la sesión asiática — y la estrategia fue **renombrada a Daily Lull Scalper** ([[D042]]). El nombre 'Asian Session Scalper' se conserva en esta entrada como registro histórico. Ver [[D037]], [[D039]], [[D041]], [[D042]].
 
-**Decisión:** Reemplazar la estrategia activa (mean reversion H4 con filtro MLP) por Asian Session Scalper en M15, operando solo durante la ventana 21:00-02:00 GMT. Ver `docs/plans/asian-session-scalper-live.md` para el plan de implementación y `docs/knowledge/asian-session-scalper.md` para las reglas.
+**Decisión:** Reemplazar la estrategia activa (mean reversion H4 con filtro MLP) por Asian Session Scalper en M15, operando solo durante la ventana 21:00-02:00 GMT. Ver `docs/knowledge/daily-lull-scalper.md` para las reglas.
 
 **Recorrido hasta llegar aquí:**
 
@@ -342,7 +342,7 @@ range_atr_max: 4.0       # antes default 3.0
 pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
 ```
 
-Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw en `backtest/results_asian_opt/`.
+Detalle completo en `docs/plans/daily-lull-scalper-live.md` y resultados raw en `backtest/results_lull_opt/`.
 
 ---
 
@@ -370,7 +370,7 @@ Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw 
 
 ## D033 — Paridad de parámetros backtest ⇄ vivo
 
-**Decisión:** Los defaults de clase de `AsianSessionStrategy` pasan a los valores optimizados de D029, y `run_asian_backtest`/`run_asian.py` aceptan y aplican los 6 parámetros desde `config.yaml`.
+**Decisión:** Los defaults de clase de `DailyLullStrategy` pasan a los valores optimizados de D029, y `run_lull_backtest`/`run_lull.py` aceptan y aplican los 6 parámetros desde `config.yaml`.
 
 **Por qué:** Un run "plano" del backtest usaba `1.5/25/30·70/1-3` mientras vivo usa `2.5/35/35·65/1-4`. La validación debe correr con los mismos parámetros que producción para ser significativa. `config.yaml` es la fuente única de verdad.
 
@@ -492,6 +492,28 @@ Fuente: blog oficial IC Markets ("US Daylight Savings & Server Time Changing to 
 **Decisión:**
 - Corregir las afirmaciones falsas "sin DST" en docs (D037, D039) y comentarios de código — no cambia comportamiento.
 - Mantener la config `session_*` sin cambios (no romper el edge validado); el renombrado es conceptual/documental.
-- Defectos 1 y 2: **pendientes de implementación** (re-derivar offset al inicio de cada sesión/día; fallback consciente del DST de EE.UU.). No urgentes. Mitigación operativa inmediata: **reiniciar el bot tras cada cambio de DST de EE.UU.**
+- Defectos 1 y 2: **implementados** el 2026-06-02 (commit `fix(timezones)`): re-derivación del offset al inicio de cada sesión en `main.py` + fallback DST-aware (`_us_dst_active`, 2º dom marzo → 1er dom noviembre) en `get_server_utc_offset`. Mitigación de respaldo: reiniciar el bot tras cada cambio de DST de EE.UU.
 
 Relacionado: [[D037]], [[D039]], [[D029]].
+
+---
+
+## D042 — Renombrado: Asian Session Scalper → Daily Lull Scalper
+
+**Decisión (2026-06-03):** Renombrar la estrategia de "Asian Session Scalper" a **"Daily Lull Scalper"** en todo el código, archivos, identificadores, config y documentación activa.
+
+**Por qué:** El nombre "Asian Session" es geográficamente incorrecto (ver [[D041]]): la ventana 21:00-02:00 hora-servidor es el *daily lull* entre el cierre de NY y la apertura de Tokio (18:00-23:00 UTC verano / 19:00-00:00 invierno), no la sesión asiática — de hecho termina cuando Tokio abre y captura la apertura más quieta de Sídney. "Daily lull" es el término técnico de la industria para ese hueco de baja liquidez. El nombre viejo confundía el razonamiento del *porqué* funciona el edge.
+
+**Mapeo de identificadores:**
+- Clase: `AsianSessionStrategy` → `DailyLullStrategy` (en `backtest/lull_engine.py` y `drift/strategy.py`)
+- Archivos: `asian_engine.py` → `lull_engine.py`, `run_asian.py` → `run_lull.py`, `optimize_asian.py` → `optimize_lull.py`
+- Resultados: `backtest/results_asian/` → `results_lull/`, `results_asian_opt/` → `results_lull_opt/`
+- Constante: `ASIAN_PAIRS` → `LULL_PAIRS`; funciones `prepare/load/save/download_asian*` → `*_lull*`
+- Reason strings (DB/logs): `asian_scalper_buy`/`asian_scalper_sell` → `lull_scalper_buy`/`lull_scalper_sell`
+- Doc: `docs/knowledge/asian-session-scalper.md` → `daily-lull-scalper.md`
+
+**No afecta:** la lógica, los parámetros validados ([[D029]]), ni el schema de `config.yaml` (los nombres de campo nunca usaron "asian"). Verificado: 113 tests verdes y `ruff` limpio tras el rename.
+
+**Registro histórico:** Las entradas previas del log (D029, D030, D035, etc.) conservan el nombre "Asian Session Scalper" porque documentan decisiones tomadas cuando ese era el nombre. Esta entrada (D042) es el punto de renombrado; no se reescribe el historial.
+
+Relacionado: [[D041]], [[D029]].

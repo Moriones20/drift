@@ -11,17 +11,17 @@
 ### Session 2: Strategy + Validation (Steps 5-7)
 - [x] 5. Módulo de indicadores — RSI, ATR, ADX (base para la estrategia activa)
 - [x] 6. Backtest de validación — backtest rápido para confirmar mérito de la estrategia antes de demo
-- [x] 7. Módulo de estrategia — lógica inicial de estrategia (iteraciones previas al Asian Scalper)
+- [x] 7. Módulo de estrategia — lógica inicial de estrategia (iteraciones previas al Daily Lull Scalper)
 
 ### Session 3: Risk + Execution (Steps 8-10)
 - [x] 8. Módulo de riesgo — position sizing, límites (4 trades, 2 por moneda), drawdown, comisiones
 - [x] 9. Módulo de ejecución — abrir/cerrar trades, SL/TP
-- [x] 10. Módulo de trailing stop — implementado; desactivado en Asian Scalper (use_trailing_stop: false)
+- [x] 10. Módulo de trailing stop — implementado; desactivado en Daily Lull Scalper (use_trailing_stop: false)
 
 ### Session 4: Database + Telegram (Steps 11-13)
 - [x] 11. Base de datos SQLite — schema, CRUD trades/señales/eventos
 - [x] 12. Módulo de Telegram — bot, comandos, notificaciones
-- [x] 13. Loop principal — orquestador M15, ciclo completo (ventana 21:00-02:00 hora servidor MT5 (GMT+3))
+- [x] 13. Loop principal — orquestador M15, ciclo completo (ventana 21:00-02:00 hora servidor MT5 (GMT+2/+3))
 
 ### Session 5: Safety + Testing (Steps 14-16)
 - [x] 14. Sistemas de seguridad — drawdown, max trades, correlación, reconexión, error handling
@@ -50,7 +50,7 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 
 ### Batch B — Medio
 - [x] 4. Reporte semanal derivado de `reports.*` config (no hardcode lunes 01:00 UTC)
-- [x] 5. Paridad backtest⇄vivo: defaults de clase = D029 + run_asian pasa los 6 params desde config
+- [x] 5. Paridad backtest⇄vivo: defaults de clase = D029 + run_lull pasa los 6 params desde config
 
 ### Batch C — Limpieza
 - [x] 6. Eliminar config/código muerto (friday_close_hour_utc, take_profit_*, calculate_sl_tp, check_tp_hit, compute_* sin uso, campos legacy de StrategyConfig)
@@ -71,7 +71,7 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 
 ## Notes
 
-> **Pivote de estrategia (D029):** La estrategia activa es **Asian Session Scalper M15**
+> **Pivote de estrategia (D029):** La estrategia activa es **Daily Lull Scalper M15**
 > (ver `CLAUDE.md`). Las iteraciones anteriores (trend-following EMA/MACD, mean-reversion H4)
 > fueron el camino hasta llegar aquí — ver D029 para el historial completo. La infraestructura
 > (risk/executor/db/telegram/main loop) se construyó durante Phases 1-2 y se reutilizó sin
@@ -81,11 +81,11 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - Quality review done after Step 4: fixed fragile default_factory access in config.py, switched main.py from print to logging.
 - Step 5 complete. drift/indicators.py: compute_rsi, compute_atr, compute_adx, compute_all. Nota: durante esta fase se implementaron también EMA/MACD como parte de iteraciones previas (ver D029); esas funciones quedaron como código muerto a eliminar en el Step 6 de Phase 2.5.
 - Step 6 complete. Backtest de validación rápido con datos sintéticos o de MT5 para confirmar mérito de la estrategia antes de invertir tiempo en demo.
-- Session 2 (Steps 5-7) complete. Indicadores, backtest de validación, lógica de estrategia (iteraciones previas al Asian Scalper; ver historial en D029).
+- Session 2 (Steps 5-7) complete. Indicadores, backtest de validación, lógica de estrategia (iteraciones previas al Daily Lull Scalper; ver historial en D029).
 - Quality review after Step 7: fixed fragile column access in indicators.py, removed dead code branch in strategy.py, added frozen=True to Signal dataclass.
 - Step 8 complete. drift/risk.py implements calculate_position_size, check_max_trades, check_correlation, check_drawdown, check_all_risk.
 - Step 9 complete. drift/executor.py implements open_trade, close_trade, modify_sl, get_open_positions. Uses mt5.order_send with TRADE_ACTION_DEAL for open/close and TRADE_ACTION_SLTP for SL modification. get_open_positions filters by magic number and returns UTC datetimes.
-- Session 3 (Steps 8-10) complete. Risk, execution, trailing stop (implementado pero desactivado en Asian Scalper).
+- Session 3 (Steps 8-10) complete. Risk, execution, trailing stop (implementado pero desactivado en Daily Lull Scalper).
 - Quality review after Step 10: fixed close_trade magic=0 bug (now passes magic through), unified _count_selling/_count_buying into single _count_currency_exposure helper.
 - Session 4 (Steps 11-13) complete. Database, Telegram, main loop.
 - Quality review after Step 13 (integration milestone): fixed 3 bugs in main.py:
@@ -97,18 +97,18 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
   - Fixed: risk-rejected signals now logged as decision=rejected with "risk: <reason>" instead of incorrectly using the strategy reason string. Added rejection_reason param to log_signal() in db.py.
   - Added: _validate_pairs() called at startup — logs warnings for any configured pair that is missing or not visible in MT5.
   - Added: inner try/except in main loop — unexpected exceptions pause the bot, send a Telegram alert, and retry after 60s instead of crashing.
-  - Nota: el "cierre de viernes" de la iteración anterior (D026) no aplica al Asian Scalper — las sesiones de viernes se omiten íntegramente y no hay cierre parcial.
+  - Nota: el "cierre de viernes" de la iteración anterior (D026) no aplica al Daily Lull Scalper — las sesiones de viernes se omiten íntegramente y no hay cierre parcial.
 - Session 5 (Steps 14-16) complete. Safety hardening, weekly report, E2E tests.
 - Final quality review: extracted duplicated _format_duration/_pnl_str into drift/formatting.py (shared by telegram_bot.py and report.py).
 - User docs (docs/user/) fully written: getting-started, configuration, commands.
 - **Phase 1 MVP complete.** 16 steps, 46 tests (39 pass, 7 skip on Python 3.14).
-- Session 6 (Steps 17-19) complete. Motor de backtest para Asian Session Scalper, descarga de datos históricos, backtest masivo sobre los pares objetivo.
-- Quality review: extracted shared indicator functions to backtest/_indicators.py, refactored validate_strategy.py to reuse asian_engine.py's AsianSessionStrategy and prepare_backtest_data.
+- Session 6 (Steps 17-19) complete. Motor de backtest para Daily Lull Scalper, descarga de datos históricos, backtest masivo sobre los pares objetivo.
+- Quality review: extracted shared indicator functions to backtest/_indicators.py, refactored validate_strategy.py to reuse lull_engine.py's DailyLullStrategy and prepare_backtest_data.
 - Backtest results with synthetic data show strategy needs real MT5 data for meaningful evaluation.
 - Session 7 (Steps 20-21) complete. Comparación de pares y optimización de parámetros (walk-forward, sin overfitting).
 - Resultados de optimización: EURCHF PF 8.17, AUDNZD PF 4.29 sobre 2 años de datos M15 reales (ver D029 para tabla completa y parámetros universales finales).
 - USDJPY descartado por empirismo: PF 0.75 con parámetros universales (ver D029). Pares finales: AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP.
-- **Phase 2 complete.** Infraestructura de backtest lista; estrategia activa: Asian Session Scalper M15.
+- **Phase 2 complete.** Infraestructura de backtest lista; estrategia activa: Daily Lull Scalper M15.
 
 ### Mantenimiento 2026-06-02 — auditoría, zonas horarias y ejecución (demo en marcha)
 - **Auditoría de estrategia y docs.** Confirmado que el código sigue fielmente la spec (D029); el "desfase" era documental, no de ejecución. Corregidos en 14 archivos: etiquetas de zona horaria (UTC/GMT → hora servidor MT5 GMT+3), prosa de parámetros pre-optimización en el knowledge doc (→ 4.0x / ADX 35 / RSI 35-65 / SL 2.5x), columnas EMA/MACD fantasma en ROADMAP/ARCHITECTURE, `check_tp_hit` muerta, pares 6→5, datos operativos (server name, log 10MB, ruta DB, drawdown). `fixes-audit.md` archivado.

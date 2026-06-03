@@ -1,12 +1,12 @@
-# Asian Session Scalper — Guía de la estrategia
+# Daily Lull Scalper — Guía de la estrategia
 
-Referencia técnica de la estrategia activa del bot Drift. Para el código que la implementa en backtest, ver `backtest/asian_engine.py`. Para el rationale de los parámetros universales, ver D029 en `docs/DECISIONS.md`.
+Referencia técnica de la estrategia activa del bot Drift. Para el código que la implementa en backtest, ver `backtest/lull_engine.py`. Para el rationale de los parámetros universales, ver D029 en `docs/DECISIONS.md`.
 
 ## Idea base
 
-La estrategia opera una ventana horaria fija definida en **hora del servidor MT5** (ICMarkets = GMT+3 fijo, sin DST): **21:00-02:00 hora servidor**. Identifica el rango de las primeras dos horas y, cuando el precio toca un extremo con confirmación de sobreventa/sobrecompra, apuesta a que regresará al medio (mean reversion).
+La estrategia opera una ventana horaria fija definida en **hora del servidor MT5** (ICMarkets = GMT+2 invierno / GMT+3 verano, anclado al cierre de NY; ver D041): **21:00-02:00 hora servidor**. Esta franja es el *daily lull* — el período de menor liquidez del día forex, entre el cierre de Nueva York y la apertura de Tokio. Identifica el rango de las primeras dos horas y, cuando el precio toca un extremo con confirmación de sobreventa/sobrecompra, apuesta a que regresará al medio (mean reversion).
 
-> ⚠️ **Corrección de la hipótesis original (2026-06-01).** El nombre "Asian Session" y la justificación de "mercado tranquilo de la sesión asiática" son **geográficamente incorrectos**. La hora servidor 21:00-02:00 equivale en **UTC real** a **18:00-23:00**, que es la **tarde de Nueva York entrando al cierre y la apertura de Sydney** — no la sesión asiática profunda. El edge es real (validado out-of-sample el 2026-06-01: PF 7.56 in-sample → 6.98 out-of-sample, retención 92%), pero el *porqué* funciona no es la calma asiática que sugiere el nombre. El edge es además **sensible a la hora** (mover la ventana ±1h reduce el PF ~61%), lo que indica que explota un límite de régimen intradía específico en esa franja. El nombre se conserva por compatibilidad histórica; la mecánica es lo que importa.
+> 📍 **Qué es esta ventana realmente (corroborado 2026-06-02, ver D041).** El nombre original era "Asian Session Scalper", pero era geográficamente incorrecto: la hora servidor 21:00-02:00 equivale en **UTC real** a **18:00-23:00 (verano) / 19:00-00:00 (invierno)** — el *daily lull* entre el cierre de Nueva York y la apertura de Tokio (la ventana **termina** cuando Tokio abre a las 00:00 UTC). De hecho captura la apertura de Sídney, aún más tranquila que Tokio. El edge es real (validado out-of-sample el 2026-06-01: PF 7.56 in-sample → 6.98 out-of-sample, retención 92%) y **sensible a la hora** (mover la ventana ±1h reduce el PF ~61%), lo que confirma que explota un límite de régimen intradía específico, no la "calma asiática" del nombre viejo. Renombrada a *Daily Lull Scalper* (ver D042).
 
 ## Reglas paso a paso
 
@@ -49,7 +49,7 @@ Estos son los valores universales tras la optimización con grid search de 1620 
 
 ## Tiempos clave (fijos, no configurables)
 
-Las horas de la estrategia están en **hora del servidor MT5 (GMT+3)**. El scheduler de `main.py` deriva el offset del servidor al arrancar (`get_server_utc_offset`) y se alinea a hora servidor para que coincida con los timestamps de las velas (ver D037).
+Las horas de la estrategia están en **hora del servidor MT5 (GMT+2 invierno / GMT+3 verano, anclado al cierre de NY; ver D041)**. El scheduler de `main.py` deriva el offset del servidor al arrancar y lo re-deriva al inicio de cada sesión (`get_server_utc_offset`), alineándose a hora servidor para que coincida con los timestamps de las velas (ver D037).
 
 | Hora servidor | UTC real | Local (UTC-5) | Qué pasa |
 |---|---|---|---|
@@ -96,11 +96,11 @@ USDJPY fue descartado tras la optimización: tiene actividad direccional fuerte 
 1. **Holidays japoneses** (Golden Week en mayo, Año Nuevo): los spreads explotan y la liquidez desaparece. Sin filtro de calendario implementado todavía.
 2. **Anuncios del BOJ** (Banco de Japón): pueden ocurrir durante la ventana y mover los JPY crosses violentamente.
 3. **NFP americano** (viernes 12:30 UTC): no cae en la ventana operativa (que en UTC real es 18:00-23:00).
-4. **Cambio DST**: el servidor MT5 usa un offset GMT+3 **fijo, sin DST** (verificado sobre 2 años de datos). El scheduler se alinea a la hora del servidor (D037), así que la ventana operativa siempre cae en las mismas velas del servidor independientemente del DST de USA/Europa. La actividad real de mercado dentro de la ventana sí se desplaza ±1h en UTC con el DST, pero la lógica de sesión no requiere ajuste porque sigue al reloj del servidor.
+4. **Cambio DST**: el servidor de ICMarkets **sí aplica DST** (GMT+2 invierno / GMT+3 verano, anclado al cierre de NY; ver D041 — la afirmación previa de "sin DST" era incorrecta). Como el reloj del servidor está anclado al cierre de NY, "21:00 servidor" es siempre el mismo momento de mercado todo el año, así que la ventana sigue al *daily lull* sin necesidad de tocar la config. El scheduler re-deriva el offset al inicio de cada sesión para captar la transición DST sin reiniciar; aun así, conviene reiniciar el bot tras cada cambio de DST de EE.UU. como respaldo (ver D041, D042).
 
 ## Lecturas relacionadas
 
 - Estrategias verificadas similares: Night Hunter Pro, Evening Scalper Pro, GerFX Density Scalper
 - Convención de "no usar martingala/grid" — esas técnicas inflan resultados a corto plazo pero explotan en noticias
 - `docs/knowledge/mt5-python-api.md` — cómo se obtienen los datos M15 desde MT5
-- `backtest/asian_engine.py` — implementación de referencia (fuente de verdad de la lógica)
+- `backtest/lull_engine.py` — implementación de referencia (fuente de verdad de la lógica)

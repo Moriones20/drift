@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Broker retcodes that are transient: the request can succeed on a later
 # attempt without changing it.  Most relevant here is 10018 (market closed),
 # returned during ICMarkets' ~00:00 server-time daily rollover, which falls
-# inside the Asian Scalper entry window (23:00-01:59 server).  See D040.
+# inside the Daily Lull Scalper entry window (23:00-01:59 server).  See D040.
 #   10004 requote · 10018 market closed · 10021 price off (no quotes)
 #   10024 too many requests · 10031 no connection
 _TRANSIENT_RETCODES = frozenset({10004, 10018, 10021, 10024, 10031})

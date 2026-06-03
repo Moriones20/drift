@@ -1,6 +1,6 @@
 """Drift — autonomous forex trend-following bot.
 
-Entry point. Orchestrates the M15 Asian session loop, the continuous monitoring
+Entry point. Orchestrates the M15 Daily Lull session loop, the continuous monitoring
 thread, and the Telegram bot thread.
 """
 
@@ -132,7 +132,7 @@ def _next_m15_close(now: datetime) -> datetime:
 
 
 def _in_session_window(now: datetime, config: DriftConfig) -> bool:
-    """Return True iff the current MT5 server time is inside an active Asian session.
+    """Return True iff the current MT5 server time is inside an active Daily Lull session.
 
     *now* must be in MT5 server time (GMT+3 for ICMarkets).  The session hours
     (session_start_hour=21, session_end_hour=2) are defined in server time to match
@@ -610,7 +610,7 @@ def _run_m15_tick(
                 bot_app.bot,
                 config.telegram.chat_id,
                 "stopped",
-                "Asian session closed (02:00 server time) — sleeping until next session",
+                "Daily Lull session closed (02:00 server time) — sleeping until next session",
             )
         )
         return
@@ -1138,7 +1138,7 @@ def main() -> None:
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
 
-        logger.info("Drift bot running — M15 Asian session scheduler active")
+        logger.info("Drift bot running — M15 Daily Lull session scheduler active")
 
         # Track whether we are currently inside a session to detect the B→A transition.
         _session_active: bool = False
@@ -1210,7 +1210,7 @@ def main() -> None:
                                 bot_app.bot,
                                 config.telegram.chat_id,
                                 "started",
-                                "Asian session started (21:00 server time)",
+                                "Daily Lull session started (21:00 server time)",
                             )
                         )
 

@@ -83,13 +83,13 @@ Al arrancar, Drift ejecuta la siguiente secuencia:
 5. **Inicia el bot de Telegram** y empieza a escuchar comandos.
 6. **Inicia el hilo de monitoreo** (cada 30 segundos por defecto) para detectar trades cerrados y verificar drawdown.
 7. **Envia notificacion de inicio** a Telegram con el balance actual.
-8. **Espera el proximo inicio de sesion asiatica (21:00 hora servidor MT5, GMT+3 = 13:00 Bogota)** — el bot duerme hasta las 21:00 hora servidor MT5 de la proxima sesion valida (lunes a jueves). Los viernes no se opera.
+8. **Espera el proximo inicio de sesion (21:00 hora servidor MT5, GMT+2/+3 = 13:00 Bogota)** — el bot duerme hasta las 21:00 hora servidor MT5 de la proxima sesion valida (lunes a jueves). Los viernes no se opera.
 
 El mensaje de inicio en Telegram confirma que todo funciona correctamente.
 
 ### Verificar que funciona
 
-- El log en consola debe mostrar `Drift bot running — M15 Asian session scheduler active`.
+- El log en consola debe mostrar `Drift bot running — M15 Daily Lull session scheduler active`.
 - En Telegram debes recibir el mensaje de inicio con el balance de la cuenta.
 - El comando `/status` en Telegram debe responder con el estado del bot y la conexion MT5.
 

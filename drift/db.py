@@ -100,7 +100,7 @@ def _migrate_signals_table(conn: sqlite3.Connection) -> None:
     v1 → v2: macd_value column existed        → renamed to signals_v1
     v2 → v3: ema_20/ema_gap_pct existed       → renamed to signals_v2
     v3 → v4: bb_upper existed (mean-reversion) → renamed to signals_v3
-             Asian Session Scalper schema created (m15_candle_time, range_high,
+             Daily Lull Scalper schema created (m15_candle_time, range_high,
              range_low, range_atr_ratio, h4_adx; bb_upper/bb_middle/bb_lower/adx removed)
     """
     cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
@@ -169,7 +169,7 @@ def _migrate_signals_table(conn: sqlite3.Connection) -> None:
         # Refresh cols for v3→v4 check
         cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
 
-    # v3 migration: mean-reversion (BB+RSI) schema → Asian Session Scalper schema
+    # v3 migration: mean-reversion (BB+RSI) schema → Daily Lull Scalper schema
     if "bb_upper" in cols or ("m15_candle_time" not in cols and "h4_adx" not in cols):
         # Guard: if signals_v3 already exists, we already ran this migration once.
         already_done = conn.execute(

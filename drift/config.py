@@ -20,16 +20,16 @@ class StrategyConfig:
     rsi_overbought: float = 65.0
     # ADX regime filter — trade ONLY when ADX < adx_max_threshold (ranging market)
     adx_max_threshold: float = 35.0
-    # Asian Session Scalper — session window (UTC hours)
+    # Daily Lull Scalper — session window (UTC hours)
     session_start_hour: int = 21
     range_definition_hours: int = 2
     session_end_hour: int = 2
-    # Asian Session Scalper — range quality filter (multiples of ATR)
+    # Daily Lull Scalper — range quality filter (multiples of ATR)
     range_atr_min: float = 1.0
     range_atr_max: float = 4.0
-    # Asian Session Scalper — risk parameters
+    # Daily Lull Scalper — risk parameters
     sl_atr_mult: float = 2.5
-    # Asian Session Scalper — indicator periods
+    # Daily Lull Scalper — indicator periods
     m15_rsi_period: int = 14
     m15_atr_period: int = 14
     h4_adx_period: int = 14

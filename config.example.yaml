@@ -12,16 +12,16 @@ strategy:
   rsi_overbought: 65.0
   # ADX regime filter: trade ONLY when H4 ADX < adx_max_threshold (ranging market)
   adx_max_threshold: 35.0
-  # Asian Session Scalper — session window (MT5 server time, GMT+2 winter/+3 summer — NOT UTC; see D039/D041)
+  # Daily Lull Scalper — session window (MT5 server time, GMT+2 winter/+3 summer — NOT UTC; see D039/D041)
   session_start_hour: 21       # begin observing range at 21:00 server (= 13:00 Bogotá)
   range_definition_hours: 2    # 21:00-23:00 server: define range, no entries
   session_end_hour: 2          # close all session trades at 02:00 server (= 18:00 Bogotá)
-  # Asian Session Scalper — range quality filter (multiples of ATR)
+  # Daily Lull Scalper — range quality filter (multiples of ATR)
   range_atr_min: 1.0           # minimum session range width (ATR units); below = too quiet
   range_atr_max: 4.0           # maximum session range width (ATR units); above = too volatile
-  # Asian Session Scalper — risk parameters
+  # Daily Lull Scalper — risk parameters
   sl_atr_mult: 2.5             # stop loss distance as ATR multiple
-  # Asian Session Scalper — indicator periods
+  # Daily Lull Scalper — indicator periods
   m15_rsi_period: 14           # RSI period on M15 bars
   m15_atr_period: 14           # ATR period on M15 bars
   h4_adx_period: 14            # ADX period on H4 bars (regime filter)
@@ -32,7 +32,7 @@ risk:
   max_same_currency_direction: 2   # Max trades in same direction for one currency
   max_drawdown_percent: 10.0       # Pause bot if drawdown exceeds this %
   trailing_stop_atr_multiplier: 1.5
-  use_trailing_stop: false         # Asian Scalper: no trailing stop (fixed TP at range midpoint)
+  use_trailing_stop: false         # Daily Lull Scalper: no trailing stop (fixed TP at range midpoint)
 
 pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see D029 / optimization results
 

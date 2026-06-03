@@ -1,7 +1,7 @@
-"""Asian Session Scalper parameter optimization — grid search via Backtesting.py's bt.optimize().
+"""Daily Lull Scalper parameter optimization — grid search via Backtesting.py's bt.optimize().
 
 Flow:
-  1. Load or generate CSV data for all 6 Asian pairs.
+  1. Load or generate CSV data for all 6 lull pairs.
   2. For each pair run bt.optimize() over the full parameter grid.
   3. Print per-pair best parameters and key metrics.
   4. Print a side-by-side comparison table.
@@ -10,7 +10,7 @@ Flow:
   7. Print final YAML-like config block.
 
 Usage:
-    python backtest/optimize_asian.py
+    python backtest/optimize_lull.py
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ from backtesting import Backtest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backtest.asian_engine import AsianSessionStrategy, prepare_asian_data
-from backtest.download_data import ASIAN_PAIRS, download_asian_all, load_asian_data
+from backtest.download_data import LULL_PAIRS, download_lull_all, load_lull_data
+from backtest.lull_engine import DailyLullStrategy, prepare_lull_data
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).parent / "data"
-RESULTS_DIR = Path(__file__).parent / "results_asian_opt"
+RESULTS_DIR = Path(__file__).parent / "results_lull_opt"
 
 CASH: float = 500.0
 COMMISSION: float = 0.00007
@@ -74,7 +74,7 @@ def _safe_float(val: object) -> float:
         return float("nan")
 
 
-def _asian_data_complete(pairs: list[str], data_dir: Path) -> bool:
+def _lull_data_complete(pairs: list[str], data_dir: Path) -> bool:
     """Return True if all H4 and M15 CSV files exist for every pair."""
     for symbol in pairs:
         if not (data_dir / f"{symbol}_H4.csv").exists():
@@ -133,7 +133,7 @@ def optimize_pair(symbol: str, df: pd.DataFrame) -> dict | None:
 
     bt = Backtest(
         df,
-        AsianSessionStrategy,
+        DailyLullStrategy,
         cash=CASH,
         commission=COMMISSION,
         exclusive_orders=True,
@@ -280,7 +280,7 @@ def find_universal_params(
 
             bt = Backtest(
                 df,
-                AsianSessionStrategy,
+                DailyLullStrategy,
                 cash=CASH,
                 commission=COMMISSION,
                 exclusive_orders=True,
@@ -472,7 +472,7 @@ def _print_final_config(kept_results: list[dict], universal: dict | None) -> Non
     if universal and universal.get("params"):
         p = universal["params"]
         print("# Universal parameters (optimal across all kept pairs)")
-        print("asian_session_scalper:")
+        print("daily_lull_scalper:")
         print(f"  sl_atr_mult: {p['sl_atr_mult']}")
         print(f"  adx_max_threshold: {p['adx_max_threshold']}")
         print(f"  rsi_oversold: {p['rsi_oversold']}")
@@ -483,7 +483,7 @@ def _print_final_config(kept_results: list[dict], universal: dict | None) -> Non
 
     if kept_results:
         print("# Per-pair optimal parameters (use if running pairs independently)")
-        print("asian_session_scalper_per_pair:")
+        print("daily_lull_scalper_per_pair:")
         for r in kept_results:
             p = r["params"]
             print(f"  {r['symbol']}:")
@@ -506,25 +506,25 @@ def _print_final_config(kept_results: list[dict], universal: dict | None) -> Non
 
 def main() -> None:
     """Entry point: optimize all pairs, find universal params, print report."""
-    if not _asian_data_complete(ASIAN_PAIRS, DATA_DIR):
-        logger.info("Asian data missing — generating synthetic data")
-        download_asian_all(ASIAN_PAIRS, DATA_DIR)
+    if not _lull_data_complete(LULL_PAIRS, DATA_DIR):
+        logger.info("lull data missing — generating synthetic data")
+        download_lull_all(LULL_PAIRS, DATA_DIR)
     else:
-        logger.info("All Asian CSV files present in %s", DATA_DIR)
+        logger.info("All lull CSV files present in %s", DATA_DIR)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- Load data for all pairs ----
     pair_dfs: dict[str, pd.DataFrame] = {}
-    for symbol in ASIAN_PAIRS:
+    for symbol in LULL_PAIRS:
         logger.info("Loading data for %s", symbol)
-        df_h4, df_m15 = load_asian_data(symbol, DATA_DIR)
-        pair_dfs[symbol] = prepare_asian_data(df_h4, df_m15)
+        df_h4, df_m15 = load_lull_data(symbol, DATA_DIR)
+        pair_dfs[symbol] = prepare_lull_data(df_h4, df_m15)
 
     # ---- Per-pair optimization ----
     print()
     print("=" * 60)
-    print("  ASIAN SESSION SCALPER — PARAMETER OPTIMIZATION")
+    print("  DAILY LULL SCALPER — PARAMETER OPTIMIZATION")
     print(
         f"  Grid: {len(SL_ATR_MULT)}×{len(ADX_MAX_THRESHOLD)}×{len(RSI_OVERSOLD)}"
         f"×{len(RSI_OVERBOUGHT)}×{len(RANGE_ATR_MIN)}×{len(RANGE_ATR_MAX)}"
@@ -534,7 +534,7 @@ def main() -> None:
 
     all_results: list[dict] = []
 
-    for symbol in ASIAN_PAIRS:
+    for symbol in LULL_PAIRS:
         result = optimize_pair(symbol, pair_dfs[symbol])
         if result is None:
             logger.warning("Skipping %s — optimization returned no result", symbol)
