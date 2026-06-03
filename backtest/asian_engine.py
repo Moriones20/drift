@@ -2,12 +2,13 @@
 
 Strategy rules:
   - Timeframe: M15 (15-minute candles)
-  - Trading window: 21:00-02:00 GMT (quiet Asian session)
+  - Trading window: 21:00-02:00 MT5 server time (NY-anchored, GMT+2/+3 w/DST; the
+    quiet NY-close → pre-Asia lull — see D041. NOT the Asian session despite the name)
   - Session range: High/Low of the 21:00-23:00 definition window
   - BUY when price <= session low AND RSI(14) < rsi_oversold (default 35)
   - SELL when price >= session high AND RSI(14) > rsi_overbought (default 65)
   - Range filter: range_atr_min x ATR(14) <= range_width <= range_atr_max x ATR(14)
-  - TP: middle of session range; SL: sl_atr_mult x ATR(14); time stop at 02:00 GMT
+  - TP: middle of session range; SL: sl_atr_mult x ATR(14); time stop at 02:00 server
   - ADX(14) on H4 < adx_max_threshold (default 35, ranging market filter)
   - Max 1 trade per session per pair
 
@@ -102,7 +103,7 @@ def prepare_asian_data(
 class AsianSessionStrategy(Strategy):
     """Asian session scalper — mean reversion to session range midpoint.
 
-    Entries only between 23:00-02:00 GMT after the 21:00-23:00 range is set.
+    Entries only between 23:00-02:00 server time after the 21:00-23:00 range is set.
     """
 
     sl_atr_mult: float = 2.5
@@ -117,7 +118,7 @@ class AsianSessionStrategy(Strategy):
         self.atr_ind = self.I(lambda: self.data.atr, name="ATR")
         self.h4_adx = self.I(lambda: self.data.h4_adx, name="H4_ADX")
 
-        # Per-session tracking (reset each 21:00 GMT)
+        # Per-session tracking (reset each 21:00 server time)
         self._session_date: int | None = None  # ordinal of the session-start day
         self._session_high: float = float("-inf")
         self._session_low: float = float("inf")
@@ -127,17 +128,17 @@ class AsianSessionStrategy(Strategy):
         self._session_traded: bool = False  # max 1 trade per session
 
     def _bar_hour(self) -> int:
-        """Return the UTC hour of the current bar."""
+        """Return the MT5 server-time hour of the current bar (see D041)."""
         return int(self.data.index[-1].hour)
 
     def _bar_day_ordinal(self) -> int:
-        """Return the ordinal day of the current bar (UTC date)."""
+        """Return the ordinal day of the current bar (server date)."""
         return int(self.data.index[-1].toordinal())
 
     def _session_key(self) -> int:
         """Return an integer that identifies the current session.
 
-        Sessions start at 21:00 GMT.  Bars at 21:00-23:59 belong to the
+        Sessions start at 21:00 server time.  Bars at 21:00-23:59 belong to the
         'session of that calendar day'; bars at 00:00-01:59 belong to the
         session that started the previous calendar day.
         """
@@ -177,7 +178,7 @@ class AsianSessionStrategy(Strategy):
         hour: int = self._bar_hour()
         session_key: int = self._session_key()
 
-        # --- Detect new session (21:00 GMT) ---
+        # --- Detect new session (21:00 server time) ---
         if hour == 21 and self._session_date != session_key:
             self._reset_session(session_key)
 
@@ -213,7 +214,7 @@ class AsianSessionStrategy(Strategy):
                 # Range outside acceptable ATR bounds — skip this session
                 self._session_range_locked = False
 
-        # --- Time stop: close any open trade at 02:00 GMT ---
+        # --- Time stop: close any open trade at 02:00 server time ---
         if hour == 2 and self.position:
             self.position.close()
             return
@@ -235,7 +236,7 @@ class AsianSessionStrategy(Strategy):
         if not self._session_range_locked:
             return
 
-        # Only trade during the entry window (23:00-01:59 GMT)
+        # Only trade during the entry window (23:00-01:59 server time)
         if hour not in (23, 0, 1):
             return
 

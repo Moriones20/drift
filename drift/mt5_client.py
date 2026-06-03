@@ -109,6 +109,23 @@ def reconnect(
     return False
 
 
+def _us_dst_active(now_utc: datetime) -> bool:
+    """Return True if US daylight saving time is in effect for *now_utc*.
+
+    US DST runs from the second Sunday of March to the first Sunday of November.
+    ICMarkets' server follows US DST (GMT+3 during DST, GMT+2 otherwise), so this
+    is used to pick the right whole-hour fallback when no tick is available
+    (see D041).  Day-level precision is enough: the transition happens on a
+    weekend when the market is closed.
+    """
+    year = now_utc.year
+    march = datetime(year, 3, 1, tzinfo=timezone.utc)
+    dst_start = march + timedelta(days=(6 - march.weekday()) % 7 + 7)  # 2nd Sunday of March
+    november = datetime(year, 11, 1, tzinfo=timezone.utc)
+    dst_end = november + timedelta(days=(6 - november.weekday()) % 7)  # 1st Sunday of November
+    return dst_start <= now_utc < dst_end
+
+
 def get_server_utc_offset(symbol: str = "EURUSD") -> timedelta:
     """Return the MT5 server UTC offset as a fixed timedelta.
 
@@ -116,9 +133,12 @@ def get_server_utc_offset(symbol: str = "EURUSD") -> timedelta:
     against real UTC.  The result is rounded to the nearest hour because all
     known MT5 server offsets are whole-hour increments.
 
-    Falls back to timedelta(hours=3) and logs a warning when no tick data is
-    available (e.g. weekend, market closed).  GMT+3 is ICMarkets' documented
-    fixed offset (no DST).
+    ICMarkets' server is NY-anchored and DST-aware: GMT+2 in US winter,
+    GMT+3 in US summer (see D041).  This dynamic derivation returns whichever
+    is current, so it is correct year-round as long as it runs while the market
+    is open.  When no tick is available (e.g. weekend, market closed) it falls
+    back to a DST-aware default (GMT+3 in US summer, GMT+2 in US winter) and
+    logs a warning.
 
     Parameters
     ----------
@@ -128,11 +148,14 @@ def get_server_utc_offset(symbol: str = "EURUSD") -> timedelta:
     """
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
+        fallback = timedelta(hours=3 if _us_dst_active(datetime.now(timezone.utc)) else 2)
         logger.warning(
-            "get_server_utc_offset: no tick for %s — falling back to GMT+3 (ICMarkets default)",
+            "get_server_utc_offset: no tick for %s — falling back to UTC%+d (US DST %s)",
             symbol,
+            int(fallback.total_seconds() // 3600),
+            "on" if fallback == timedelta(hours=3) else "off",
         )
-        return timedelta(hours=3)
+        return fallback
 
     # tick.time is a Unix epoch stamped by the server in its local wall time.
     # Interpreting that integer as UTC gives us the server's "apparent UTC"

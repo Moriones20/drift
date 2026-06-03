@@ -396,13 +396,13 @@ Detalle completo en `docs/plans/asian-session-scalper-live.md` y resultados raw 
 
 **Decisión:** El scheduler (`main.py`) ahora razona en tiempo del servidor MT5, no en UTC real. El offset se deriva una sola vez al inicio usando `get_server_utc_offset()` en `drift/mt5_client.py` (compara el epoch del último tick contra UTC real y redondea al entero de horas más cercano). `server_now(offset)` genera el "now" de servidor que se pasa a `_in_session_window`, `_next_session_start`, `_next_m15_close` y `_seconds_until`.
 
-**Bug que corrige:** El servidor ICMarkets usa GMT+3 fijo (sin DST — verificado sobre 2 años de datos de velas). El scheduler anterior usaba `datetime.now(timezone.utc)` (UTC real) mientras que las velas de MT5 llevan timestamps en hora de servidor. Al comparar hora del scheduler con `bar_time.hour` en la estrategia, había un desajuste de +3 horas: cuando el scheduler creía que eran las 21:00 UTC, la vela leía las 00:00 servidor. Resultado: el rango nunca se bloqueaba y el bot nunca operaba.
+**Bug que corrige:** El servidor ICMarkets usa hora anclada al cierre de NY (00:00 servidor = 17:00 NY). El scheduler anterior usaba `datetime.now(timezone.utc)` (UTC real) mientras que las velas de MT5 llevan timestamps en hora de servidor. Al comparar hora del scheduler con `bar_time.hour` en la estrategia, había un desajuste de +3 horas: cuando el scheduler creía que eran las 21:00 UTC, la vela leía las 00:00 servidor. Resultado: el rango nunca se bloqueaba y el bot nunca operaba.
 
 **Las horas de sesión no cambian.** `session_start_hour=21`, `session_end_hour=2`, `trading_allowed` en (23, 0, 1) son todos tiempo de servidor — exactamente la convención del backtest y el edge validado. No se tocan los valores, solo se garantiza que el scheduler habla el mismo idioma que las velas.
 
 **Reporte semanal no afectado.** `_check_weekly_report` sigue usando `datetime.now(timezone.utc)` (UTC real) porque su trigger está configurado en la zona horaria del usuario (UTC-5) y no tiene relación con la sesión de broker.
 
-**Nota geográfica:** El docstring original y D029 describen la ventana 21:00-02:00 GMT como "sesión asiática tranquila". En UTC real eso es 18:00-23:00 UTC (tarde NY / apertura Sydney), no la sesión asiática de libro. El edge fue validado fuera de muestra en exactamente esta ventana en tiempo de servidor, así que la ventana se mantiene. Solo el nombre es geográficamente impreciso; la lógica y los números son correctos.
+**Nota geográfica:** El docstring original y D029 describen la ventana 21:00-02:00 como "sesión asiática tranquila". El nombre es geográficamente incorrecto: en UTC real es 18:00-23:00 (verano) / 19:00-00:00 (invierno) = el *daily lull* entre el cierre de NY y la apertura de Tokio, no la sesión asiática de libro (la ventana **termina** cuando Tokio abre a las 00:00 UTC). La premisa sí es correcta — es el período más muerto del día, ideal para mean reversion — corroborado con fuentes externas. Ver [[D041]] para la identidad real de la sesión y la corrección del supuesto "sin DST". El edge fue validado fuera de muestra en esta ventana en tiempo de servidor; la lógica y los números son correctos.
 
 ---
 
@@ -434,7 +434,7 @@ Relacionado: [[D023]] (híbrido con filtro de régimen — complementario: D023 
 
 **Decisión:** Separar explícitamente tres capas de tiempo y no mezclarlas nunca:
 
-1. **CALCULAR sesiones → hora de servidor MT5 (GMT+3 fijo, sin DST).** La ventana 21:00-02:00 y el lock del rango se evalúan contra los timestamps de las velas, que el servidor estampa en su hora local. El scheduler usa `server_now(offset)` (D037). Esta capa queda **intacta** — es la que hace que el rango se lockee correctamente y está cubierta por `tests/test_strategy.py`.
+1. **CALCULAR sesiones → hora de servidor MT5 (GMT+2 invierno / GMT+3 verano, anclado al cierre NY; ver [[D041]]).** La ventana 21:00-02:00 y el lock del rango se evalúan contra los timestamps de las velas, que el servidor estampa en su hora local. El scheduler usa `server_now(offset)` (D037). Esta capa queda **intacta** — es la que hace que el rango se lockee correctamente y está cubierta por `tests/test_strategy.py`.
 2. **GUARDAR en DB → UTC real, siempre (ISO 8601).** Es la base canónica: estable ante cambios de broker/offset/DST, hace comparables trades y señales, y desacopla "cuándo pasó" de "cómo se muestra".
 3. **MOSTRAR al usuario → Bogotá (UTC-5), configurable vía `reports.timezone`.** El usuario nunca ve UTC ni hora-servidor.
 
@@ -464,3 +464,34 @@ Relacionado: [[D037]] (scheduler en hora servidor), [[D018]] (UTC interno — ma
 **Guardia de precio (anti-entrada-tardía):** un fill tardío podría entrar a un precio peor mientras el SL/TP siguen anclados al cierre de la señal, degradando el R:R. Para evitarlo, `open_trade` recibe `guard_boundary` (range_low en buy, range_high en sell) y **solo en los reintentos** (no en el primer intento, para no abandonar por el spread bid/ask) abandona la orden si el bid actual ya revirtió hacia dentro del rango (buy: bid > range_low; sell: bid < range_high). Las velas y la condición de entrada son bid-based, por eso la guardia compara contra el bid. Así solo se entra tarde si el extremo sigue válido; si revirtió, se abandona y la vela siguiente reevalúa.
 
 Relacionado: memoria `broker-rollover-market-closed`.
+
+---
+
+## D041 — Identidad real de la sesión y comportamiento DST del servidor ICMarkets
+
+**Contexto:** Auditoría 2026-06-02 (continuación de D037/D039). Se investigó en fuentes externas (no en datos guardados, que estaban en duda): (a) cuál es realmente la sesión "más tranquila" que el proyecto llama *Asian session*, y (b) si el servidor de ICMarkets aplica DST, porque D037/D039 afirmaban "GMT+3 fijo, sin DST".
+
+**Hallazgo 1 — La sesión NO es la asiática; es el *daily lull* cierre-NY → pre-Tokio.**
+La ventana 21:00-02:00 hora-servidor = **18:00-23:00 UTC (verano) / 19:00-00:00 UTC (invierno)**. El consenso de la industria ubica el período de menor liquidez/volatilidad del día forex justo ahí: el *daily lull* entre el cierre de Nueva York (~21:00 UTC verano / 22:00 UTC invierno) y la apertura de Tokio (00:00 UTC). Ranking de volatilidad de sesiones: **Sídney (más baja) < Tokio < Londres < Nueva York**. La ventana captura el cierre de NY + la apertura quieta de Sídney — más tranquila aún que Tokio. El nombre "Asian session" es geográficamente incorrecto (la ventana termina cuando Tokio abre), pero la **premisa es empíricamente correcta**: operar mean reversion en la franja más muerta del día. Nombre fiel: *NY-Close / Pre-Asia Lull Scalper*.
+Fuentes: Maven Trading (sessions/volatility guide), BabyPips (forex market hours), PU Prime, Dukascopy.
+
+**Hallazgo 2 — ICMarkets SÍ aplica DST. La afirmación "GMT+3 fijo" de D037/D039 era incorrecta.**
+Documentación oficial de ICMarkets: el servidor es **GMT+2 en invierno (US standard) / GMT+3 en verano (US DST)**, anclado al cierre de NY (00:00 servidor = 17:00 NY todo el año). Cambia dos veces al año siguiendo el DST de EE.UU. (≈marzo y noviembre).
+Fuente: blog oficial IC Markets ("US Daylight Savings & Server Time Changing to GMT+3").
+
+**Por qué esto NO invalida el barrido ni el edge:**
+- Como el reloj del servidor está anclado al cierre de NY, "21:00 servidor" es **siempre** el mismo momento de mercado (14:00 NY) en verano e invierno; el DST está horneado en los timestamps de las velas.
+- El backtest lee esas etiquetas servidor → operó sobre una ventana consistente y correctamente anclada al *lull* durante los 2 años completos, sin importar el DST. El barrido nunca necesitó el offset UTC absoluto: solo compara etiquetas servidor.
+- El bot en vivo razona en hora-servidor con el mismo offset derivado → paridad backtest⇄vivo intacta.
+- Corolario: el DST del servidor es, para esta estrategia, una **ventaja** — mantiene la ventana centrada sobre el *lull* (anclado al cierre NY) todo el año. La preocupación previa ("la ventana se descentra ±1h en invierno") estaba al revés: ventana y *lull* respiran juntos.
+
+**Defectos reales derivados del supuesto "sin DST" (NO afectan el edge; sí la robustez en vivo):**
+1. **Offset derivado una sola vez al inicio** (`main.py`, "fixed for the entire session"). La derivación es dinámica (`get_server_utc_offset`) y correcta al arrancar, pero si el proceso corre de forma continua a través de un cambio DST (marzo/noviembre) sin reiniciar, el offset queda obsoleto 1h → mini-regresión de D037 (scheduler desincronizado de las velas) hasta el reinicio. Acotado a ~2 fines de semana al año.
+2. **Fallback hardcodeado a `timedelta(hours=3)`** en `get_server_utc_offset` cuando no hay tick (mercado cerrado): asume verano; en invierno es +1h incorrecto. Bajo riesgo (el arranque suele ocurrir con mercado abierto y la derivación dinámica tiene prioridad), pero es un valor incorrecto medio año.
+
+**Decisión:**
+- Corregir las afirmaciones falsas "sin DST" en docs (D037, D039) y comentarios de código — no cambia comportamiento.
+- Mantener la config `session_*` sin cambios (no romper el edge validado); el renombrado es conceptual/documental.
+- Defectos 1 y 2: **pendientes de implementación** (re-derivar offset al inicio de cada sesión/día; fallback consciente del DST de EE.UU.). No urgentes. Mitigación operativa inmediata: **reiniciar el bot tras cada cambio de DST de EE.UU.**
+
+Relacionado: [[D037]], [[D039]], [[D029]].

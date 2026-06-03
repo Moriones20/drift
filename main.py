@@ -1045,8 +1045,12 @@ def main() -> None:
 
         # Derive the MT5 server UTC offset once at startup so every scheduler
         # decision uses server time and matches the candle timestamps returned
-        # by MT5 (which are also in server time).  The offset is fixed for the
-        # entire session — ICMarkets uses a permanent GMT+3 with no DST.
+        # by MT5 (which are also in server time).  ICMarkets is NY-anchored and
+        # DST-aware (GMT+2 winter / GMT+3 summer, see D041); this derivation
+        # captures the current offset.  KNOWN LIMITATION: it is derived only
+        # once, so a process running continuously across a US DST change
+        # (≈Mar/Nov) keeps a stale offset until restarted — restart the bot
+        # after each DST transition.
         _server_offset = get_server_utc_offset(config.pairs[0] if config.pairs else "EURUSD")
         logger.info(
             "MT5 server offset: UTC%+d — scheduler aligned to server time",
@@ -1178,6 +1182,24 @@ def main() -> None:
 
                     # --- Entering session for the first time (B starts) ---
                     if not _session_active:
+                        # Re-derive the server offset at each session start so a
+                        # long-running process picks up US DST transitions
+                        # (≈Mar/Nov) without a restart (D041).  Cheap: once per
+                        # session.  If it changed, realign by recomputing `now`
+                        # before doing anything window-dependent.
+                        refreshed = get_server_utc_offset(
+                            config.pairs[0] if config.pairs else "EURUSD"
+                        )
+                        if refreshed != _server_offset:
+                            logger.warning(
+                                "MT5 server offset changed UTC%+d → UTC%+d (DST?) — "
+                                "realigning scheduler",
+                                round(_server_offset.total_seconds() / 3600),
+                                round(refreshed.total_seconds() / 3600),
+                            )
+                            _server_offset = refreshed
+                            continue
+
                         _session_active = True
                         # Reset all session states at session start.
                         for pair in config.pairs:
