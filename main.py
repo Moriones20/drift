@@ -187,6 +187,22 @@ def _next_session_start(now: datetime, config: DriftConfig) -> datetime:
     return candidate
 
 
+def _post_close_delay_seconds(next_close: datetime, config: DriftConfig) -> int:
+    """Seconds to wait after an M15 close before evaluating/executing it.
+
+    The candle closing at 00:00 server time coincides with ICMarkets' daily
+    rollover halt (~1-2 min of "market closed" / wide spreads). Executing then
+    fills into the reopen gap and turned a winning signal into a loss on
+    2026-06-03 (see D040/D044). That one candle waits `rollover_settle_seconds`
+    so the market reopens and the strategy re-evaluates on a fresh price; if the
+    price has gapped away from the extreme, no entry fires. All other candles
+    use the normal short delay.
+    """
+    if next_close.hour == 0 and next_close.minute == 0:
+        return config.system.rollover_settle_seconds
+    return CANDLE_CLOSE_DELAY_SECONDS
+
+
 def _seconds_until(target: datetime, server_offset: timedelta) -> float:
     """Return seconds until *target* (in MT5 server time) from now.
 
@@ -1216,13 +1232,15 @@ def main() -> None:
 
                     # --- States B + C + D: wait for next M15 close and process tick ---
                     next_close = _next_m15_close(now)
-                    wait_secs = (
-                        _seconds_until(next_close, _server_offset) + CANDLE_CLOSE_DELAY_SECONDS
-                    )
+                    post_close_delay = _post_close_delay_seconds(next_close, config)
+                    wait_secs = _seconds_until(next_close, _server_offset) + post_close_delay
                     logger.info(
-                        "Next M15 close at %s server time — sleeping %.0fs",
+                        "Next M15 close at %s server time — sleeping %.0fs%s",
                         next_close.strftime("%H:%M"),
                         wait_secs,
+                        " (rollover settle)"
+                        if post_close_delay != CANDLE_CLOSE_DELAY_SECONDS
+                        else "",
                     )
 
                     deadline = time.monotonic() + wait_secs

@@ -67,6 +67,10 @@ class SystemConfig:
     # "market closed" during the ~00:00 server-time daily rollover). See D040.
     order_retry_attempts: int = 3
     order_retry_delay_seconds: float = 25.0
+    # The candle closing at 00:00 server time lands on the broker's daily
+    # rollover halt; wait this long before evaluating/executing it so the market
+    # has reopened and the strategy re-checks on a fresh price. See D044.
+    rollover_settle_seconds: int = 150
 
 
 DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]
@@ -168,6 +172,9 @@ def _parse_system(raw: dict) -> SystemConfig:
         order_retry_attempts=int(raw.get("order_retry_attempts", defaults.order_retry_attempts)),
         order_retry_delay_seconds=float(
             raw.get("order_retry_delay_seconds", defaults.order_retry_delay_seconds)
+        ),
+        rollover_settle_seconds=int(
+            raw.get("rollover_settle_seconds", defaults.rollover_settle_seconds)
         ),
     )
 

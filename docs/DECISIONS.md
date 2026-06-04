@@ -559,3 +559,17 @@ Mismo período de datos pero ~3× los trades entre A y C → la diferencia era d
 **Veredicto: el edge generaliza** — no hay colapso out-of-sample, que es el patrón que delataría overfitting. Reemplaza la cita previa no reproducible ("PF 7.56 → 6.98"). Caveats: (a) AUDNZD es el más débil — retención 0.46 por un IS PF inflado (ventana corta), aunque sigue rentable OOS (PF 3.72, +4.35%); (b) el retorno OOS anualiza ~5%, menor que el +8.75%/2a in-sample — realista, no eufórico.
 
 Relacionado: [[D029]], [[D033]], [[D041]].
+
+---
+
+## D044 — Vela 00:00: esperar a que pase el rollover antes de ejecutar (refina D040)
+
+**Decisión (2026-06-03):** La vela que cierra a las **00:00 hora servidor** se evalúa y ejecuta con un retraso configurable (`system.rollover_settle_seconds`, default 150s) en vez de los +5s normales. Las otras 10 velas de la ventana siguen a +5s.
+
+**Bug que corrige (observado en vivo el 2026-06-03):** El reintento de [[D040]] recuperó una señal válida de EURCHF en el rollover, **pero llenó en el gap de reapertura**: señal a 0.91604, fill a 0.92026 (~42 pips arriba), TP (0.91894) quedó por debajo del fill → trade invertido, cerró por time-stop en **-$29.24**. Si hubiera entrado al precio de la señal habría sido **ganador** (el precio cerró en 0.918). La guardia de precio no lo evitó: durante la reapertura `symbol_info_tick` devolvió un quote viejo que pasó la guardia mientras `order_send` ejecutaba contra el precio real ya gapeado.
+
+**Por qué este enfoque (y no más reintentos/guardia):** El bot evalúa sobre la **vela en formación** (`get_candles` usa `copy_rates_from_pos` pos 0). Al retrasar la evaluación de la vela 00:00 a ~00:02:30, la estrategia **re-evalúa sobre el precio fresco** ya con el mercado reabierto: si el precio gapeó y sigue fuera del extremo, la condición de entrada (`close ≤ range_low` en buy) **es falsa → no entra**; si volvió al extremo, entra limpio en mercado líquido. La propia estrategia hace de guardia, sin depender de quotes poco fiables durante el halt.
+
+**Alternativas descartadas:** correr todo el reloj desfasado (:03/:18/...) — penaliza las 10 velas sanas con deriva innecesaria; saltar la vela 00:00 — pierde entradas legítimas (la de hoy habría sido ganadora). El reintento de [[D040]] se conserva como red de seguridad para rechazos transitorios fuera del rollover.
+
+Relacionado: [[D040]], memoria `broker-rollover-market-closed`.
