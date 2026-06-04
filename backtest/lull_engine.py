@@ -112,6 +112,9 @@ class DailyLullStrategy(Strategy):
     rsi_overbought: float = 65.0
     range_atr_min: float = 1.0
     range_atr_max: float = 4.0
+    # Diagnostic only: drop entries on the 00:00 server bar (the broker rollover)
+    # to measure how much of the edge survives without that bar. Default off.
+    skip_rollover_bar: bool = False
 
     def init(self) -> None:
         self.rsi_ind = self.I(lambda: self.data.rsi, name="RSI")
@@ -238,6 +241,10 @@ class DailyLullStrategy(Strategy):
 
         # Only trade during the entry window (23:00-01:59 server time)
         if hour not in (23, 0, 1):
+            return
+
+        # Diagnostic: optionally skip the 00:00 server bar (broker rollover).
+        if self.skip_rollover_bar and hour == 0 and int(self.data.index[-1].minute) == 0:
             return
 
         # H4 regime filter

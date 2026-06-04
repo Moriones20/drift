@@ -176,6 +176,18 @@ def should_close_on_time(bar_time: datetime, config: StrategyConfig) -> bool:
     return bar_time.hour == config.session_end_hour
 
 
+def closed_bars(df: pd.DataFrame, before: datetime) -> pd.DataFrame:
+    """Return only the bars that have already closed before *before* (D045).
+
+    MT5 returns the still-forming bar as the last row.  Acting on it makes the
+    live bot fire intra-bar on incomplete (and, at the 00:00 server rollover,
+    contaminated) prices, diverging from the backtest which acts on completed-bar
+    closes.  Keeping bars strictly before the current M15 boundary makes iloc[-1]
+    the bar that just closed at *before*.
+    """
+    return df[df.index < before]
+
+
 # ---------------------------------------------------------------------------
 # Main evaluation function
 # ---------------------------------------------------------------------------

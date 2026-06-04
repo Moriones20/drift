@@ -45,7 +45,7 @@ from drift.mt5_client import (
 )
 from drift.report import generate_weekly_report
 from drift.risk import calculate_position_size, check_all_risk
-from drift.strategy import SessionState, Signal, evaluate_pair, should_close_on_time
+from drift.strategy import SessionState, Signal, closed_bars, evaluate_pair, should_close_on_time
 from drift.telegram_bot import (
     BotState,
     notify_bot_status,
@@ -383,6 +383,7 @@ def _analyse_pair_m15(
     bot_app,
     trading_allowed: bool,
     server_offset: timedelta,
+    bar_close_time: datetime,
 ) -> None:
     """Fetch M15+H4 data and evaluate the pair for the current M15 close.
 
@@ -409,6 +410,10 @@ def _analyse_pair_m15(
     """
     m15_df = get_candles(pair, "M15", count=150)
     h4_df = get_candles(pair, "H4", count=50)
+
+    # Evaluate only CLOSED M15 bars so the live bot acts on completed-bar closes
+    # like the backtest, not the still-forming (rollover-contaminated) bar (D045).
+    m15_df = closed_bars(m15_df, bar_close_time)
 
     signal: Signal = evaluate_pair(
         symbol=pair,
@@ -677,6 +682,7 @@ def _run_m15_tick(
                 bot_app=bot_app,
                 trading_allowed=trading_allowed,
                 server_offset=server_offset,
+                bar_close_time=bar_close_time,
             )
         except Exception:
             logger.exception("Unhandled error analysing %s", pair)

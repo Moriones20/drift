@@ -572,4 +572,22 @@ Relacionado: [[D029]], [[D033]], [[D041]].
 
 **Alternativas descartadas:** correr todo el reloj desfasado (:03/:18/...) — penaliza las 10 velas sanas con deriva innecesaria; saltar la vela 00:00 — pierde entradas legítimas (la de hoy habría sido ganadora). El reintento de [[D040]] se conserva como red de seguridad para rechazos transitorios fuera del rollover.
 
-Relacionado: [[D040]], memoria `broker-rollover-market-closed`.
+> **Ajuste (ver [[D045]]):** la idea de "re-evaluar a las 00:02:30" se subsume en D045 (evaluar velas cerradas). D044 **no queda obsoleta**: su valor real es **retrasar la ejecución del wake de las 00:00 fuera del halt**. Con D045 ese wake evalúa la vela 23:45 (ya cerrada); si dispara, la orden saldría a las 00:00:05 (en el halt) — el retraso de D044 la empuja a ~00:02:30, post-halt. D044 (ejecución) y D045 (señal) son complementarias.
+
+Relacionado: [[D040]], [[D045]], memoria `broker-rollover-market-closed`.
+
+---
+
+## D045 — Evaluar velas M15 CERRADAS, no la vela en formación (fidelidad vivo↔backtest)
+
+**Decisión (2026-06-03):** El bot vivo descarta la vela M15 en formación y evalúa solo la **última vela cerrada** (`drift.strategy.closed_bars` filtra `index < bar_close_time`, llamado en `_analyse_pair_m15`). Antes usaba `m15_df.iloc[-1]` = la vela en formación (`get_candles` → `copy_rates_from_pos` pos 0).
+
+**Bug que corrige:** `Backtesting.py` decide cada señal sobre el **cierre de la vela completa**; el bot vivo decidía sobre la vela **en formación a los +5s** (≈ su apertura). Es un desfase sistemático de ~1 vela en TODAS las velas, y en las 00:00 servidor caía sobre el **wick del rollover** → disparaba entradas que el backtest nunca tomó y con fills gapeados. Era la causa raíz de "el vivo no reproduce el backtest".
+
+**Cómo se descubrió:** El análisis de hora de entrada del backtest (`backtest/analyze_entry_hours.py`) mostró 92% del PnL en la hora 00 y 88% win en la vela 00:00 exacta — pero el backtest evalúa esa vela en su **cierre (00:15, post-rollover, limpio)**, mientras el vivo la evaluaba en formación a las 00:00:05 (durante el halt). `analyze_exclude_rollover.py` confirmó que el edge sobrevive sin la vela 00:00 (+6.41%, PF 1.8-5.7), o sea es real, no un artefacto — el problema era de **ejecución/fidelidad**, no de estrategia.
+
+**Efecto del cambio:** Con velas cerradas, la vela 00:00 se evalúa en el wake de las **00:15:05** (ya cerrada, precio limpio) y se ejecuta en mercado abierto — reproduciendo fielmente el backtest. Trazado bar-a-bar: el rango se define con bars 21:00-22:45 (wakes 21:15-23:00), se lockea con bar 23:00 (wake 23:15), y se opera bars 23:00→01:30. Única divergencia: se pierde la entrada de la bar 01:45 (en el backtest aporta +0.49 sobre 2 años — despreciable). El scheduler no requiere cambios: la lógica de sesión de la estrategia se basa en la hora del **índice** de la vela.
+
+**Complementa:** [[D044]] (retrasa la ejecución del wake 00:00 fuera del halt) y [[D040]] (reintento/guardia como red de seguridad general). Los tres juntos: señal sobre vela cerrada (D045) + ejecución post-halt (D044) + retry de respaldo (D040).
+
+Relacionado: [[D044]], [[D040]], [[D043]] (reconciliación de métricas), `backtest/analyze_entry_hours.py`, `backtest/analyze_exclude_rollover.py`.
