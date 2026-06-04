@@ -543,6 +543,8 @@ def _analyse_pair_m15(
                 max_retries=config.system.order_retry_attempts,
                 retry_delay_seconds=config.system.order_retry_delay_seconds,
                 guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
+                entry_reference=signal.entry_price,
+                min_reward_fraction=config.system.min_reward_fraction,
             )
 
             if ticket is None:

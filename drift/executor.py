@@ -27,6 +27,8 @@ def open_trade(
     max_retries: int = 0,
     retry_delay_seconds: float = 0.0,
     guard_boundary: float | None = None,
+    entry_reference: float | None = None,
+    min_reward_fraction: float = 0.0,
 ) -> int | None:
     """Send a market order, retrying on transient broker rejections.
 
@@ -40,6 +42,13 @@ def open_trade(
     range_high for a sell).  On retries only, the order is abandoned if the
     market has reverted back inside the range — so a delayed fill never chases
     a degraded setup.  See D040.
+
+    entry_reference is the bid-based signal entry (the candle close).  When
+    min_reward_fraction > 0, the order is abandoned on any attempt if the live
+    fill (ask for a buy, bid for a sell) leaves less than that fraction of the
+    intended reward |tp - entry_reference| — i.e. the spread ate the edge.
+    Mean-reversion TPs are tiny, so a wide rollover spread can put the fill past
+    the TP, turning a "take profit" into a guaranteed loss.  See D046.
     """
     symbol_info = mt5.symbol_info(pair)
     if symbol_info is None:
@@ -82,6 +91,29 @@ def open_trade(
                     pair,
                     tick.bid,
                     guard_boundary,
+                )
+                return None
+
+        # Reward-after-spread guard (every attempt): the candle close (entry
+        # reference) and TP are bid-based, but a market order fills at the ask
+        # (buy) / bid (sell).  A wide spread — e.g. minutes after the 00:00
+        # rollover — can land the fill past the TP, so the trade closes at a
+        # loss even when "take profit" triggers.  Abandon if less than
+        # min_reward_fraction of the intended reward survives the spread.  D046.
+        if entry_reference is not None and min_reward_fraction > 0.0:
+            intended_reward = abs(take_profit - entry_reference)
+            reward_after_spread = take_profit - price if is_buy else price - take_profit
+            if intended_reward > 0 and reward_after_spread < min_reward_fraction * intended_reward:
+                logger.warning(
+                    "open_trade: abandoned %s %s — spread ate the edge "
+                    "(fill=%.5f tp=%.5f reward_left=%.5f of %.5f, min %.0f%%)",
+                    direction,
+                    pair,
+                    price,
+                    take_profit,
+                    reward_after_spread,
+                    intended_reward,
+                    min_reward_fraction * 100,
                 )
                 return None
 

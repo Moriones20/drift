@@ -591,3 +591,17 @@ Relacionado: [[D040]], [[D045]], memoria `broker-rollover-market-closed`.
 **Complementa:** [[D044]] (retrasa la ejecución del wake 00:00 fuera del halt) y [[D040]] (reintento/guardia como red de seguridad general). Los tres juntos: señal sobre vela cerrada (D045) + ejecución post-halt (D044) + retry de respaldo (D040).
 
 Relacionado: [[D044]], [[D040]], [[D043]] (reconciliación de métricas), `backtest/analyze_entry_hours.py`, `backtest/analyze_exclude_rollover.py`.
+
+## D046 — Guardia de reward-tras-spread: no entrar si el spread se come el edge
+
+**Decisión (2026-06-04):** `executor.open_trade` abandona la entrada (en cualquier intento, antes de mandar la orden) si, tras pagar el spread vivo, sobrevive menos de `min_reward_fraction` (default **0.5**) del reward buscado. Reward buscado = `|tp - entry_reference|` (la señal, basada en bid/cierre); reward tras spread = `tp - ask` (compra) o `bid - tp` (venta). Config: `system.min_reward_fraction`. `0.0` desactiva la guardia (backward-compat).
+
+**Bug que corrige:** El primer día con D044+D045 activos (sesión 2026-06-04) las 3 entradas se evaluaron bien sobre velas cerradas, pero **los 3 fills gapearon por encima de su propio TP** y las 3 cerraron en pérdida (−$12.37 EURJPY, −$8.89 GBPJPY *por `take_profit`*, −$4.85 EURGBP; total −$26.11). Causa: la señal/TP/SL se calculan sobre el **cierre (bid)**, pero una orden a mercado llena al **ask** (compra). A las 00:15 servidor, 15 min tras el rollover, los spreads de cruces JPY siguen inflados (10-20 pips), y como los TP de mean reversion son diminutos (~6 pips), **el spread solo deja el fill pasado el TP** → un "take profit" que es pérdida.
+
+**Por qué D044/D045 no bastaban:** D045 arregla la *señal* (vela cerrada); D044 saca la *ejecución* del halt. Pero ninguno mira el **spread** en el momento del fill. El backtest llena al **open de la vela siguiente (precio único, sin spread)**, así que nunca ve este costo — destapa que parte del edge "92% en la hora 00" podía estar inflado por fills sin spread justo cuando el spread real es máximo.
+
+**Efecto:** Con `min_reward_fraction=0.5`, las 3 entradas de 2026-06-04 se habrían rechazado (reward tras spread negativo en las tres). Filtra entradas estructuralmente perdedoras sin tocar las sanas. Pendiente: re-correr el backtest con modelo de spread realista (sobre todo inflado en la hora del rollover) para revalidar el edge.
+
+**Complementa:** [[D045]] (señal sobre vela cerrada) + [[D044]] (ejecución post-halt) + [[D040]] (retry/guardia de reversión). D046 es la cuarta capa: aunque señal y timing sean correctos, no se entra si el spread mata el R:R.
+
+Relacionado: [[D045]], [[D044]], [[D040]], `drift/executor.py`, `tests/test_executor.py` (TestRewardAfterSpreadGuard).

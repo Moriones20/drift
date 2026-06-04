@@ -132,4 +132,11 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - Tests: **119 pasan** (nuevos `test_scheduling.py`, `test_closed_bars.py`). Bot reiniciado para cargar D041+D044+D045; **prueba real: sesión completa del 4-jun** (¿el vivo reproduce el backtest?).
 - Pendiente clave a vigilar: confirmar en vivo que con velas cerradas las entradas y fills coinciden con el backtest; si el edge realizable post-fix es el ~+6.41% (sin la vela 00:00 irrealizable) y no el +8.75%, ajustar expectativas.
 
+### Mantenimiento 2026-06-04 — guardia de spread (D046)
+- **Primera sesión con D044+D045 activos.** Las 3 señales se evaluaron correctamente sobre velas cerradas (wake 00:15) y sin retcode 10018 — D044/D045 funcionaron. PERO las 3 entradas (EURJPY, GBPJPY, EURGBP) **gapearon por encima de su propio TP** y las 3 cerraron en pérdida: −$12.37, −$8.89 (¡por `take_profit`!), −$4.85 = **−$26.11**. Balance 1969.84 → 1958.25.
+- **Causa raíz (capa que faltaba):** señal/TP/SL se calculan sobre el **cierre (bid)**, pero la orden a mercado llena al **ask**. A las 00:15 servidor (15 min post-rollover) los spreads JPY siguen inflados (10-20 pips); como los TP de mean reversion son ~6 pips, el spread solo deja el fill pasado el TP → "take profit" que es pérdida. El backtest llena al open sin spread, por eso nunca lo vio.
+- **D046 — guardia de reward-tras-spread.** `executor.open_trade` abandona la entrada si tras pagar el spread vivo sobrevive < `system.min_reward_fraction` (default 0.5) del reward `|tp - entry_reference|`. Las 3 entradas del 4-jun se habrían rechazado. Cuarta capa sobre D045 (señal)+D044 (timing)+D040 (retry).
+- Tests: **123 pasan** (nuevo `TestRewardAfterSpreadGuard` en `test_executor.py`). Falta reiniciar el bot para cargar D046.
+- Pendiente: re-correr el backtest con **modelo de spread realista** (inflado en la hora del rollover) para revalidar si el edge +6.41%/+8.75% sobrevive al costo real de ejecución.
+
 - Next session starts at Step 22 (Phase 3: Go Live).

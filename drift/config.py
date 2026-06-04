@@ -71,6 +71,11 @@ class SystemConfig:
     # rollover halt; wait this long before evaluating/executing it so the market
     # has reopened and the strategy re-checks on a fresh price. See D044.
     rollover_settle_seconds: int = 150
+    # Mean-reversion TPs are tiny; a market order fills at the ask/bid, so a wide
+    # spread (e.g. post-rollover) can land the fill past the TP. Abandon the
+    # entry unless at least this fraction of the intended reward survives the
+    # live spread. See D046.
+    min_reward_fraction: float = 0.5
 
 
 DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]
@@ -176,6 +181,7 @@ def _parse_system(raw: dict) -> SystemConfig:
         rollover_settle_seconds=int(
             raw.get("rollover_settle_seconds", defaults.rollover_settle_seconds)
         ),
+        min_reward_fraction=float(raw.get("min_reward_fraction", defaults.min_reward_fraction)),
     )
 
 
