@@ -139,4 +139,10 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - Tests: **123 pasan** (nuevo `TestRewardAfterSpreadGuard` en `test_executor.py`). Falta reiniciar el bot para cargar D046.
 - Pendiente: re-correr el backtest con **modelo de spread realista** (inflado en la hora del rollover) para revalidar si el edge +6.41%/+8.75% sobrevive al costo real de ejecución.
 
+### Mantenimiento 2026-06-07 — offset de servidor con mercado cerrado (D047)
+- **Disparador:** al reiniciar el bot un domingo (mercado cerrado) para cargar D046, derivó offset **UTC-42** (`raw=-151086s`) y programó sleep de ~45h. Causa: `symbol_info_tick` devuelve el último tick del **viernes** (viejo, no `None`), y el fallback solo cubría `tick is None`.
+- **D047 — guardia de plausibilidad.** `get_server_utc_offset` rechaza `|raw| > 14h` y cae al fallback DST-aware (UTC+2/+3). Reiniciar en cualquier momento (incl. fin de semana) ahora da offset correcto; se re-deriva con tick fresco al inicio de cada sesión.
+- Balance al reinicio: **1939.59** (bajó de 1958.25 — el bot operó con código viejo, sin D046, en las sesiones 5/6-jun). Las pérdidas de esas sesiones quedan por revisar.
+- Tests: **126 pasan** (nuevo `TestServerOffsetStaleTickGuard`). Bot reiniciado con D046+D047 activos.
+
 - Next session starts at Step 22 (Phase 3: Go Live).

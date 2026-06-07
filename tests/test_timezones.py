@@ -16,10 +16,13 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 # Ensure project root is on the path when run directly.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from drift import mt5_client  # noqa: E402
 from drift.db import init_db, log_signal  # noqa: E402
 from drift.formatting import format_time, parse_utc_offset  # noqa: E402
 from drift.strategy import Signal  # noqa: E402
@@ -109,6 +112,38 @@ class TestParseAndFormat(unittest.TestCase):
         real_utc = datetime(2026, 6, 2, 20, 0, tzinfo=timezone.utc)
         bogota = parse_utc_offset("UTC-5")
         self.assertEqual(format_time(real_utc, tz=bogota), "2026-06-02 15:00")
+
+
+class TestServerOffsetStaleTickGuard(unittest.TestCase):
+    """D047: a stale (weekend/holiday) tick must not produce a garbage offset."""
+
+    def test_stale_tick_falls_back_to_dst_guess(self) -> None:
+        # Tick stamped ~45h ago (market closed all weekend) -> raw offset is
+        # tens of hours -> reject and fall back to UTC+2/+3, never UTC-42.
+        now = datetime.now(timezone.utc)
+        stale = SimpleNamespace(time=(now - timedelta(hours=45)).timestamp())
+        fake = mock.MagicMock()
+        fake.symbol_info_tick.return_value = stale
+        with mock.patch.object(mt5_client, "mt5", fake):
+            offset = mt5_client.get_server_utc_offset("EURUSD")
+        self.assertIn(offset, (timedelta(hours=2), timedelta(hours=3)))
+
+    def test_plausible_tick_is_used(self) -> None:
+        # A fresh tick ~3h ahead of UTC -> derive UTC+3 normally.
+        now = datetime.now(timezone.utc)
+        fresh = SimpleNamespace(time=(now + timedelta(hours=3)).timestamp())
+        fake = mock.MagicMock()
+        fake.symbol_info_tick.return_value = fresh
+        with mock.patch.object(mt5_client, "mt5", fake):
+            offset = mt5_client.get_server_utc_offset("EURUSD")
+        self.assertEqual(offset, timedelta(hours=3))
+
+    def test_none_tick_falls_back(self) -> None:
+        fake = mock.MagicMock()
+        fake.symbol_info_tick.return_value = None
+        with mock.patch.object(mt5_client, "mt5", fake):
+            offset = mt5_client.get_server_utc_offset("EURUSD")
+        self.assertIn(offset, (timedelta(hours=2), timedelta(hours=3)))
 
 
 if __name__ == "__main__":

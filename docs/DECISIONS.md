@@ -605,3 +605,17 @@ Relacionado: [[D044]], [[D040]], [[D043]] (reconciliación de métricas), `backt
 **Complementa:** [[D045]] (señal sobre vela cerrada) + [[D044]] (ejecución post-halt) + [[D040]] (retry/guardia de reversión). D046 es la cuarta capa: aunque señal y timing sean correctos, no se entra si el spread mata el R:R.
 
 Relacionado: [[D045]], [[D044]], [[D040]], `drift/executor.py`, `tests/test_executor.py` (TestRewardAfterSpreadGuard).
+
+## D047 — Rechazar offset de servidor implausible con mercado cerrado (tick viejo)
+
+**Decisión (2026-06-07):** `get_server_utc_offset` rechaza un offset derivado si `|raw_offset_seconds| > 14h` y cae al fallback DST-aware (`_us_dst_active` → UTC+2/+3). Antes el fallback solo se activaba si `tick is None`.
+
+**Bug que corrige:** Al reiniciar el bot un **domingo con el mercado cerrado**, `symbol_info_tick` devuelve el **último tick del viernes** (epoch viejo, no `None`). Comparándolo con la hora real daba `raw=-151086s` → **offset UTC-42**, que se aceptaba como válido. Consecuencia: el scheduler creía que era viernes, programó un sleep de ~45h y habría operado con la hora de sesión corrida. Detectado en el reinicio para cargar D046: log `MT5 server offset derived: UTC-42 (raw=-151086.1s)` y `sleeping until ... (162296s)`.
+
+**Por qué el fallback previo no bastaba:** D041 solo contemplaba `tick is None`. Un tick **viejo pero presente** (fin de semana / feriado) pasa ese chequeo y produce un número plausible-en-tipo pero absurdo-en-valor. Los offsets reales de broker están dentro de ±14h (máximo mundial +14); cualquier cosa mayor implica tick rancio.
+
+**Efecto:** Reiniciar el bot en cualquier momento (incluido fin de semana) deriva un offset correcto: con tick fresco usa el real; con tick viejo o ausente usa el fallback DST-aware (UTC+3 en verano US, UTC+2 en invierno). El offset se re-deriva igual al inicio de cada sesión (D041), cuando ya hay ticks frescos.
+
+**Complementa:** [[D041]] (derivación DST-aware del offset; D047 endurece su fallback).
+
+Relacionado: [[D041]], [[D039]], `drift/mt5_client.py`, `tests/test_timezones.py` (TestServerOffsetStaleTickGuard).

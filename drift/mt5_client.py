@@ -165,6 +165,21 @@ def get_server_utc_offset(symbol: str = "EURUSD") -> timedelta:
 
     raw_offset_seconds = (server_epoch_as_utc - real_utc).total_seconds()
 
+    # A stale tick (e.g. over a weekend or holiday, when the market is closed)
+    # carries an old epoch; comparing it to real UTC yields an implausible
+    # offset of tens of hours.  Real broker offsets sit within ±14h, so anything
+    # beyond that means the tick is stale — fall back to the DST-aware
+    # whole-hour guess rather than trusting garbage.  See D047.
+    if abs(raw_offset_seconds) > 14 * 3600:
+        fallback = timedelta(hours=3 if _us_dst_active(real_utc) else 2)
+        logger.warning(
+            "get_server_utc_offset: implausible offset raw=%.1fs (stale tick, "
+            "market likely closed) — falling back to UTC%+d",
+            raw_offset_seconds,
+            int(fallback.total_seconds() // 3600),
+        )
+        return fallback
+
     # Round to nearest hour to eliminate sub-second jitter and clock skew.
     rounded_hours = round(raw_offset_seconds / 3600)
     offset = timedelta(hours=rounded_hours)
