@@ -152,4 +152,15 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - Tests: **127 pasan** (nuevo `test_balance_at_close_is_settled_balance`). Cambio solo afecta trades NUEVOS; el bot toma D048 en su próximo reinicio (no urgente).
 - **Siguiente:** backtest con modelo de spread realista (inflado en rollover) para revalidar el edge.
 
+### Análisis 2026-06-08 — backtest con spread realista (`analyze_spread_cost.py`)
+- **Motivación:** el backtest llena al Open (velas = bid) y solo cobra comisión plana — nunca paga el spread, y menos el **blowout del rollover** (donde está ~92% del profit idealizado, D045). Una compra viva paga el ASK = bid + spread completo.
+- **Modelo:** spreads ICMarkets raw (normal + inflado en ventana rollover 00:00-00:29), anclados a los gaps reales del 04-jun (EURJPY ~10, GBPJPY ~13, EURGBP ~5 pips). Se cobra solo el **exceso** sobre lo normal (la comisión baseline ~1.5 pips ya cubre condiciones normales).
+- **Resultado (5 pares, ~1.4-2 años):**
+  - Gross idealizado: **+8.75%**
+  - Modelo CENTRAL (exceso rollover): **+5.11%** (sobrevive 58%)
+  - Cota PESIMISTA (spread completo en todo): **+3.10%** (sobrevive 35%)
+  - **47% de los trades caen en la ventana rollover**; su exceso de spread se come ~$79 de $150 brutos.
+- **Conclusión:** el edge **es real pero ~la mitad** de lo anunciado: realista **+3% a +5%** sobre el período, no +8.75%. Caveat: depende de los supuestos de spread (3 observaciones vivas). **D046 no está en este modelo** — en vivo, su guardia rechaza las entradas rollover donde el spread se come >50% del TP (las peores), así que el realizado-con-D046 debería ubicarse en o por encima del central.
+- Ajustar expectativas para go-live: pensar en **low-single-digit anual**, no ~9%.
+
 - Next session starts at Step 22 (Phase 3: Go Live).
