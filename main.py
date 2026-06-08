@@ -293,7 +293,6 @@ def _validate_pairs(pairs: list[str]) -> None:
 def _close_session_trades(
     config: DriftConfig,
     session_states: dict[str, SessionState],
-    balance: float,
     bot_app,
 ) -> None:
     """Force-close all open positions for this bot and reset all session states.
@@ -325,6 +324,11 @@ def _close_session_trades(
                         exit_price = close_deal.price
                         pnl = close_deal.profit
 
+                    # Read the settled balance fresh from MT5 so it includes
+                    # this trade's own P&L and commission (a pre-close snapshot
+                    # would omit them). See D048.
+                    balance_settled = get_balance()
+
                     with get_connection() as db_conn:
                         trade = get_trade_by_ticket(db_conn, pos["ticket"])
                         if trade and trade.get("closed_at") is None:
@@ -333,7 +337,7 @@ def _close_session_trades(
                                 trade["id"],
                                 exit_price=exit_price,
                                 profit_loss=pnl,
-                                balance_at_close=balance,
+                                balance_at_close=balance_settled,
                                 close_reason="session_close",
                             )
                             updated = get_trade_by_ticket(db_conn, pos["ticket"])
@@ -621,13 +625,7 @@ def _run_m15_tick(
             "=== Session close (state D) at %s server time ===",
             bar_close_time.strftime("%H:%M"),
         )
-        try:
-            balance = get_balance()
-        except RuntimeError:
-            logger.exception("Cannot get balance for session close — using peak as fallback")
-            balance = peak_balance_ref[0]
-
-        _close_session_trades(config, session_states, balance, bot_app)
+        _close_session_trades(config, session_states, bot_app)
         _fire_and_forget(
             notify_bot_status(
                 bot_app.bot,
@@ -845,9 +843,7 @@ def _monitoring_tick(
         mt5_positions = get_open_positions(config.system.magic_number)
         mt5_tickets = {p["ticket"] for p in mt5_positions}
 
-        pending_tickets = _detect_closed_trades(
-            known_tickets, mt5_tickets, config, balance, bot_app
-        )
+        pending_tickets = _detect_closed_trades(known_tickets, mt5_tickets, config, bot_app)
 
         # Re-add tickets whose close deal was not yet available so they are
         # retried in the next monitoring cycle (~30s).
@@ -891,7 +887,6 @@ def _detect_closed_trades(
     known_tickets: set[int],
     mt5_tickets: set[int],
     config: DriftConfig,
-    balance: float,
     bot_app,
 ) -> set[int]:
     """Find tickets that were open last cycle but are gone now — MT5 closed them (SL/TP).
@@ -933,7 +928,8 @@ def _detect_closed_trades(
             else:
                 close_reason = "manual"
 
-            close_trade_record(db_conn, trade["id"], exit_price, pnl, balance, close_reason)
+            # Settled balance fresh from MT5, not the pre-close snapshot. D048.
+            close_trade_record(db_conn, trade["id"], exit_price, pnl, get_balance(), close_reason)
 
             updated_trade = get_trade_by_ticket(db_conn, ticket)
             duration = updated_trade["duration_minutes"] if updated_trade else 0

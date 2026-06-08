@@ -538,6 +538,7 @@ class TestCloseSessionTradesIsolation(unittest.TestCase):
         with (
             patch("main.get_open_positions", return_value=positions),
             patch("main.close_trade", side_effect=_fake_close_trade),
+            patch("main.get_balance", return_value=10000.0),
             patch("main.get_connection") as mock_get_conn,
         ):
             # Provide a real temp DB connection through the context manager mock.
@@ -554,7 +555,6 @@ class TestCloseSessionTradesIsolation(unittest.TestCase):
                 _close_session_trades(
                     config=self.config,
                     session_states=session_states,
-                    balance=10000.0,
                     bot_app=bot_app,
                 )
             finally:
@@ -584,9 +584,46 @@ class TestCloseSessionTradesIsolation(unittest.TestCase):
             _close_session_trades(
                 config=self.config,
                 session_states=session_states,
-                balance=10000.0,
                 bot_app=bot_app,
             )
+
+    def test_balance_at_close_is_settled_balance(self) -> None:
+        """D048: persists the fresh settled balance from get_balance(), not a snapshot."""
+        from drift.strategy import SessionState
+        from main import _close_session_trades
+
+        settled = 9876.54  # distinct from balance_at_open (10000.0)
+        positions = [self._make_position(self.ticket_b, "AUDNZD")]
+        bot_app = MagicMock()
+        bot_app.bot = MagicMock()
+        session_states = {"AUDNZD": SessionState()}
+
+        with (
+            patch("main.get_open_positions", return_value=positions),
+            patch("main.close_trade", return_value=True),
+            patch("main.get_balance", return_value=settled),
+            patch("main.get_connection") as mock_get_conn,
+        ):
+            real_conn = sqlite3.connect(self.db_path)
+            real_conn.row_factory = sqlite3.Row
+            ctx = MagicMock()
+            ctx.__enter__ = MagicMock(return_value=real_conn)
+            ctx.__exit__ = MagicMock(return_value=False)
+            mock_get_conn.return_value = ctx
+            try:
+                _close_session_trades(
+                    config=self.config,
+                    session_states=session_states,
+                    bot_app=bot_app,
+                )
+                row = real_conn.execute(
+                    "SELECT balance_at_close FROM trades WHERE mt5_ticket = ?",
+                    (self.ticket_b,),
+                ).fetchone()
+            finally:
+                real_conn.close()
+
+        self.assertAlmostEqual(row["balance_at_close"], settled)
 
 
 # ---------------------------------------------------------------------------
@@ -638,9 +675,10 @@ class TestDetectClosedTradesManualLabel(unittest.TestCase):
 
         with (
             patch("main.get_connection", return_value=ctx),
+            patch("main.get_balance", return_value=10000.0),
             patch.dict("sys.modules", {"MetaTrader5": fake_mt5}),
         ):
-            _detect_closed_trades({ticket}, set(), self.config, 10000.0, bot_app)
+            _detect_closed_trades({ticket}, set(), self.config, bot_app)
 
         row = real_conn.execute(
             "SELECT close_reason FROM trades WHERE mt5_ticket = ?", (ticket,)

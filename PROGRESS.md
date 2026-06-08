@@ -145,4 +145,11 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - Balance al reinicio: **1939.59** (bajó de 1958.25 — el bot operó con código viejo, sin D046, en las sesiones 5/6-jun). Las pérdidas de esas sesiones quedan por revisar.
 - Tests: **126 pasan** (nuevo `TestServerOffsetStaleTickGuard`). Bot reiniciado con D046+D047 activos.
 
+### Mantenimiento 2026-06-08 — fidelidad de balance_at_close (D048)
+- **Auditoría 5/6-jun:** NO hubo trades esos días (viernes/sábado se saltan por diseño; solo reconexiones de fin de semana). La caída 2000→1939.59 está 100% explicada por los 4 trades conocidos (−$55.35 P&L + ~$5 comisiones). No hay pérdidas fantasma.
+- **Bug destapado:** el campo `balance_at_close` de la DB era un **snapshot rezagado** (los 3 trades del 4-jun marcaron 1958.25 cuando el liquidado real era ~1939.59). Me llevó a un diagnóstico inicial equivocado.
+- **D048 — leer balance liquidado fresco.** `_close_session_trades` y `_detect_closed_trades` ahora persisten `get_balance()` al cierre en vez del snapshot previo; eliminado el parámetro `balance` muerto de ambas. `profit_loss` por trade siempre fue correcto.
+- Tests: **127 pasan** (nuevo `test_balance_at_close_is_settled_balance`). Cambio solo afecta trades NUEVOS; el bot toma D048 en su próximo reinicio (no urgente).
+- **Siguiente:** backtest con modelo de spread realista (inflado en rollover) para revalidar el edge.
+
 - Next session starts at Step 22 (Phase 3: Go Live).

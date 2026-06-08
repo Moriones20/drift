@@ -619,3 +619,13 @@ Relacionado: [[D045]], [[D044]], [[D040]], `drift/executor.py`, `tests/test_exec
 **Complementa:** [[D041]] (derivación DST-aware del offset; D047 endurece su fallback).
 
 Relacionado: [[D041]], [[D039]], `drift/mt5_client.py`, `tests/test_timezones.py` (TestServerOffsetStaleTickGuard).
+
+## D048 — `balance_at_close` debe leer el balance liquidado, no un snapshot previo
+
+**Decisión (2026-06-08):** Al cerrar un trade, `balance_at_close` se lee **fresco de MT5** (`get_balance()` → `account_info().balance`) en el momento del cierre, no de una variable `balance` capturada antes. Aplica a los dos sitios de cierre en `main.py`: cierre de sesión (`_close_session_trades`) y reconciliación SL/TP/manual (`_detect_closed_trades`). Se eliminó el parámetro `balance` de ambas funciones (quedó muerto).
+
+**Bug que corrige:** Las dos funciones recibían `balance` como un snapshot tomado al inicio del tick/sesión y lo persistían tal cual. Ese valor **no incluye el P&L ni la comisión del propio trade que se cierra**, y cuando varios trades cierran casi a la vez todos guardaban el mismo valor rezagado. Ejemplo real: tras la sesión del 4-jun los 3 trades guardaron `balance_at_close=1958.25`, pero el balance liquidado real era ~1939.59. Eso me llevó a un diagnóstico equivocado (atribuir −$18.66 a "sesiones del 5/6-jun" que en realidad nunca ocurrieron — viernes/sábado se saltan por diseño). El `profit_loss` por trade siempre fue correcto; solo `balance_at_close` mentía.
+
+**Efecto:** `balance_at_close` ahora refleja el balance real de la cuenta tras cada cierre, así los reportes y la reconstrucción de balance cuadran con MT5. Sin red de seguridad perdida: si `get_balance()` falla, en el cierre de sesión la excepción se aísla por posición (D031) y la reconciliación del hilo de monitoreo la recupera en el siguiente ciclo.
+
+Relacionado: [[D031]] (aislamiento por posición en el cierre), `drift/db.py` (`close_trade_record`), `main.py`, `tests/test_session_fixes.py` (test_balance_at_close_is_settled_balance).
