@@ -788,3 +788,23 @@ Relacionado: [[D050]], [[D053]], `drift/telegram_bot.py`, `docs/user/commands.md
 **Alternativas descartadas:** (a) meter el delay de broker dentro de `next_wake` — duplicaría la lógica de rollover en cada estrategia y acoplaría la estrategia al broker; (b) dejar el scheduling en el motor con "ventanas de sesión" de primera clase — es justo lo que D051 rechaza (no escala a una trend-following 24/5 sin ventana).
 
 Relacionado: [[D051]], [[D044]], `drift/strategies/base.py`, `drift/strategies/daily_lull.py`, `tests/test_daily_lull_next_wake.py`.
+
+## D059 — Motor de backtest propio sobre `on_bar`; warm-up profundo para equivalencia con `lull_engine`
+
+**Decisión (2026-06-08, Step 35):** Se construye `backtest/engine.py`, un motor de backtest propio (loop simple, **sin Backtesting.py**) que consume el **mismo `DailyLullStrategy.on_bar`** que el bot vivo (cumple [[D055]]). `backtest/run_lull.py` y `backtest/optimize_lull.py` se repuntan a este motor. `backtest/lull_engine.py` **no se elimina** (los scripts de research `analyze_*.py`/`validate_oos.py` lo siguen usando; su migración queda diferida).
+
+**Reparto decisión/fill.** El `on_bar` es la única fuente de la *lógica de señal* (cuándo entrar, SL, TP=midpoint del rango, time-stop a las 02:00). El *modelo de fills* (cómo una decisión se vuelve trade) es responsabilidad del **motor**, y replica EXACTAMENTE el de Backtesting.py tal como lo usa `lull_engine`:
+- Entrada a mercado y salidas (cruce de midpoint, time-stop) llenan al **open de la barra siguiente**.
+- El SL es un stop de broker intrabar (chequeado también en la barra de entrada, como hace Backtesting.py al reprocesar el SL recién adjuntado); un gap a través del stop llena al peor de open/stop.
+- Comisión relativa `abs(size)*price*commission` cobrada en entrada **y** salida; sizing all-in en unidades enteras.
+- La curva de equity se registra por barra (`cash + P&L flotante` al cierre), como `_Broker.next`. Las métricas (return, win rate, profit factor, max drawdown, Sharpe) se calculan en `backtest/_results.compute_metrics` replicando las fórmulas de `compute_stats` de Backtesting.py (incluido el `geometric_mean` que rellena NaN con 0).
+
+**OJO — el TP NO se modela como en el vivo.** El executor vivo manda un **TP de broker** (orden límite intrabar); `lull_engine` lo modela como `position.close()` cuando el cierre cruza el midpoint (fill al open siguiente). Para que la equivalencia con `lull_engine` se cumpla, el motor reproduce el **midpoint-close-al-open-siguiente**, NO un TP de broker intrabar. Es una decisión deliberada: el objetivo de Step 35 es equivalencia con el backtest existente, no con el fill vivo. (Que el backtest llene sin spread mientras el vivo paga spread/TP de broker es exactamente lo que [[D046]] mide y filtra; no es regresión.)
+
+**Divergencia encontrada y resuelta — warm-up de indicadores.** El `on_bar` vivo pide una ventana **acotada** (`_H4_COUNT=50` barras H4); el ADX (doblemente suavizado, DI→DX) **no converge** en 50 barras, mientras `lull_engine` lo computa sobre la **serie completa**. Con 50 barras el ADX salía inflado (ej. 39.1 vs 27.1 real) y rechazaba ~60 entradas en la hora de rollover → 82 trades vs 141. **Solución:** el motor sirve a `on_bar` una ventana **profunda pero acotada** (`DEFAULT_WARMUP_BARS = {H4: 320, M15: 250}`) vía el `MarketData` falso; a 320 barras H4 el ADX coincide con la serie completa a ~1e-6 (y las decisiones de entrada son bit-exactas, porque 1e-6 nunca cruza el umbral ADX<35). Ventanas acotadas mantienen el loop O(n). Con esto la equivalencia es **exacta a precisión de float**: trades, return, profit factor, win rate, max drawdown idénticos; Sharpe a ~1e-9. Guardado por `tests/test_backtest_engine.py` (dataset sintético determinista que ejerce buy/sell, SL, TP y time-stop; más un test de datos reales opt-in vía `DRIFT_RUN_SLOW_BACKTEST=1`).
+
+**Costo conocido — optimización lenta.** Como cada combo del grid de `optimize_lull.py` arranca el `on_bar` vivo sobre todo el histórico (~55 s/par con el atajo de saltar horas fuera de sesión), el grid-search es mucho más lento que el optimizador en C de Backtesting.py. Es la consecuencia directa de [[D055]] (una sola implementación de la señal). Aceptado: `optimize_lull` mantiene su interfaz/salida pero advierte del costo; el usuario puede reducir el grid o correrlo de noche.
+
+**Diferido (follow-up):** migrar `analyze_entry_hours.py`, `analyze_exclude_rollover.py`, `analyze_spread_cost.py` y `validate_oos.py` al motor nuevo y entonces eliminar `lull_engine.py`.
+
+Relacionado: [[D055]], [[D045]], [[D046]], [[D051]], `backtest/engine.py`, `backtest/_results.py`, `backtest/run_lull.py`, `backtest/optimize_lull.py`, `tests/test_backtest_engine.py`.
