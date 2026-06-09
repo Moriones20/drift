@@ -18,6 +18,7 @@ _DEFAULT_DB_PATH = _PROJECT_ROOT / "data" / "drift.db"
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy TEXT NOT NULL DEFAULT 'daily_lull',
     pair TEXT NOT NULL,
     direction TEXT NOT NULL CHECK(direction IN ('buy', 'sell')),
     entry_price REAL NOT NULL,
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS trades (
 
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    strategy TEXT NOT NULL DEFAULT 'daily_lull',
     pair TEXT NOT NULL,
     analyzed_at TEXT NOT NULL,
     m15_candle_time TEXT NOT NULL,
@@ -62,8 +64,16 @@ CREATE TABLE IF NOT EXISTS bot_events (
         'start', 'stop', 'pause', 'resume', 'error', 'reconnect', 'drawdown_alert',
         'peak_balance'
     )),
+    strategy TEXT,
     detail TEXT,
     balance REAL
+);
+
+CREATE TABLE IF NOT EXISTS strategy_state (
+    strategy    TEXT PRIMARY KEY,
+    peak_equity REAL NOT NULL,
+    paused      INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);
@@ -275,32 +285,109 @@ def _migrate_trades_table(conn: sqlite3.Connection) -> None:
     logger.info("Trades table migration complete")
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Return the set of column names for an existing table."""
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _object_exists(conn: sqlite3.Connection, kind: str, name: str) -> bool:
+    """Return True if a table or index with the given name exists in sqlite_master."""
+    return (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type=? AND name=?", (kind, name)).fetchone()
+        is not None
+    )
+
+
+def _migrate_strategy_columns(conn: sqlite3.Connection) -> None:
+    """Add per-strategy attribution columns to existing tables (D056).
+
+    Idempotent: checks PRAGMA table_info / sqlite_master before each ALTER so
+    running init_db multiple times over an existing DB is safe.
+
+    trades     → ADD COLUMN strategy TEXT NOT NULL DEFAULT 'daily_lull'
+    signals    → ADD COLUMN strategy TEXT NOT NULL DEFAULT 'daily_lull'
+    bot_events → ADD COLUMN strategy TEXT  (NULL allowed — NULL = global event)
+
+    Also creates strategy_state table and idx_trades_strategy if absent.
+    All DDL is committed in a single transaction at the end.
+    """
+    changed = False
+
+    # --- trades ---
+    if "strategy" not in _table_columns(conn, "trades"):
+        logger.info("Migration D056: adding strategy column to trades")
+        conn.execute("ALTER TABLE trades ADD COLUMN strategy TEXT NOT NULL DEFAULT 'daily_lull'")
+        changed = True
+
+    # --- signals ---
+    if "strategy" not in _table_columns(conn, "signals"):
+        logger.info("Migration D056: adding strategy column to signals")
+        conn.execute("ALTER TABLE signals ADD COLUMN strategy TEXT NOT NULL DEFAULT 'daily_lull'")
+        changed = True
+
+    # --- bot_events ---
+    if "strategy" not in _table_columns(conn, "bot_events"):
+        logger.info("Migration D056: adding strategy column to bot_events")
+        conn.execute("ALTER TABLE bot_events ADD COLUMN strategy TEXT")
+        changed = True
+
+    # --- strategy_state table ---
+    if not _object_exists(conn, "table", "strategy_state"):
+        logger.info("Migration D056: creating strategy_state table")
+        conn.execute(
+            """
+            CREATE TABLE strategy_state (
+                strategy    TEXT PRIMARY KEY,
+                peak_equity REAL NOT NULL,
+                paused      INTEGER NOT NULL DEFAULT 0,
+                updated_at  TEXT NOT NULL
+            )
+            """
+        )
+        changed = True
+
+    # --- idx_trades_strategy ---
+    if not _object_exists(conn, "index", "idx_trades_strategy"):
+        logger.info("Migration D056: creating idx_trades_strategy")
+        conn.execute("CREATE INDEX idx_trades_strategy ON trades(strategy)")
+        changed = True
+
+    if changed:
+        conn.commit()
+
+
 def init_db(db_path: str | Path | None = None) -> None:
     """Create tables and indexes if they don't exist.
 
     Creates the parent directory for the database file if needed.
     Migrates the trades table if the old friday_close CHECK is detected.
     Migrates the signals table through v1→v2→v3→v4 if an older schema is detected.
+    Adds per-strategy attribution columns and strategy_state table (D056).
     """
     path = _resolve_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     try:
+        conn.row_factory = sqlite3.Row
+
         # Migrate trades table before running schema (CHECK cannot be altered in place).
         # _migrate_trades_table is idempotent and handles the "table doesn't exist" case itself.
         _migrate_trades_table(conn)
 
         # Check for signals migration before running schema (table may already exist with old cols).
-        existing = conn.execute(
+        existing_signals = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='signals'"
         ).fetchone()
-        if existing:
-            conn.row_factory = sqlite3.Row
+        if existing_signals:
             _migrate_signals_table(conn)
-            conn.row_factory = None
 
         conn.executescript(_SCHEMA_SQL)
         conn.commit()
+
+        # Add strategy attribution columns to existing tables (D056).
+        # Run after _SCHEMA_SQL so the tables are guaranteed to exist.
+        _migrate_strategy_columns(conn)
+
         logger.info("Database initialized at %s", path)
     finally:
         conn.close()
@@ -334,17 +421,19 @@ def log_trade(
     position_size: float,
     balance_at_open: float,
     mt5_ticket: int | None = None,
+    strategy: str = "daily_lull",
 ) -> int:
     """Insert a new open trade and return its ID."""
     opened_at = _utc_now()
     cursor = conn.execute(
         """
         INSERT INTO trades (
-            pair, direction, entry_price, stop_loss, take_profit,
+            strategy, pair, direction, entry_price, stop_loss, take_profit,
             position_size, balance_at_open, opened_at, mt5_ticket
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            strategy,
             pair,
             direction,
             entry_price,
@@ -358,7 +447,13 @@ def log_trade(
     )
     conn.commit()
     trade_id = cursor.lastrowid
-    logger.debug("Logged new trade id=%s pair=%s direction=%s", trade_id, pair, direction)
+    logger.debug(
+        "Logged new trade id=%s pair=%s direction=%s strategy=%s",
+        trade_id,
+        pair,
+        direction,
+        strategy,
+    )
     return trade_id
 
 
@@ -447,6 +542,7 @@ def log_signal(
     trade_id: int | None = None,
     rejection_reason: str | None = None,
     server_offset: timedelta = timedelta(0),
+    strategy: str = "daily_lull",
 ) -> int:
     """Insert a signal record derived from a Signal dataclass. Returns signal ID.
 
@@ -459,6 +555,8 @@ def log_signal(
     to real UTC before persistence: subtracting the offset while keeping the +00:00 tag
     yields the correct UTC instant, matching trades.opened_at/closed_at which already use
     real UTC.  Defaults to zero offset (no conversion) for backward compatibility.
+
+    Pass strategy to attribute the signal to a named strategy (default 'daily_lull').
     """
     if rejection_reason is not None:
         decision = "rejected"
@@ -474,13 +572,14 @@ def log_signal(
     cursor = conn.execute(
         """
         INSERT INTO signals (
-            pair, analyzed_at, m15_candle_time, h4_candle_time,
+            strategy, pair, analyzed_at, m15_candle_time, h4_candle_time,
             range_high, range_low, range_atr_ratio,
             rsi, atr_value, h4_adx,
             decision, reason, trade_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            strategy,
             signal.pair,
             analyzed_at,
             m15_candle_time,
@@ -499,11 +598,12 @@ def log_signal(
     conn.commit()
     signal_id = cursor.lastrowid
     logger.debug(
-        "Logged signal id=%s pair=%s decision=%s action=%s",
+        "Logged signal id=%s pair=%s decision=%s action=%s strategy=%s",
         signal_id,
         signal.pair,
         decision,
         signal.action,
+        strategy,
     )
     return signal_id
 
@@ -518,16 +618,24 @@ def log_event(
     event_type: str,
     detail: str | None = None,
     balance: float | None = None,
+    strategy: str | None = None,
 ) -> int:
-    """Insert a bot event and return its ID."""
+    """Insert a bot event and return its ID.
+
+    Pass strategy to tag the event as belonging to a specific strategy.
+    strategy=None (default) means a global account-level event.
+    """
     event_at = _utc_now()
     cursor = conn.execute(
-        "INSERT INTO bot_events (event_at, event_type, detail, balance) VALUES (?, ?, ?, ?)",
-        (event_at, event_type, detail, balance),
+        """
+        INSERT INTO bot_events (event_at, event_type, strategy, detail, balance)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (event_at, event_type, strategy, detail, balance),
     )
     conn.commit()
     event_id = cursor.lastrowid
-    logger.debug("Logged event id=%s type=%s", event_id, event_type)
+    logger.debug("Logged event id=%s type=%s strategy=%s", event_id, event_type, strategy)
     return event_id
 
 
@@ -536,19 +644,34 @@ def log_event(
 # ---------------------------------------------------------------------------
 
 
-def log_peak_balance(conn: sqlite3.Connection, balance: float) -> None:
-    """Record a new peak balance in bot_events."""
+def log_peak_balance(
+    conn: sqlite3.Connection,
+    balance: float,
+    strategy: str | None = None,
+) -> None:
+    """Record a new peak balance in bot_events.
+
+    Pass strategy to tag it as a per-strategy peak; omit (default None) for the
+    global account peak.
+    """
     event_at = _utc_now()
     conn.execute(
-        "INSERT INTO bot_events (event_at, event_type, balance) VALUES (?, 'peak_balance', ?)",
-        (event_at, balance),
+        """
+        INSERT INTO bot_events (event_at, event_type, strategy, balance)
+        VALUES (?, 'peak_balance', ?, ?)
+        """,
+        (event_at, strategy, balance),
     )
     conn.commit()
-    logger.debug("Logged peak_balance=%.2f", balance)
+    logger.debug("Logged peak_balance=%.2f strategy=%s", balance, strategy)
 
 
-def get_stats(conn: sqlite3.Connection) -> dict:
-    """Return aggregate statistics for all recorded trades."""
+def get_stats(conn: sqlite3.Connection, strategy: str | None = None) -> dict:
+    """Return aggregate statistics for recorded trades.
+
+    If strategy is given, filters to only that strategy's trades.
+    If strategy is None (default), aggregates across all strategies.
+    """
     row = conn.execute(
         """
         SELECT
@@ -559,8 +682,9 @@ def get_stats(conn: sqlite3.Connection) -> dict:
             MAX(balance_at_open) AS peak_balance_trades,
             AVG(duration_minutes) AS avg_trade_duration_minutes
         FROM trades
-        WHERE closed_at IS NOT NULL
-        """
+        WHERE closed_at IS NOT NULL AND (? IS NULL OR strategy = ?)
+        """,
+        (strategy, strategy),
     ).fetchone()
 
     # Also consider recorded peak_balance events (captures peaks between trades).
@@ -587,3 +711,63 @@ def get_stats(conn: sqlite3.Connection) -> dict:
         "peak_balance": peak_balance,
         "avg_trade_duration_minutes": row["avg_trade_duration_minutes"] or 0.0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Strategy state CRUD (D056 / D053)
+# ---------------------------------------------------------------------------
+
+
+def get_strategy_state(conn: sqlite3.Connection, strategy: str) -> dict | None:
+    """Return the strategy_state row for the given strategy, or None if absent."""
+    row = conn.execute("SELECT * FROM strategy_state WHERE strategy = ?", (strategy,)).fetchone()
+    return _row_to_dict(row) if row is not None else None
+
+
+def upsert_strategy_peak(conn: sqlite3.Connection, strategy: str, peak_equity: float) -> None:
+    """Insert or update the peak equity for a strategy.
+
+    On conflict (strategy already exists), updates peak_equity and updated_at only
+    if the new value is higher than the stored one.  The paused flag is never
+    touched here — use set_strategy_paused for that.
+    """
+    updated_at = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO strategy_state (strategy, peak_equity, paused, updated_at)
+        VALUES (?, ?, 0, ?)
+        ON CONFLICT(strategy) DO UPDATE SET
+            peak_equity = MAX(peak_equity, excluded.peak_equity),
+            updated_at  = excluded.updated_at
+        """,
+        (strategy, peak_equity, updated_at),
+    )
+    conn.commit()
+    logger.debug("Upserted peak_equity=%.2f for strategy=%s", peak_equity, strategy)
+
+
+def set_strategy_paused(conn: sqlite3.Connection, strategy: str, paused: bool) -> None:
+    """Set the paused flag for a strategy.
+
+    If no row exists yet, creates one with peak_equity=0.0 and the requested
+    paused state.
+    """
+    updated_at = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO strategy_state (strategy, peak_equity, paused, updated_at)
+        VALUES (?, 0.0, ?, ?)
+        ON CONFLICT(strategy) DO UPDATE SET
+            paused     = excluded.paused,
+            updated_at = excluded.updated_at
+        """,
+        (strategy, int(paused), updated_at),
+    )
+    conn.commit()
+    logger.debug("Set paused=%s for strategy=%s", paused, strategy)
+
+
+def get_all_strategy_states(conn: sqlite3.Connection) -> list[dict]:
+    """Return all rows from strategy_state ordered by strategy name."""
+    rows = conn.execute("SELECT * FROM strategy_state ORDER BY strategy ASC").fetchall()
+    return [_row_to_dict(r) for r in rows]
