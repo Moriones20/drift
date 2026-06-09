@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 import pandas as pd
@@ -191,6 +191,65 @@ def _update_session_state(
                     params.range_atr_min,
                     params.range_atr_max,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Scheduling helpers (ported from main.py for Step 32a; equivalence guarded by
+# tests/test_daily_lull_next_wake.py)
+# ---------------------------------------------------------------------------
+
+
+def _next_m15_close(now: datetime) -> datetime:
+    """Return the next M15 boundary strictly after *now* (HH:00, HH:15, HH:30, HH:45).
+
+    *now* must be in MT5 server time so the result aligns with candle close
+    timestamps.  Ported verbatim from ``main._next_m15_close``.
+    """
+    minute = now.minute
+    next_slot = ((minute // 15) + 1) * 15
+    if next_slot < 60:
+        return now.replace(minute=next_slot, second=0, microsecond=0)
+    next_hour = now + timedelta(hours=1)
+    return next_hour.replace(minute=0, second=0, microsecond=0)
+
+
+def _in_session_window(now: datetime, start_hour: int, end_hour: int) -> bool:
+    """Return True iff *now* (MT5 server time) is inside an active Daily Lull session.
+
+    A session spans ``start_hour`` (21) on day N to ``end_hour`` (2) on day N+1,
+    identified by its start day: sessions starting Mon-Thu and Sun are valid;
+    sessions starting Fri (Sydney close leaves less than the 2-hour range window)
+    and Sat (market closed) are skipped.  So Friday 00:00-01:59 server time is
+    allowed because it is the tail of Thursday's session.
+
+    Ported verbatim from ``main._in_session_window`` but parameterized on the
+    strategy's own ``start_hour``/``end_hour`` instead of reading global config.
+    """
+    h = now.hour
+    if h >= start_hour:
+        # Tonight is the start of "today's" session — valid unless Fri or Sat.
+        return now.weekday() not in (4, 5)
+    if h < end_hour:
+        # Tail of "yesterday's" session — valid unless yesterday was Fri or Sat.
+        yesterday_weekday = (now - timedelta(days=1)).weekday()
+        return yesterday_weekday not in (4, 5)
+    return False
+
+
+def _next_session_start(now: datetime, start_hour: int) -> datetime:
+    """Return the next ``start_hour``:00 server time strictly after *now*.
+
+    Skips Friday and Saturday session starts (no market / not enough window);
+    Sunday 21:00 server time IS a valid session start (Sydney open of the new
+    week).  Ported verbatim from ``main._next_session_start`` but parameterized
+    on the strategy's own ``start_hour``.
+    """
+    candidate = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    while candidate.weekday() in (4, 5):
+        candidate += timedelta(days=1)
+    return candidate
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +535,26 @@ class DailyLullStrategy:
         like the legacy ``session_states[pair].traded = False`` path.  This is a
         deliberate no-op (nothing to undo).
         """
+
+    # -- scheduling hint (contract extension, D058 / Step 32a) -------------
+
+    def next_wake(self, now: datetime) -> datetime | None:
+        """Return the next M15-close boundary the Lull needs to evaluate.
+
+        Ports the main-loop scheduling (D058): inside an active session window
+        the next wake is the next M15 close; outside it, the next session start.
+        Both boundaries are in MT5 server time and carry no broker delay — the
+        engine adds the post-close / rollover-settle delay on top (D044).
+
+        The window and the skip-Friday/Saturday rule are strategy-specific (D051)
+        and use only this instance's ``session_start_hour`` / ``session_end_hour``
+        params, never global config.
+        """
+        start_hour = self.params.session_start_hour
+        end_hour = self.params.session_end_hour
+        if _in_session_window(now, start_hour, end_hour):
+            return _next_m15_close(now)
+        return _next_session_start(now, start_hour)
 
 
 register(DailyLullStrategy)

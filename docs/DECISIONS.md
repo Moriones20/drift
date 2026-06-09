@@ -772,3 +772,19 @@ Relacionado: [[D050]], [[D052]], [[D053]], `drift/db.py`, `docs/ARCHITECTURE.md`
 **Por qué:** con presupuesto y drawdown por estrategia (D053), el usuario necesita ver y controlar cada una por separado, no solo el agregado.
 
 Relacionado: [[D050]], [[D053]], `drift/telegram_bot.py`, `docs/user/commands.md`.
+
+## D058 — Scheduling del motor por `next_wake` + extensiones del contrato
+
+**Decisión (2026-06-08, Step 32a):** El motor (Step 32b) no programa el sleep a partir de ventanas de sesión; le **pregunta a cada estrategia su próximo despertar** vía un nuevo método del contrato `next_wake(now) -> datetime | None`. El motor duerme hasta el **mínimo** de los `next_wake` de las estrategias activas y luego aplica el delay de broker. Refina [[D051]].
+
+**(a) `next_wake` devuelve un boundary limpio; el delay de broker vive en el motor.** `next_wake` devuelve el **próximo instante de cierre de vela** (en hora servidor MT5) que la estrategia necesita evaluar, o `None` si está dormida indefinidamente. **No** incluye ningún retraso. El motor, tras despertar al boundary mínimo, le suma el delay post-cierre de broker: el `CANDLE_CLOSE_DELAY` normal (5s) y el **rollover-settle de [[D044]]** para el boundary 00:00. El delay es comportamiento del broker (rollover diario de ICMarkets, aplica a cualquier estrategia que despierte a las 00:00), no de una estrategia concreta, así que pertenece al motor. Mantenerlo fuera de `next_wake` evita que cada estrategia futura tenga que re-implementar la lógica de rollover.
+
+**(b) La ventana de sesión y el skip-Friday/Saturday van DENTRO de la estrategia.** La elección entre "próximo cierre M15" (dentro de la ventana) y "próximo inicio de sesión" (fuera), el cálculo del inicio de sesión saltando viernes/sábado, y el tail 00:00-01:59 son **lógica específica del Lull** (D051: motor tonto, estrategia lista). `DailyLullStrategy.next_wake` porta 1:1 las funciones que hoy viven en `main.py` (`_in_session_window`, `_next_m15_close`, `_next_session_start`) usando **solo sus propios params** (`session_start_hour`/`session_end_hour`), nunca config global. La equivalencia con la lógica actual del loop está blindada por `tests/test_daily_lull_next_wake.py` (batería amplia de timestamps: dentro/fuera de ventana, viernes, sábado, domingo 20:00/21:00, tail 00:30/01:45, borde 02:00, jueves 23:50).
+
+**(c) Extensiones del contrato `Strategy`.** El port a la plataforma añadió al Protocol, todas refinando [[D051]]:
+- `on_fill(pair, signal, ticket)` y `on_order_rejected(pair, signal, reason)` (Step 29) — hooks de ciclo de vida tras la decisión de abrir: la estrategia confirma o revierte estado (el Lull marca `traded` solo en `on_fill`) sin que el motor toque su estado privado.
+- `next_wake(now)` (Step 32a, esta decisión) — la pista de scheduling descrita arriba.
+
+**Alternativas descartadas:** (a) meter el delay de broker dentro de `next_wake` — duplicaría la lógica de rollover en cada estrategia y acoplaría la estrategia al broker; (b) dejar el scheduling en el motor con "ventanas de sesión" de primera clase — es justo lo que D051 rechaza (no escala a una trend-following 24/5 sin ventana).
+
+Relacionado: [[D051]], [[D044]], `drift/strategies/base.py`, `drift/strategies/daily_lull.py`, `tests/test_daily_lull_next_wake.py`.

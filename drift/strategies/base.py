@@ -284,6 +284,28 @@ class Strategy(Protocol):
         """
         ...
 
+    def next_wake(self, now: datetime) -> datetime | None:
+        """Return the next candle-close boundary this strategy needs to evaluate.
+
+        This is the strategy's scheduling hint to the engine (D058).  *now* is in
+        MT5 server time; the return value is the next instant — a candle-close
+        boundary, also in server time — at which the strategy needs ``on_bar`` to
+        run, or ``None`` if it has no scheduled wake (it is sleeping indefinitely
+        and only a later ``next_wake`` call will reschedule it).
+
+        The engine sleeps until the minimum ``next_wake`` across all active
+        strategies, then applies the broker-level post-close delay (the normal
+        ``CANDLE_CLOSE_DELAY`` and the D044 rollover-settle for the 00:00
+        boundary) on top of the returned boundary.  ``next_wake`` therefore
+        returns the CLEAN boundary and must NOT bake in any broker delay (D058).
+
+        Strategy-specific scheduling — the Daily Lull's session window, its
+        skip-Friday/Saturday rule, and the choice between "next M15 close" inside
+        the window and "next session start" outside it — lives here, not in the
+        engine (D051).
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Registry

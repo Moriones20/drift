@@ -179,6 +179,9 @@ def test_strategy_protocol_isinstance() -> None:
         def on_order_rejected(self, pair, signal, reason) -> None:
             pass
 
+        def next_wake(self, now):
+            return None
+
     assert isinstance(ConformingStrategy(), Strategy)
 
 
