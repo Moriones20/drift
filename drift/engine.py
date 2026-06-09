@@ -249,6 +249,22 @@ class Engine:
 
     # -- scheduling (D058) -------------------------------------------------
 
+    def _refresh_pause_flags(self) -> None:
+        """Sync each hosted strategy's ``paused`` flag from ``strategy_state``.
+
+        The DB is the source of truth for per-strategy pause (D053/D056): the
+        monitoring thread sets it on a per-strategy drawdown brake, and Telegram
+        /pause /resume will set it (Step 34).  Reading it once per cycle (before
+        scheduling) lets a pause set in another context exclude the strategy from
+        wakes, and a resume re-include it.  A missing row means "never paused".
+        The read is taken under ``_trade_lock`` to avoid racing the monitoring
+        thread's write of the same table.
+        """
+        with self._trade_lock, get_connection() as db_conn:
+            for hosted in self.strategies:
+                row = get_strategy_state(db_conn, hosted.name)
+                hosted.paused = bool(row["paused"]) if row else False
+
     def _active_strategies(self) -> list[_HostedStrategy]:
         """Strategies that are not engine-paused (still scheduled for wakes)."""
         return [h for h in self.strategies if not h.paused]
@@ -344,6 +360,16 @@ class Engine:
 
         while not self._stop_requested():
             try:
+                # The source of truth for per-strategy pause is strategy_state in
+                # the DB (persistent, survives restart).  The monitoring thread
+                # and Telegram (/pause, /resume — Step 34) write it from other
+                # process contexts; refresh the in-memory flag here, BEFORE
+                # scheduling, so a pause/resume set elsewhere takes effect on the
+                # next cycle (a paused strategy is excluded from scheduling; a
+                # resumed one re-enters it).  _pause_strategy still sets both the
+                # flag and the DB for immediate, same-context consistency.
+                self._refresh_pause_flags()
+
                 now = server_now(self.server_offset)
                 boundary, due = self._due_strategies(now)
 

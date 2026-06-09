@@ -17,18 +17,21 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from drift.config import DriftConfig, load_config
+from drift.config import DriftConfig, RiskConfig, load_config
 from drift.db import (
     close_trade_record,
     get_connection,
     get_open_trades,
     get_stats,
+    get_strategy_state,
     get_trade_by_ticket,
     init_db,
     log_event,
     log_peak_balance,
     log_signal,
     log_trade,
+    set_strategy_paused,
+    upsert_strategy_peak,
 )
 from drift.engine import Engine
 from drift.executor import close_trade, get_open_positions, open_trade
@@ -45,7 +48,13 @@ from drift.mt5_client import (
     server_now,
 )
 from drift.report import generate_weekly_report
-from drift.risk import calculate_position_size, check_all_risk
+from drift.risk import (
+    calculate_position_size,
+    check_all_risk,
+    check_drawdown,
+    check_strategy_drawdown,
+    strategy_equity,
+)
 from drift.strategy import SessionState, Signal, closed_bars, evaluate_pair, should_close_on_time
 from drift.telegram_bot import (
     BotState,
@@ -79,6 +88,13 @@ _last_report_date: date | None = None
 
 # Prevents race conditions between the main analysis cycle and the monitoring thread.
 _trade_lock = threading.Lock()
+
+# The monitoring thread's trailing-stop pass is broker housekeeping that only ever
+# reads use_trailing_stop (False for every current strategy — Daily Lull does not
+# trail, D029).  A bare RiskConfig() carries that default, so the monitoring thread
+# no longer depends on the transitional config.risk shim (C10) for trailing.  When
+# a trailing strategy is added, trailing moves into that strategy via the engine.
+_MONITOR_TRAILING_CONFIG = RiskConfig()
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -270,6 +286,22 @@ def _enabled_pairs(config: DriftConfig) -> list[str]:
         for pair in instance.pairs:
             seen.setdefault(pair, None)
     return list(seen)
+
+
+def _enabled_strategy_magics(config: DriftConfig) -> dict[str, int]:
+    """Return ``{strategy_name: effective_magic}`` for every enabled strategy.
+
+    The effective magic is ``system.magic_number + magic_offset`` — the same
+    attribution the engine uses (D052).  The monitoring thread iterates this map
+    to compute per-strategy drawdown and to build the union of magics for
+    attributed close detection.
+    """
+    base_magic = config.system.magic_number
+    return {
+        name: base_magic + instance.magic_offset
+        for name, instance in config.strategies.items()
+        if instance.enabled
+    }
 
 
 def _validate_pairs(pairs: list[str]) -> None:
@@ -853,14 +885,30 @@ def _monitoring_tick(
             with get_connection() as db_conn:
                 log_peak_balance(db_conn, peak_balance_ref[0])
 
-        drawdown_ok, dd_reason = _check_drawdown_pause(
-            equity, peak_balance_ref[0], config, state, bot_app
-        )
+        # Global brake (kill switch) — pauses EVERYTHING (state.paused).  Measured
+        # on account equity vs the global equity peak using risk_global (D053);
+        # this no longer reads the config.risk compat shim (C10).
+        drawdown_ok, _ = _check_drawdown_pause(equity, peak_balance_ref[0], config, state, bot_app)
         if not drawdown_ok:
             return
 
-        mt5_positions = get_open_positions(config.system.magic_number)
-        mt5_tickets = {p["ticket"] for p in mt5_positions}
+        # Per-strategy positions (by effective magic) drive both the per-strategy
+        # drawdown brake and the union of tickets used for attributed close
+        # detection (D052/D053).
+        strategy_magics = _enabled_strategy_magics(config)
+        positions_by_strategy: dict[str, list[dict]] = {
+            name: get_open_positions(magic) for name, magic in strategy_magics.items()
+        }
+
+        # Per-strategy drawdown brake — pauses ONLY the breaching strategy
+        # (strategy_state.paused), distinct from the global kill switch above.
+        for name, positions in positions_by_strategy.items():
+            _check_strategy_drawdown_pause(name, positions, balance, config, bot_app)
+
+        # Union of all enabled strategies' open positions for close detection.
+        # A ticket disappearing from any strategy's magic is a real close (D031).
+        all_positions = [p for positions in positions_by_strategy.values() for p in positions]
+        mt5_tickets = {p["ticket"] for p in all_positions}
 
         pending_tickets = _detect_closed_trades(known_tickets, mt5_tickets, config, bot_app)
 
@@ -869,8 +917,8 @@ def _monitoring_tick(
         known_tickets.clear()
         known_tickets |= mt5_tickets | pending_tickets
 
-        if mt5_positions:
-            process_open_trades(mt5_positions, config.risk)
+        if all_positions:
+            process_open_trades(all_positions, _MONITOR_TRAILING_CONFIG)
 
     _check_weekly_report(config, balance, peak_balance_ref[0], bot_app)
 
@@ -882,9 +930,13 @@ def _check_drawdown_pause(
     state: BotState,
     bot_app,
 ) -> tuple[bool, str]:
-    from drift.risk import check_drawdown
+    """Global drawdown kill switch — pauses the whole account (state.paused).
 
-    ok, reason = check_drawdown(equity, peak_equity, config.risk.max_drawdown_percent)
+    Measured on account equity vs the global equity peak using
+    ``risk_global.max_drawdown_percent`` (D053).  Mirrors the engine's
+    ``_trip_global_brake`` so a brake tripped by either context pauses everything.
+    """
+    ok, reason = check_drawdown(equity, peak_equity, config.risk_global.max_drawdown_percent)
     if not ok and not state.paused:
         state.paused = True
         logger.warning("Drawdown limit reached: %s — bot paused", reason)
@@ -900,6 +952,69 @@ def _check_drawdown_pause(
         )
         return False, reason
     return True, ""
+
+
+def _check_strategy_drawdown_pause(
+    strategy_name: str,
+    positions: list[dict],
+    balance: float,
+    config: DriftConfig,
+    bot_app,
+) -> None:
+    """Per-strategy drawdown brake — pauses only this strategy (D053, D056).
+
+    Computes the strategy's individual equity curve
+    (``allocated_baseline + realized_pnl + floating_pnl``), keeps its peak in
+    ``strategy_state``, and when drawdown breaches the strategy's own limit sets
+    ``strategy_state.paused`` so the engine stops opening new entries for it on
+    its next dispatch.  Open positions are kept (pause = hold, D053) — they stay
+    protected by their server-side SL/TP.
+
+    allocated_baseline is computed from the CURRENT account balance
+    (``balance * allocation_pct/100``).  A baseline anchored to the balance at
+    the moment the strategy was enabled would be a more stable denominator, but
+    it is not persisted yet; the current-balance approximation tracks the
+    notional allocation the strategy actually sizes against (D053) and is
+    consistent with the engine's own per-strategy brake in
+    ``Engine._check_strategy_drawdown`` (same formula), so both contexts agree.
+
+    Must be called while holding ``_trade_lock`` (the caller does).
+    """
+    instance = config.strategies.get(strategy_name)
+    if instance is None:  # pragma: no cover - defensive
+        return
+
+    allocated_baseline = balance * instance.allocation_pct / 100.0
+    floating = sum(p.get("profit", 0.0) for p in positions)
+
+    with get_connection() as db_conn:
+        realized = get_stats(db_conn, strategy=strategy_name).get("total_pnl", 0.0) or 0.0
+        equity = strategy_equity(allocated_baseline, realized, floating)
+
+        row = get_strategy_state(db_conn, strategy_name)
+        stored_peak = (row["peak_equity"] if row else 0.0) or 0.0
+        already_paused = bool(row["paused"]) if row else False
+        peak = max(stored_peak, equity)
+        upsert_strategy_peak(db_conn, strategy_name, equity)
+
+        ok, reason = check_strategy_drawdown(equity, peak, instance.risk.max_drawdown_percent)
+        if ok or already_paused:
+            return
+
+        set_strategy_paused(db_conn, strategy_name, True)
+        logger.warning(
+            "%s | per-strategy drawdown reached: %s — strategy paused", strategy_name, reason
+        )
+        log_event(db_conn, "drawdown_alert", detail=reason, balance=equity, strategy=strategy_name)
+
+    _fire_and_forget(
+        notify_bot_status(
+            bot_app.bot,
+            config.telegram.chat_id,
+            "paused",
+            f"Strategy {strategy_name} paused — {reason}",
+        )
+    )
 
 
 def _detect_closed_trades(
@@ -961,12 +1076,16 @@ def _detect_closed_trades(
                 "profit_loss": pnl,
                 "close_reason": close_reason,
                 "duration_minutes": duration or 0,
+                # The strategy was attributed at open time by the engine (D056);
+                # surface it so multi-strategy close notifications are unambiguous.
+                "strategy": trade.get("strategy"),
             }
             _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
             logger.info(
-                "Detected closed trade ticket=%d pair=%s pnl=%.2f reason=%s",
+                "Detected closed trade ticket=%d pair=%s strategy=%s pnl=%.2f reason=%s",
                 ticket,
                 trade["pair"],
+                trade.get("strategy"),
                 pnl,
                 close_reason,
             )
