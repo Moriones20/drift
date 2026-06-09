@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from drift.strategy import Signal
+    from drift.strategies.base import Signal
 
 logger = logging.getLogger(__name__)
 

@@ -107,6 +107,7 @@ from drift.config import (  # noqa: E402
     BrokerConfig,
     DriftConfig,
     ReportsConfig,
+    RiskConfig,
     RiskGlobalConfig,
     StrategyConfig,
     StrategyInstanceConfig,
@@ -184,7 +185,7 @@ def _make_signal(
     reason: str = "lull_scalper_buy range_low=0.8950 rsi=28.0 adx=15.0",
 ) -> "Signal":  # noqa: F821
     """Build a minimal Signal for the Daily Lull Scalper schema."""
-    from drift.strategy import Signal
+    from drift.strategies.base import Signal
 
     now = datetime.now(timezone.utc)
     return Signal(
@@ -227,7 +228,7 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
             open_trades=[],
             new_pair="EURUSD",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "")
@@ -306,7 +307,7 @@ class TestRiskRejectionMaxTrades(unittest.TestCase):
             open_trades=open_trades,
             new_pair="EURGBP",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertFalse(ok)
         self.assertIn("max trades reached", reason)
@@ -319,7 +320,7 @@ class TestRiskRejectionMaxTrades(unittest.TestCase):
             open_trades=open_trades,
             new_pair="EURGBP",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertFalse(ok)
 
@@ -396,7 +397,7 @@ class TestCorrelationRejection(unittest.TestCase):
             open_trades=open_trades,
             new_pair="EURCAD",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertFalse(ok)
         self.assertIn("EUR", reason)

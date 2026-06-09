@@ -1,15 +1,14 @@
-"""Equivalence tests for ``DailyLullStrategy.next_wake`` (Step 32a / D058).
+"""Tests for ``DailyLullStrategy.next_wake`` (Step 32a / D058, C10 cleanup).
 
-These are the guard that porting the session scheduling from ``main.py`` into
-the strategy did NOT change the timing.  For a broad battery of ``now``
-timestamps in MT5 server time, ``DailyLullStrategy.next_wake(now)`` must return
-EXACTLY the boundary the current main-loop logic would produce:
+For a broad battery of ``now`` timestamps in MT5 server time,
+``DailyLullStrategy.next_wake(now)`` must return EXACTLY the boundary produced
+by the scheduling helpers in ``drift.strategies.daily_lull``:
 
-    inside the session window  -> ``main._next_m15_close(now)``
-    outside the session window -> ``main._next_session_start(now, config)``
+    inside the session window  -> ``_next_m15_close(now)``
+    outside the session window -> ``_next_session_start(now, start_hour)``
 
-The decision of which branch applies is itself driven by
-``main._in_session_window(now, config)`` — the same predicate the live loop uses.
+The decision of which branch applies is driven by
+``_in_session_window(now, start_hour, end_hour)``.
 
 No MT5 calls are made here; only pure datetime arithmetic.
 """
@@ -19,7 +18,6 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -29,8 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from drift.strategies.daily_lull import (  # noqa: E402
     DailyLullParams,
     DailyLullStrategy,
-)
-from main import (  # noqa: E402
     _in_session_window,
     _next_m15_close,
     _next_session_start,
@@ -44,16 +40,6 @@ _END_HOUR = 2
 _SERVER_TZ = timezone.utc
 
 
-def _config() -> SimpleNamespace:
-    """Minimal stand-in exposing only what the main.py helpers read."""
-    return SimpleNamespace(
-        strategy=SimpleNamespace(
-            session_start_hour=_START_HOUR,
-            session_end_hour=_END_HOUR,
-        )
-    )
-
-
 def _strategy() -> DailyLullStrategy:
     params = DailyLullParams(
         session_start_hour=_START_HOUR,
@@ -63,11 +49,14 @@ def _strategy() -> DailyLullStrategy:
 
 
 def _legacy_wake(now: datetime) -> datetime:
-    """Reproduce what the main loop would wake on next, for *now*."""
-    config = _config()
-    if _in_session_window(now, config):
+    """Reproduce what the main loop would wake on next, for *now*.
+
+    Uses the helpers from drift.strategies.daily_lull (ported verbatim from
+    the old main.py helpers — same logic, just parameterised differently).
+    """
+    if _in_session_window(now, _START_HOUR, _END_HOUR):
         return _next_m15_close(now)
-    return _next_session_start(now, config)
+    return _next_session_start(now, _START_HOUR)
 
 
 # A 2026 calendar anchor whose weekdays are known:

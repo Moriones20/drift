@@ -71,6 +71,19 @@ logger = logging.getLogger(__name__)
 # Normal post-close delay before evaluating/executing a candle (D044/D045).
 CANDLE_CLOSE_DELAY_SECONDS = 5
 
+
+def closed_bars(df: pd.DataFrame, before: datetime) -> pd.DataFrame:
+    """Return only the bars that have already closed before *before* (D045).
+
+    MT5 returns the still-forming bar as the last row.  Acting on it makes the
+    live bot fire intra-bar on incomplete (and, at the 00:00 server rollover,
+    contaminated) prices, diverging from the backtest which acts on completed-bar
+    closes.  Keeping bars strictly before the current M15 boundary makes iloc[-1]
+    the bar that just closed at *before*.
+    """
+    return df[df.index < before]
+
+
 # Stop-aware sleep slice: the engine never blocks longer than this between
 # checks of state.stop_requested / the shutdown event.
 _SLEEP_SLICE_SECONDS = 10.0
@@ -104,7 +117,7 @@ class EngineMarketData:
         """Return the last *count* CLOSED candles for ``(pair, timeframe)``.
 
         The closed-bar filter (``index < bar_close_time``) mirrors
-        ``drift.strategy.closed_bars`` (D045).  Results are cached by
+        :func:`closed_bars` (D045).  Results are cached by
         ``(pair, timeframe)`` for this tick; the cached frame is the raw fetch,
         so the filter is applied on every call cheaply.
         """

@@ -135,50 +135,6 @@ class DriftConfig:
     strategies: dict[str, StrategyInstanceConfig]
     risk_global: RiskGlobalConfig = field(default_factory=RiskGlobalConfig)
 
-    # TRANSITIONAL compat shim — removed in Step 32 (engine switch); see D054/PROGRESS Phase 2.6.
-    # ``main.py`` and several tests reference config.strategy, config.risk, and
-    # config.pairs directly.  Until the engine switch in Step 32 replaces those
-    # accesses, these three properties derive the old-schema values from the
-    # ``daily_lull`` strategy entry so the full test suite stays green.
-    @property
-    def strategy(self) -> StrategyConfig:
-        """Compat shim: derive StrategyConfig from daily_lull params (Step 32 removes this)."""
-        lull = self.strategies.get("daily_lull")
-        if lull is None:
-            return StrategyConfig()
-        return _parse_strategy(lull.params)
-
-    @property
-    def risk(self) -> RiskConfig:
-        """Compat shim: derive RiskConfig from daily_lull risk + risk_global.
-
-        Step 32 removes this.
-        """
-        lull = self.strategies.get("daily_lull")
-        rg = self.risk_global
-        if lull is None:
-            return RiskConfig(
-                max_same_currency_direction=rg.max_same_currency_direction,
-                max_open_trades=rg.max_open_trades,
-                max_drawdown_percent=rg.max_drawdown_percent,
-            )
-        sr = lull.risk
-        return RiskConfig(
-            percent_per_trade=sr.percent_per_trade,
-            max_open_trades=sr.max_open_trades,
-            max_same_currency_direction=rg.max_same_currency_direction,
-            max_drawdown_percent=sr.max_drawdown_percent,
-            # trailing fields keep their defaults (use_trailing_stop: false for Daily Lull)
-        )
-
-    @property
-    def pairs(self) -> list[str]:
-        """Compat shim: derive pairs from daily_lull strategy entry (Step 32 removes this)."""
-        lull = self.strategies.get("daily_lull")
-        if lull is None:
-            return list(DEFAULT_PAIRS)
-        return lull.pairs
-
 
 # ---------------------------------------------------------------------------
 # Path resolution
@@ -204,26 +160,6 @@ def _parse_broker(raw: dict) -> BrokerConfig:
         server=str(raw["server"]),
         login=int(raw["login"]),
         password=str(raw["password"]),
-    )
-
-
-def _parse_strategy(raw: dict) -> StrategyConfig:
-    defaults = StrategyConfig()
-    return StrategyConfig(
-        rsi_oversold=float(raw.get("rsi_oversold", defaults.rsi_oversold)),
-        rsi_overbought=float(raw.get("rsi_overbought", defaults.rsi_overbought)),
-        adx_max_threshold=float(raw.get("adx_max_threshold", defaults.adx_max_threshold)),
-        session_start_hour=int(raw.get("session_start_hour", defaults.session_start_hour)),
-        range_definition_hours=int(
-            raw.get("range_definition_hours", defaults.range_definition_hours)
-        ),
-        session_end_hour=int(raw.get("session_end_hour", defaults.session_end_hour)),
-        range_atr_min=float(raw.get("range_atr_min", defaults.range_atr_min)),
-        range_atr_max=float(raw.get("range_atr_max", defaults.range_atr_max)),
-        sl_atr_mult=float(raw.get("sl_atr_mult", defaults.sl_atr_mult)),
-        m15_rsi_period=int(raw.get("m15_rsi_period", defaults.m15_rsi_period)),
-        m15_atr_period=int(raw.get("m15_atr_period", defaults.m15_atr_period)),
-        h4_adx_period=int(raw.get("h4_adx_period", defaults.h4_adx_period)),
     )
 
 

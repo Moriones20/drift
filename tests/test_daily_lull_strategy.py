@@ -1,24 +1,17 @@
-"""Equivalence tests for the ported Daily Lull strategy (Step 29).
+"""Golden-value tests for the Daily Lull strategy (Step 32 contract phase).
 
-The port in ``drift/strategies/daily_lull.py`` must produce the SAME signals as
-the legacy ``drift.strategy.evaluate_pair`` it replaces.  Each test runs BOTH
-paths over identical synthetic data and asserts the resulting action, SL, TP,
-range, indicator values and reason/rejection_reason match.
+The legacy ``drift.strategy.evaluate_pair`` has been removed (C10 cleanup).
+These tests run only the new ``DailyLullStrategy.on_bar`` path and assert
+frozen expected values (action, SL position, TP position, range, reason,
+rejection_reason) so the strategy contract is pinned without depending on the
+deleted module.
 
-The legacy path mutates ``SessionState.traded`` to True on a buy/sell (later
-rolled back by main.py on rejection); the new path moves that flip to
-``on_fill``.  The equivalence assertions therefore compare the SIGNAL fields,
-not the post-call ``traded`` flag — which is covered by dedicated lifecycle
-tests at the bottom.
-
-No MT5 calls are made here — all tests use synthetic DataFrames built the same
-way as ``tests/test_strategy.py``.  All datetimes are UTC-aware (server-time
-clock, reasoned over as-is).
+No MT5 calls are made here — all tests use synthetic DataFrames.  All
+datetimes are UTC-aware (server-time clock, reasoned over as-is).
 """
 
 from __future__ import annotations
 
-import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -121,15 +114,7 @@ from drift.strategies.base import STRATEGY_REGISTRY, Decision, MarketData, Signa
 from drift.strategies.daily_lull import (  # noqa: E402
     DailyLullParams,
     DailyLullStrategy,
-)
-from drift.strategies.daily_lull import (  # noqa: E402
-    SessionState as NewSessionState,
-)
-from drift.strategy import (  # noqa: E402
-    SessionState as OldSessionState,
-)
-from drift.strategy import (  # noqa: E402
-    evaluate_pair,
+    SessionState,
 )
 
 UTC = timezone.utc
@@ -294,20 +279,8 @@ def _build_overbought_m15(
     )
 
 
-def _locked_old(range_high: float = 1.0820, range_low: float = 1.0780) -> OldSessionState:
-    s = OldSessionState()
-    s.session_date = datetime(2026, 1, 7, tzinfo=UTC).toordinal()
-    s.high = range_high
-    s.low = range_low
-    s.locked = True
-    s.range_high = range_high
-    s.range_low = range_low
-    s.traded = False
-    return s
-
-
-def _locked_new(range_high: float = 1.0820, range_low: float = 1.0780) -> NewSessionState:
-    s = NewSessionState()
+def _locked_state(range_high: float = 1.0820, range_low: float = 1.0780) -> SessionState:
+    s = SessionState()
     s.session_date = datetime(2026, 1, 7, tzinfo=UTC).toordinal()
     s.high = range_high
     s.low = range_low
@@ -319,7 +292,7 @@ def _locked_new(range_high: float = 1.0820, range_low: float = 1.0780) -> NewSes
 
 
 # ---------------------------------------------------------------------------
-# Equivalence harness
+# New-path runner
 # ---------------------------------------------------------------------------
 
 
@@ -329,88 +302,55 @@ def _signal_from_decision(decision: Decision) -> Signal:
     return decision.signal
 
 
-def _assert_signals_equivalent(old: Signal, new: Signal) -> None:
-    """Assert the load-bearing fields of two signals match."""
-    assert old.action == new.action, f"action: {old.action!r} != {new.action!r}"
-    assert old.reason == new.reason, f"reason: {old.reason!r} != {new.reason!r}"
-    assert old.rejection_reason == new.rejection_reason, (
-        f"rejection_reason: {old.rejection_reason!r} != {new.rejection_reason!r}"
-    )
-
-    def _eq(a: float, b: float, name: str) -> None:
-        if math.isnan(a) and math.isnan(b):
-            return
-        assert abs(a - b) < 1e-9, f"{name}: {a!r} != {b!r}"
-
-    _eq(old.entry_price, new.entry_price, "entry_price")
-    _eq(old.sl, new.sl, "sl")
-    _eq(old.tp, new.tp, "tp")
-    _eq(old.range_high, new.range_high, "range_high")
-    _eq(old.range_low, new.range_low, "range_low")
-    _eq(old.range_atr_ratio, new.range_atr_ratio, "range_atr_ratio")
-    _eq(old.rsi, new.rsi, "rsi")
-    _eq(old.atr_value, new.atr_value, "atr_value")
-    _eq(old.h4_adx, new.h4_adx, "h4_adx")
-    assert old.timestamp == new.timestamp, f"timestamp: {old.timestamp} != {new.timestamp}"
-    assert old.h4_candle_time == new.h4_candle_time
-
-
-def _run_both(
+def _run_new(
     pair: str,
     m15: pd.DataFrame,
     h4: pd.DataFrame,
-    old_state: OldSessionState,
-    new_state: NewSessionState,
-) -> tuple[Signal, Decision]:
-    """Run legacy evaluate_pair and new on_bar over the same data.
-
-    Returns (old_signal, new_decision).
-    """
-    config = _default_config()
-    old_sig = evaluate_pair(pair, m15, h4, old_state, config)
-
+    state: SessionState,
+) -> Decision:
+    """Run DailyLullStrategy.on_bar and return the Decision."""
     strat = DailyLullStrategy(pairs=[pair], params=_default_params())
-    strat._states[pair] = new_state
+    strat._states[pair] = state
     market = _FakeMarket({(pair, "M15"): m15, (pair, "H4"): h4})
     bar_close = m15.index[-1].to_pydatetime()
-    decision = strat.on_bar(pair, "M15", bar_close, market, _fake_ctx())
-    return old_sig, decision
+    return strat.on_bar(pair, "M15", bar_close, market, _fake_ctx())
 
 
 # ---------------------------------------------------------------------------
-# 1. Equivalence across the full set of scenarios
+# 1. Golden-value tests for core scenarios
 # ---------------------------------------------------------------------------
 
 
-class TestEquivalence:
+class TestGoldenValues:
+    """Pin the DailyLullStrategy.on_bar contract against frozen expected values.
+
+    Each test runs only the new path (legacy evaluate_pair removed in C10) and
+    asserts the decision kind and the load-bearing signal fields that would be
+    logged / executed.
+    """
+
     def test_range_definition_phase_22_00(self) -> None:
-        """21-23 define-range window: both paths return a 'none'/noop signal."""
+        """21-23 define-range window: on_bar returns noop."""
         m15 = _make_m15_df(n=150, end_hour=22, end_minute=0)
         h4 = _make_h4_df(n=50)
-        old_sig, decision = _run_both("EURCHF", m15, h4, OldSessionState(), NewSessionState())
+        decision = _run_new("EURCHF", m15, h4, SessionState())
         assert decision.kind == "noop"
-        _assert_signals_equivalent(old_sig, _signal_from_decision(decision))
+        sig = _signal_from_decision(decision)
+        assert sig.action == "none"
 
     def test_outside_window_12_00(self) -> None:
         m15 = _make_m15_df(n=150, end_hour=12, end_minute=0)
         h4 = _make_h4_df(n=50)
-        old_sig, decision = _run_both("EURCHF", m15, h4, OldSessionState(), NewSessionState())
+        decision = _run_new("EURCHF", m15, h4, SessionState())
         assert decision.kind == "noop"
-        _assert_signals_equivalent(old_sig, _signal_from_decision(decision))
+        assert _signal_from_decision(decision).action == "none"
 
-    def test_lock_at_23_00_then_equivalence(self) -> None:
-        """Run the SAME bar sequence (21:00, 22:45, 23:00) through both state machines.
-
-        Locking at 23:00 must produce identical range_high/range_low and an
-        equivalent signal on the final bar.
-        """
-        config = _default_config()
+    def test_lock_at_23_00_then_state(self) -> None:
+        """Run a bar sequence through the new state machine; locking at 23:00 must work."""
         params = _default_params()
         from drift.strategies.daily_lull import _update_session_state as new_update
-        from drift.strategy import update_session_state as old_update
 
-        old_state = OldSessionState()
-        new_state = NewSessionState()
+        new_state = SessionState()
         atr = 0.0020
         bars = [
             (datetime(2026, 1, 7, 21, 0, tzinfo=UTC), 1.0820, 1.0790),
@@ -418,89 +358,81 @@ class TestEquivalence:
             (datetime(2026, 1, 7, 23, 0, tzinfo=UTC), 1.0822, 1.0788),
         ]
         for bt, hi, lo in bars:
-            old_update(old_state, bt, hi, lo, atr, config)
             new_update(new_state, bt, hi, lo, atr, params)
 
-        assert old_state.locked == new_state.locked is True
-        assert old_state.range_high == new_state.range_high
-        assert old_state.range_low == new_state.range_low
+        assert new_state.locked is True
+        assert new_state.range_high == 1.0822
+        assert new_state.range_low == 1.0788
 
-    def test_buy_entry(self) -> None:
+    def test_buy_entry_sl_below_entry(self) -> None:
+        """When a buy fires, SL must be below entry and TP must be range midpoint."""
         m15 = _build_oversold_m15(range_low=1.0780)
         h4 = _make_h4_df(n=50, last_adx_low=True)
-        old_sig, decision = _run_both(
-            "EURCHF", m15, h4, _locked_old(1.0820, 1.0780), _locked_new(1.0820, 1.0780)
-        )
-        new_sig = _signal_from_decision(decision)
-        _assert_signals_equivalent(old_sig, new_sig)
-        if old_sig.action == "buy":
+        decision = _run_new("EURCHF", m15, h4, _locked_state(1.0820, 1.0780))
+        sig = _signal_from_decision(decision)
+        if sig.action == "buy":
             assert decision.kind == "open"
-            assert new_sig.sl < new_sig.entry_price
+            assert sig.sl < sig.entry_price
+            expected_tp = (1.0820 + 1.0780) / 2.0
+            assert abs(sig.tp - expected_tp) < 1e-8
+            assert sig.rejection_reason is None
 
-    def test_sell_entry(self) -> None:
+    def test_sell_entry_sl_above_entry(self) -> None:
+        """When a sell fires, SL must be above entry and TP must be range midpoint."""
         m15 = _build_overbought_m15(range_high=1.0820)
         h4 = _make_h4_df(n=50, last_adx_low=True)
-        old_sig, decision = _run_both(
-            "EURCHF", m15, h4, _locked_old(1.0820, 1.0780), _locked_new(1.0820, 1.0780)
-        )
-        new_sig = _signal_from_decision(decision)
-        _assert_signals_equivalent(old_sig, new_sig)
-        if old_sig.action == "sell":
+        decision = _run_new("EURCHF", m15, h4, _locked_state(1.0820, 1.0780))
+        sig = _signal_from_decision(decision)
+        if sig.action == "sell":
             assert decision.kind == "open"
-            assert new_sig.sl > new_sig.entry_price
+            assert sig.sl > sig.entry_price
+            expected_tp = (1.0820 + 1.0780) / 2.0
+            assert abs(sig.tp - expected_tp) < 1e-8
 
     def test_adx_rejection(self) -> None:
-        """Strongly trending H4 forces the ADX regime filter to reject (or a
-        consistent 'none' from both paths)."""
+        """Strongly trending H4 forces the ADX regime filter to reject."""
         m15 = _build_oversold_m15(range_low=1.0780)
         h4 = _make_h4_df(n=50, last_adx_low=False)
-        old_sig, decision = _run_both(
-            "EURCHF", m15, h4, _locked_old(1.0820, 1.0780), _locked_new(1.0820, 1.0780)
-        )
+        decision = _run_new("EURCHF", m15, h4, _locked_state(1.0820, 1.0780))
         assert decision.kind == "noop"
-        _assert_signals_equivalent(old_sig, _signal_from_decision(decision))
+        sig = _signal_from_decision(decision)
+        assert sig.action == "none"
 
-    def test_invalid_range_not_locked(self) -> None:
-        """Unlocked state inside the trading window → range_not_locked rejection in both."""
+    def test_range_not_locked_rejection(self) -> None:
+        """Unlocked state inside the trading window → range_not_locked rejection."""
         m15 = _build_oversold_m15(range_low=1.0780)
         h4 = _make_h4_df(n=50, last_adx_low=True)
-        old_sig, decision = _run_both("EURCHF", m15, h4, OldSessionState(), NewSessionState())
+        decision = _run_new("EURCHF", m15, h4, SessionState())
         assert decision.kind == "noop"
-        _assert_signals_equivalent(old_sig, _signal_from_decision(decision))
-        assert old_sig.rejection_reason == "range_not_locked"
+        sig = _signal_from_decision(decision)
+        assert sig.rejection_reason == "range_not_locked"
 
-    def test_already_traded(self) -> None:
-        old_state = _locked_old(1.0820, 1.0780)
-        old_state.traded = True
-        new_state = _locked_new(1.0820, 1.0780)
-        new_state.traded = True
+    def test_already_traded_rejection(self) -> None:
+        state = _locked_state(1.0820, 1.0780)
+        state.traded = True
         m15 = _make_m15_df(n=150, end_hour=23, end_minute=30, last_close=1.0800)
         h4 = _make_h4_df(n=50, last_adx_low=True)
-        old_sig, decision = _run_both("EURCHF", m15, h4, old_state, new_state)
+        decision = _run_new("EURCHF", m15, h4, state)
         assert decision.kind == "noop"
-        _assert_signals_equivalent(old_sig, _signal_from_decision(decision))
-        assert old_sig.rejection_reason == "already_traded_this_session"
+        assert _signal_from_decision(decision).rejection_reason == "already_traded_this_session"
 
     def test_no_entry_condition_inside_range(self) -> None:
         m15 = _make_m15_df(n=150, end_hour=23, end_minute=15, last_close=1.0800)
         h4 = _make_h4_df(n=50, last_adx_low=True)
-        old_sig, decision = _run_both(
-            "EURCHF", m15, h4, _locked_old(1.0820, 1.0780), _locked_new(1.0820, 1.0780)
-        )
+        decision = _run_new("EURCHF", m15, h4, _locked_state(1.0820, 1.0780))
         assert decision.kind == "noop"
-        _assert_signals_equivalent(old_sig, _signal_from_decision(decision))
+        assert _signal_from_decision(decision).action == "none"
 
     def test_time_stop_at_02_00(self) -> None:
-        """02:00 time stop: legacy returns a session_end_time_stop signal; the
-        new path returns close_all carrying the same signal."""
+        """02:00 time stop: on_bar returns close_all with reason='session_close'."""
         m15 = _make_m15_df(n=150, end_hour=2, end_minute=0)
         h4 = _make_h4_df(n=50)
-        old_sig, decision = _run_both("EURCHF", m15, h4, _locked_old(), _locked_new())
+        decision = _run_new("EURCHF", m15, h4, _locked_state())
         assert decision.kind == "close_all"
         assert decision.reason == "session_close"
-        new_sig = _signal_from_decision(decision)
-        assert old_sig.reason == "session_end_time_stop"
-        _assert_signals_equivalent(old_sig, new_sig)
+        sig = _signal_from_decision(decision)
+        assert sig.reason == "session_end_time_stop"
+        assert sig.action == "none"
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +446,7 @@ class TestLifecycleCallbacks:
         m15 = _build_oversold_m15(range_low=1.0780)
         h4 = _make_h4_df(n=50, last_adx_low=True)
         strat = DailyLullStrategy(pairs=["EURCHF"], params=_default_params())
-        strat._states["EURCHF"] = _locked_new(1.0820, 1.0780)
+        strat._states["EURCHF"] = _locked_state(1.0820, 1.0780)
         market = _FakeMarket({("EURCHF", "M15"): m15, ("EURCHF", "H4"): h4})
         decision = strat.on_bar("EURCHF", "M15", m15.index[-1].to_pydatetime(), market, _fake_ctx())
         if decision.kind == "open":

@@ -3,7 +3,6 @@
 Covers:
 - Parsing of the new ``strategies:`` block and ``risk_global:`` block.
 - Validation: magic uniqueness, allocation_pct sum, per-strategy max_open_trades cap.
-- Compat shim: config.strategy, config.risk, config.pairs derive correctly from daily_lull.
 """
 
 from __future__ import annotations
@@ -21,9 +20,7 @@ from drift.config import (
     BrokerConfig,
     DriftConfig,
     ReportsConfig,
-    RiskConfig,
     RiskGlobalConfig,
-    StrategyConfig,
     StrategyInstanceConfig,
     StrategyRiskConfig,
     SystemConfig,
@@ -339,94 +336,6 @@ class TestValidationRiskRanges(unittest.TestCase):
         cfg["strategies"]["daily_lull"]["risk"]["max_drawdown_percent"] = 51.0
         with self.assertRaises(ValueError):
             _write_and_load(cfg)
-
-
-# ---------------------------------------------------------------------------
-# Shim tests — config.strategy, config.risk, config.pairs
-# ---------------------------------------------------------------------------
-
-
-class TestCompatShim(unittest.TestCase):
-    def setUp(self) -> None:
-        self.config = _make_direct_config()
-
-    def test_shim_strategy_is_strategy_config(self) -> None:
-        self.assertIsInstance(self.config.strategy, StrategyConfig)
-
-    def test_shim_strategy_derives_params(self) -> None:
-        sc = self.config.strategy
-        self.assertAlmostEqual(sc.rsi_oversold, 35.0)
-        self.assertAlmostEqual(sc.rsi_overbought, 65.0)
-        self.assertAlmostEqual(sc.adx_max_threshold, 35.0)
-        self.assertEqual(sc.session_start_hour, 21)
-        self.assertEqual(sc.range_definition_hours, 2)
-        self.assertEqual(sc.session_end_hour, 2)
-        self.assertAlmostEqual(sc.range_atr_min, 1.0)
-        self.assertAlmostEqual(sc.range_atr_max, 4.0)
-        self.assertAlmostEqual(sc.sl_atr_mult, 2.5)
-        self.assertEqual(sc.m15_rsi_period, 14)
-        self.assertEqual(sc.m15_atr_period, 14)
-        self.assertEqual(sc.h4_adx_period, 14)
-
-    def test_shim_risk_is_risk_config(self) -> None:
-        self.assertIsInstance(self.config.risk, RiskConfig)
-
-    def test_shim_risk_derives_from_strategy_and_global(self) -> None:
-        rc = self.config.risk
-        self.assertAlmostEqual(rc.percent_per_trade, 1.0)
-        self.assertEqual(rc.max_open_trades, 4)
-        self.assertAlmostEqual(rc.max_drawdown_percent, 10.0)
-        # max_same_currency_direction comes from risk_global (D053)
-        self.assertEqual(rc.max_same_currency_direction, 2)
-
-    def test_shim_pairs_from_strategy(self) -> None:
-        self.assertEqual(
-            self.config.pairs,
-            ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
-        )
-
-    def test_shim_strategy_custom_params(self) -> None:
-        """Custom params in the strategies dict flow through the shim correctly."""
-        config = _make_direct_config(
-            strategies={
-                "daily_lull": StrategyInstanceConfig(
-                    name="daily_lull",
-                    enabled=True,
-                    magic_offset=0,
-                    allocation_pct=100.0,
-                    pairs=["EURUSD"],
-                    risk=StrategyRiskConfig(percent_per_trade=2.0),
-                    params=dict(_DEFAULT_PARAMS, rsi_oversold=30.0),
-                )
-            }
-        )
-        self.assertAlmostEqual(config.strategy.rsi_oversold, 30.0)
-        self.assertAlmostEqual(config.risk.percent_per_trade, 2.0)
-        self.assertEqual(config.pairs, ["EURUSD"])
-
-    def test_shim_no_daily_lull_returns_defaults(self) -> None:
-        """If daily_lull is absent (edge case), shim falls back to defaults."""
-        config = DriftConfig(
-            broker=BrokerConfig(server="demo", login=1, password="x"),
-            telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123"),
-            reports=ReportsConfig(),
-            system=SystemConfig(),
-            risk_global=RiskGlobalConfig(),
-            strategies={
-                "other": StrategyInstanceConfig(
-                    name="other",
-                    enabled=True,
-                    magic_offset=1,
-                    allocation_pct=100.0,
-                    pairs=["EURUSD"],
-                    risk=StrategyRiskConfig(),
-                    params={},
-                )
-            },
-        )
-        self.assertIsInstance(config.strategy, StrategyConfig)
-        self.assertIsInstance(config.risk, RiskConfig)
-        self.assertIsInstance(config.pairs, list)
 
 
 # ---------------------------------------------------------------------------
