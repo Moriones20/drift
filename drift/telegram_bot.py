@@ -278,10 +278,19 @@ async def notify_bot_status(bot: Bot, chat_id: str, status: str, detail: str = "
         "stopped": "🛑",
         "paused": "⏸️",
         "resumed": "▶️",
+        "session_started": "🌙",
+        "session_closed": "😴",
+    }
+    # Calm, non-alarming titles for routine lifecycle events (a session opening or
+    # closing is normal operation, not the bot stopping — D057).
+    titles = {
+        "session_started": "SESSION STARTED",
+        "session_closed": "SESSION CLOSED",
     }
     icon = icons.get(status, "ℹ️")
+    title = titles.get(status, f"BOT {status.upper()}")
     now = format_time(datetime.now(timezone.utc))
-    text = f"{icon} <b>BOT {status.upper()}</b>  ·  {now} UTC-5"
+    text = f"{icon} <b>{title}</b>  ·  {now} UTC-5"
     if detail:
         text += f"\n{_SEP}\n{detail}"
     await send_notification(bot, chat_id, text)

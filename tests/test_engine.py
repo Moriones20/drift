@@ -496,5 +496,81 @@ def test_close_all_isolates_per_position_failure():
     assert ct.call_count == 2
 
 
+def test_close_all_notifies_once_for_n_pairs_in_one_tick():
+    """N pairs returning close_all in one tick must produce ONE notification.
+
+    Regression for the duplicate "BOT STOPPED" alerts: the Daily Lull returns
+    close_all from every pair at the 02:00 stop, and _dispatch_strategy must dedup
+    it to a single close + a single calm session_closed notification (D057).
+    """
+    pairs = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]
+    strat = FakeStrategy(name="lull", pairs=pairs, decision=Decision.close_all("session_close"))
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+
+    notifies: list[tuple] = []
+    eng._notify_bot_status = lambda bot, chat, status, detail="": notifies.append((status, detail))
+
+    boundary = datetime(2026, 6, 2, 2, 0, tzinfo=_SERVER_TZ)
+    market = mock.MagicMock()
+
+    handled: list[Decision] = []
+    with (
+        mock.patch.object(eng, "_handle_close_all", side_effect=lambda h, d: handled.append(d)),
+        mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
+    ):
+        eng._dispatch_strategy(hosted, boundary, market, balance=1000.0, equity=1000.0)
+
+    # on_bar ran for every pair (transparency), but close_all was handled once.
+    assert len(strat.on_bar_calls) == len(pairs)
+    assert len(handled) == 1
+
+
+def test_close_all_session_close_uses_calm_status():
+    """The session-close notification is 'session_closed', never the alarming 'stopped'."""
+    strat = FakeStrategy(name="lull", decision=Decision.close_all("session_close"))
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+
+    notifies: list[tuple] = []
+    eng._notify_bot_status = lambda bot, chat, status, detail="": notifies.append((status, detail))
+
+    with (
+        mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
+        mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(engine_mod, "log_signal"),
+    ):
+        gc.return_value.__enter__.return_value = mock.MagicMock()
+        eng._handle_close_all(hosted, Decision.close_all("session_close"))
+
+    assert len(notifies) == 1
+    status, _detail = notifies[0]
+    assert status == "session_closed"  # not "stopped"
+
+
+def test_session_start_notification_on_first_wake_after_gap():
+    """The first dispatch after a multi-hour gap sends one calm session_started note."""
+    strat = FakeStrategy(name="lull", pairs=["EURCHF"], decision=Decision.noop())
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+
+    notifies: list[tuple] = []
+    eng._notify_bot_status = lambda bot, chat, status, detail="": notifies.append((status, detail))
+
+    market = mock.MagicMock()
+    with mock.patch.object(engine_mod, "get_open_positions", return_value=[]):
+        # First wake of the process at 21:00 (no previous boundary) → session start.
+        eng._dispatch_strategy(
+            hosted, datetime(2026, 6, 2, 21, 0, tzinfo=_SERVER_TZ), market, 1000.0, 1000.0
+        )
+        # Next M15 close 15 min later → no new session-start notification.
+        eng._dispatch_strategy(
+            hosted, datetime(2026, 6, 2, 21, 15, tzinfo=_SERVER_TZ), market, 1000.0, 1000.0
+        )
+
+    starts = [n for n in notifies if n[0] == "session_started"]
+    assert len(starts) == 1
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

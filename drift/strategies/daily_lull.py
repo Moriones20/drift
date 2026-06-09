@@ -41,6 +41,15 @@ from drift.strategies.base import Decision, MarketData, Signal, StrategyContext,
 
 logger = logging.getLogger(__name__)
 
+# The M15 interval the strategy ticks on, used as the freshness tolerance for the
+# session time stop (see ``_evaluate``): a served candle whose index is more than
+# one M15 interval behind the engine boundary is stale and must not drive the
+# 02:00 time stop.  Backtest serves the boundary bar itself (delta 0) and live
+# serves the just-closed bar (delta one interval), so both are fresh; only an
+# out-of-date frame (e.g. a leftover 02:xx bar handed back at the 21:00 wake after
+# a long idle period) exceeds the tolerance.
+_M15_INTERVAL = timedelta(minutes=15)
+
 # Number of candles to request from the engine.
 # M15 count=150 is ample for ATR/RSI(14) Wilder warmup (converges within ~100 bars).
 # H4 count=320 is required for ADX(14) convergence: ADX is doubly smoothed, so a
@@ -312,7 +321,7 @@ class DailyLullStrategy:
         m15_df = market.candles(pair, "M15", _M15_COUNT)
         h4_df = market.candles(pair, "H4", _H4_COUNT)
 
-        signal = self._evaluate(pair, m15_df, h4_df, state)
+        signal = self._evaluate(pair, m15_df, h4_df, state, bar_close_time)
 
         # Time stop at session_end_hour (02:00): close every position of this
         # strategy.  Carry the signal so the rejection-style log entry survives
@@ -338,11 +347,20 @@ class DailyLullStrategy:
         m15_df: pd.DataFrame,
         h4_df: pd.DataFrame,
         state: SessionState,
+        bar_close_time: datetime,
     ) -> Signal:
         """Pure evaluation: compute indicators, update state, build a Signal.
 
         Identical logic to ``drift.strategy.evaluate_pair``, but it never sets
         ``state.traded`` (that moves to :meth:`on_fill`).
+
+        ``bar_close_time`` is the engine's authoritative session clock (D058):
+        the candle-close boundary the engine actually woke at.  The session time
+        stop keys off this boundary (not the served candle's own hour) and is
+        guarded against a stale frame, so a leftover 02:xx bar handed back at a
+        21:00 wake cannot trigger a spurious close.  In backtest the boundary
+        equals ``m15_df.index[-1]`` and the served bar is always fresh, so this
+        is a no-op there (equivalence preserved, D055/D059).
         """
         params = self.params
 
@@ -442,8 +460,20 @@ class DailyLullStrategy:
         )
 
         # --- Time stop: signal close at session_end_hour ---
-        if bar_time.hour == params.session_end_hour:
-            return _base_signal("none", "session_end_time_stop")
+        # Key off the engine's authoritative boundary, not the served candle's own
+        # hour, and only when the served candle is fresh relative to that boundary.
+        # This is what makes the time stop robust: after a long idle period the
+        # engine may hand back a stale frame whose last bar lands on hour 2 even
+        # though the boundary is the 21:00 session START; gating on the boundary
+        # plus a freshness check prevents that bar from forcing a spurious close.
+        # In backtest the boundary equals bar_time and the bar is always fresh, so
+        # this matches the old ``bar_time.hour == session_end_hour`` exactly.
+        bar_age = bar_close_time - bar_time
+        bar_is_fresh = timedelta(0) <= bar_age <= _M15_INTERVAL
+        if bar_close_time.hour == params.session_end_hour:
+            if bar_is_fresh:
+                return _base_signal("none", "session_end_time_stop")
+            return _base_signal("none", "stale_session_data", "stale_session_data")
 
         # --- Entry logic: only between 23:00-01:59 with a locked range ---
 

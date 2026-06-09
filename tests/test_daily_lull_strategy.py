@@ -436,6 +436,83 @@ class TestGoldenValues:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Session time stop keyed off the engine boundary (stale-frame robustness)
+# ---------------------------------------------------------------------------
+
+
+class TestTimeStopBoundary:
+    """The 02:00 time stop must follow the engine's authoritative boundary, not a
+    served candle's own hour, and must ignore a stale frame.
+
+    Regression for the spurious "session closed" at the 21:00 session START: after
+    a long idle period the engine handed back a leftover 02:xx candle at the 21:00
+    wake, whose hour==2 forced a close_all even though the session was just opening.
+    """
+
+    def test_stale_hour2_candle_at_session_start_does_not_close(self) -> None:
+        """Boundary = 21:00 (session start) with a stale 02:00 candle → no close_all.
+
+        This is the exact production bug: at the 21:00 session START the engine
+        served a leftover 02:00 frame.  Keying the time stop off the boundary
+        (hour 21, not the candle's hour 2) means the stop never even arms here.
+        """
+        m15 = _make_m15_df(n=150, end_hour=2, end_minute=0)
+        h4 = _make_h4_df(n=50)
+        strat = DailyLullStrategy(pairs=["EURCHF"], params=_default_params())
+        strat._states["EURCHF"] = _locked_state()
+        market = _FakeMarket({("EURCHF", "M15"): m15, ("EURCHF", "H4"): h4})
+        boundary = datetime(2026, 1, 8, 21, 0, tzinfo=UTC)  # session START, hours later
+        decision = strat.on_bar("EURCHF", "M15", boundary, market, _fake_ctx())
+        assert decision.kind != "close_all"
+        assert _signal_from_decision(decision).reason == "outside_window"
+
+    def test_stale_frame_at_0200_boundary_does_not_close(self) -> None:
+        """Boundary = 02:00 but the served candle is hours stale → no close_all.
+
+        Exercises the freshness guard directly: even when the boundary IS the
+        session end, a frame whose last bar is far behind the boundary (the engine
+        handed back outdated data) must not force a close.
+        """
+        # Last bar sits at 21:00 the previous evening; boundary jumps to 02:00.
+        m15 = _make_m15_df(n=150, end_hour=21, end_minute=0)
+        h4 = _make_h4_df(n=50)
+        strat = DailyLullStrategy(pairs=["EURCHF"], params=_default_params())
+        strat._states["EURCHF"] = _locked_state()
+        market = _FakeMarket({("EURCHF", "M15"): m15, ("EURCHF", "H4"): h4})
+        boundary = datetime(2026, 1, 8, 2, 0, tzinfo=UTC)  # session end, but stale frame
+        decision = strat.on_bar("EURCHF", "M15", boundary, market, _fake_ctx())
+        assert decision.kind != "close_all"
+        sig = _signal_from_decision(decision)
+        assert sig.reason == "stale_session_data"
+        assert sig.rejection_reason == "stale_session_data"
+
+    def test_fresh_candle_at_0200_boundary_closes(self) -> None:
+        """Boundary = 02:00 with a fresh 01:45 candle (live) → close_all fires."""
+        m15 = _make_m15_df(n=150, end_hour=1, end_minute=45)  # just-closed live bar
+        h4 = _make_h4_df(n=50)
+        strat = DailyLullStrategy(pairs=["EURCHF"], params=_default_params())
+        strat._states["EURCHF"] = _locked_state()
+        market = _FakeMarket({("EURCHF", "M15"): m15, ("EURCHF", "H4"): h4})
+        boundary = datetime(2026, 1, 7, 2, 0, tzinfo=UTC)  # 02:00 close, 15 min after bar
+        decision = strat.on_bar("EURCHF", "M15", boundary, market, _fake_ctx())
+        assert decision.kind == "close_all"
+        assert decision.reason == "session_close"
+        assert _signal_from_decision(decision).reason == "session_end_time_stop"
+
+    def test_backtest_aligned_0200_candle_closes(self) -> None:
+        """Boundary == candle (backtest invariant): 02:00 bar at a 02:00 boundary fires."""
+        m15 = _make_m15_df(n=150, end_hour=2, end_minute=0)
+        h4 = _make_h4_df(n=50)
+        strat = DailyLullStrategy(pairs=["EURCHF"], params=_default_params())
+        strat._states["EURCHF"] = _locked_state()
+        market = _FakeMarket({("EURCHF", "M15"): m15, ("EURCHF", "H4"): h4})
+        boundary = m15.index[-1].to_pydatetime()  # backtest: boundary == bar time
+        decision = strat.on_bar("EURCHF", "M15", boundary, market, _fake_ctx())
+        assert decision.kind == "close_all"
+        assert decision.reason == "session_close"
+
+
+# ---------------------------------------------------------------------------
 # 2. Lifecycle callbacks (contract extension)
 # ---------------------------------------------------------------------------
 

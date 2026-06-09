@@ -71,6 +71,14 @@ logger = logging.getLogger(__name__)
 # Normal post-close delay before evaluating/executing a candle (D044/D045).
 CANDLE_CLOSE_DELAY_SECONDS = 5
 
+# A dispatch whose boundary is more than this far after the strategy's previous
+# dispatch follows a sleep gap (the engine ticks every candle interval inside a
+# session, so consecutive boundaries are minutes apart).  The first dispatch after
+# such a gap is the start of a new session window — used to send the calm
+# session-start notification (D057).  One hour comfortably exceeds any single
+# timeframe step while staying well below the multi-hour idle between sessions.
+_SESSION_GAP = timedelta(hours=1)
+
 
 def closed_bars(df: pd.DataFrame, before: datetime) -> pd.DataFrame:
     """Return only the bars that have already closed before *before* (D045).
@@ -149,6 +157,7 @@ class _HostedStrategy:
     allocation_pct: float
     risk: StrategyRiskConfig
     paused: bool = False  # engine-side pause flag (own brake or /pause <name>)
+    last_dispatch_boundary: datetime | None = None  # boundary of the previous tick
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +478,24 @@ class Engine:
         The strategy's declared timeframes are the candle closes it ticks on; the
         Daily Lull ticks only on "M15".  For each timeframe and pair we call
         ``on_bar`` and handle the returned :class:`Decision`.
+
+        ``close_all`` is a strategy-wide decision (it closes every position of the
+        strategy, not just the current pair), so the Daily Lull returns it from
+        EVERY pair at the 02:00 time stop.  Executing and — worse — notifying it
+        once per pair produced N identical close/notify rounds (the duplicate
+        "session closed" alerts, D057).  It is handled at most once per strategy
+        per tick: the first pair runs the close and sends the single
+        session-closed notification, the rest are skipped.
         """
         instance = hosted.instance
+
+        # First dispatch after a multi-hour idle gap = the start of a new session
+        # window: send the calm session-start notification before evaluating.  The
+        # engine stays session-agnostic (D051) — it only observes that this
+        # strategy resumed ticking after a sleep, never the window semantics.
+        self._maybe_notify_session_start(hosted, boundary)
+        hosted.last_dispatch_boundary = boundary
+
         allocated_capital = balance * hosted.allocation_pct / 100.0
         strategy_positions = get_open_positions(hosted.magic, self.server_offset)
 
@@ -482,6 +507,7 @@ class Engine:
             paused=hosted.paused,
         )
 
+        close_all_done = False
         for timeframe in sorted(instance.timeframes):
             for pair in instance.pairs:
                 if self.state.paused:
@@ -489,11 +515,37 @@ class Engine:
                     continue
                 try:
                     decision = instance.on_bar(pair, timeframe, boundary, market, ctx)
+                    if decision.kind == "close_all":
+                        if close_all_done:
+                            continue
+                        close_all_done = True
                     self._handle_decision(hosted, pair, decision, balance, equity)
                 except Exception:
                     logger.exception(
                         "Unhandled error evaluating %s/%s on %s", hosted.name, pair, timeframe
                     )
+
+    def _maybe_notify_session_start(self, hosted: _HostedStrategy, boundary: datetime) -> None:
+        """Send the calm session-start notification on the first wake of a session.
+
+        Detected purely from scheduling (D051): the engine ticks every candle
+        interval inside a session, so a dispatch boundary more than ``_SESSION_GAP``
+        after the previous one means the strategy just woke from the between-session
+        sleep.  The very first dispatch of the process (no recorded previous
+        boundary) is treated as a start too.
+        """
+        previous = hosted.last_dispatch_boundary
+        if previous is not None and boundary - previous <= _SESSION_GAP:
+            return
+        logger.info("%s | session start at %s server time", hosted.name, boundary.strftime("%H:%M"))
+        self._fire_and_forget(
+            self._notify_bot_status(
+                self.bot_app.bot,
+                self.config.telegram.chat_id,
+                "session_started",
+                f"{hosted.name} — session open, watching for setups",
+            )
+        )
 
     # -- decision handling -------------------------------------------------
 
@@ -879,12 +931,24 @@ class Engine:
                     strategy=hosted.name,
                 )
 
+        # Notify once per close_all (the caller dedups it to one per strategy per
+        # tick).  The bot is NOT stopping — it closed the session and will sleep
+        # until the next one — so use the calm "session_closed" status, never the
+        # alarming "BOT STOPPED" (D057).
+        closed = len(positions)
+        if decision.reason == "session_close":
+            detail = (
+                f"{hosted.name} — session closed, "
+                f"{closed} position(s) closed, sleeping until next session"
+            )
+        else:
+            detail = f"{hosted.name}: {decision.reason or 'positions closed'}"
         self._fire_and_forget(
             self._notify_bot_status(
                 self.bot_app.bot,
                 self.config.telegram.chat_id,
-                "stopped",
-                f"{hosted.name}: {decision.reason or 'positions closed'}",
+                "session_closed",
+                detail,
             )
         )
 

@@ -170,6 +170,8 @@ Ademas de los comandos, el bot envia notificaciones de forma automatica en los s
 | Evento | Descripcion |
 |---|---|
 | Inicio del bot | Confirma que el bot arranco, con el balance inicial. |
+| Inicio de sesion | Aviso calmo (SESSION STARTED, icono luna) cuando la estrategia entra en su ventana (21:00 hora servidor) y empieza a vigilar setups. Una sola notificacion por estrategia por sesion. |
+| Cierre de sesion | Aviso calmo (SESSION CLOSED, icono dormir) cuando la estrategia cierra la sesion al time-stop (02:00 hora servidor); indica cuantas posiciones cerro y que duerme hasta la proxima sesion. Una sola notificacion por estrategia por cierre (no una por par). NO es un BOT STOPPED: el bot sigue vivo. |
 | Trade abierto | Par, direccion, precio de entrada, SL, TP, tamaño en lotes y riesgo en USD. |
 | Trade cerrado | Par, direccion, precio de entrada y salida, P&L, motivo de cierre y duracion. |
 | Pausa por drawdown | Avisa cuando el drawdown supero el limite configurado y se pauso automaticamente. Indica si fue el kill switch global (toda la cuenta) o el brake de una estrategia concreta (solo esa). |
