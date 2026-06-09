@@ -249,6 +249,41 @@ class Strategy(Protocol):
         """
         ...
 
+    def on_fill(self, pair: str, signal: Signal, ticket: int) -> None:
+        """Notify the strategy that a requested open was actually filled.
+
+        The engine calls this AFTER it successfully opens a position from the
+        ``Decision.open(signal)`` returned by :meth:`on_bar` (i.e. risk gating
+        passed, sizing succeeded and the broker accepted the order), passing the
+        MT5 ``ticket`` of the new position.
+
+        This is the hook a strategy uses to commit any state that must only flip
+        once a trade truly exists — for the Daily Lull, marking the per-pair
+        session as ``traded`` so it does not enter twice.  Doing it here (rather
+        than inside :meth:`on_bar`) keeps that state correct even though the
+        engine, not the strategy, decides whether the open goes through.
+
+        Stateless strategies may leave this a no-op.
+        """
+        ...
+
+    def on_order_rejected(self, pair: str, signal: Signal, reason: str) -> None:
+        """Notify the strategy that a requested open was NOT executed.
+
+        The engine calls this when a ``Decision.open(signal)`` from
+        :meth:`on_bar` is rejected before a position exists — e.g. a risk/limit
+        gate refused it, position sizing produced an invalid lot, or the broker
+        rejected the order.  ``reason`` is a short human-readable explanation.
+
+        It is the counterpart to :meth:`on_fill`: a strategy that optimistically
+        prepared state for an open can roll it back here.  The Daily Lull simply
+        leaves its ``traded`` flag False (it is only set in :meth:`on_fill`), so
+        a rejected entry keeps the session eligible for a later one.
+
+        Stateless strategies may leave this a no-op.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Registry

@@ -173,6 +173,12 @@ def test_strategy_protocol_isinstance() -> None:
         def on_bar(self, pair, timeframe, bar_close_time, market, ctx) -> Decision:
             return Decision.noop()
 
+        def on_fill(self, pair, signal, ticket) -> None:
+            pass
+
+        def on_order_rejected(self, pair, signal, reason) -> None:
+            pass
+
     assert isinstance(ConformingStrategy(), Strategy)
 
 

@@ -18,10 +18,12 @@ from drift.strategies.base import (
     register,
 )
 
-# las estrategias concretas se importan aquí para registrarse
-# (p.ej. from drift.strategies import daily_lull) — se añade en el chunk del port
+# Import concrete strategy modules so they register themselves in
+# STRATEGY_REGISTRY at package import time (D054).
+from drift.strategies.daily_lull import DailyLullStrategy  # noqa: E402
 
 __all__ = [
+    "DailyLullStrategy",
     "STRATEGY_REGISTRY",
     "Decision",
     "MarketData",
