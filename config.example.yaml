@@ -1,40 +1,61 @@
-# Drift — Configuration
-# Copy this file to config.yaml and fill in your credentials
+# Drift — Configuration (multi-strategy schema, D054)
+# Copy this file to config.yaml and fill in your credentials.
 
 broker:
   server: "ICMarketsSC-MT5-Demo"  # Verify exact name in MT5 → File → Open an Account
   login: 12345678                  # Your MT5 account number
   password: "your_password_here"
 
-strategy:
-  # RSI thresholds for session scalper entries
-  rsi_oversold: 35.0
-  rsi_overbought: 65.0
-  # ADX regime filter: trade ONLY when H4 ADX < adx_max_threshold (ranging market)
-  adx_max_threshold: 35.0
-  # Daily Lull Scalper — session window (MT5 server time, GMT+2 winter/+3 summer — NOT UTC; see D039/D041)
-  session_start_hour: 21       # begin observing range at 21:00 server (= 13:00 Bogotá)
-  range_definition_hours: 2    # 21:00-23:00 server: define range, no entries
-  session_end_hour: 2          # close all session trades at 02:00 server (= 18:00 Bogotá)
-  # Daily Lull Scalper — range quality filter (multiples of ATR)
-  range_atr_min: 1.0           # minimum session range width (ATR units); below = too quiet
-  range_atr_max: 4.0           # maximum session range width (ATR units); above = too volatile
-  # Daily Lull Scalper — risk parameters
-  sl_atr_mult: 2.5             # stop loss distance as ATR multiple
-  # Daily Lull Scalper — indicator periods
-  m15_rsi_period: 14           # RSI period on M15 bars
-  m15_atr_period: 14           # ATR period on M15 bars
-  h4_adx_period: 14            # ADX period on H4 bars (regime filter)
+# ---------------------------------------------------------------------------
+# risk_global — account-wide limits (D053)
+# Caps that apply to all strategies combined.  No single strategy can exceed
+# these limits.  The kill-switch drawdown here pauses ALL strategies at once.
+# ---------------------------------------------------------------------------
+risk_global:
+  max_open_trades: 4               # Maximum simultaneous open trades across ALL strategies
+  max_drawdown_percent: 10.0       # Kill switch: pause ALL strategies if account drawdown exceeds this %
+  max_same_currency_direction: 2   # Max trades in same direction for one currency (correlation guard)
 
-risk:
-  percent_per_trade: 1.0           # % of current balance risked per trade
-  max_open_trades: 4               # Maximum simultaneous trades
-  max_same_currency_direction: 2   # Max trades in same direction for one currency
-  max_drawdown_percent: 10.0       # Pause bot if drawdown exceeds this %
-  trailing_stop_atr_multiplier: 1.5
-  use_trailing_stop: false         # Daily Lull Scalper: no trailing stop (fixed TP at range midpoint)
+# ---------------------------------------------------------------------------
+# strategies — one entry per strategy instance (D054)
+# Each key is the strategy name; the engine resolves the name to a class via
+# STRATEGY_REGISTRY at startup (Step 32).  Disabled strategies are ignored but
+# their config is preserved (useful for A/B testing and controlled restarts).
+# ---------------------------------------------------------------------------
+strategies:
+  daily_lull:
+    enabled: true
+    magic_offset: 0               # Effective MT5 magic = system.magic_number + magic_offset
+                                  # daily_lull uses offset 0 → magic 234000 (unchanged, D052)
+    allocation_pct: 100           # Notional capital share (%; sum of all enabled must be <= 100)
+    pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see D029 / optimization results
 
-pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see D029 / optimization results
+    # Per-strategy risk limits (must respect risk_global caps above; see D053)
+    risk:
+      percent_per_trade: 1.0      # % of this strategy's allocated capital risked per trade
+      max_open_trades: 4          # Max open trades for this strategy (must be <= risk_global.max_open_trades)
+      max_drawdown_percent: 10.0  # Pause only this strategy if its own drawdown exceeds this %
+
+    # Strategy-specific parameters — opaque to the engine; parsed by DailyLullStrategy (D054)
+    params:
+      # RSI thresholds for session scalper entries
+      rsi_oversold: 35.0
+      rsi_overbought: 65.0
+      # ADX regime filter: trade ONLY when H4 ADX < adx_max_threshold (ranging market)
+      adx_max_threshold: 35.0
+      # Session window (MT5 server time, GMT+2 winter/+3 summer — NOT UTC; see D039/D041)
+      session_start_hour: 21       # begin observing range at 21:00 server (= 13:00 Bogotá)
+      range_definition_hours: 2    # 21:00-23:00 server: define range, no entries
+      session_end_hour: 2          # close all session trades at 02:00 server (= 18:00 Bogotá)
+      # Range quality filter (multiples of ATR)
+      range_atr_min: 1.0           # minimum session range width (ATR units); below = too quiet
+      range_atr_max: 4.0           # maximum session range width (ATR units); above = too volatile
+      # Risk parameters
+      sl_atr_mult: 2.5             # stop loss distance as ATR multiple
+      # Indicator periods
+      m15_rsi_period: 14           # RSI period on M15 bars
+      m15_atr_period: 14           # ATR period on M15 bars
+      h4_adx_period: 14            # ADX period on H4 bars (regime filter)
 
 telegram:
   bot_token: "your_bot_token_here"   # Get from @BotFather
@@ -48,7 +69,7 @@ reports:
 system:
   loop_check_interval_seconds: 30    # How often to check trailing stops and health
   mt5_reconnect_interval_seconds: 300  # 5 minutes between reconnection attempts
-  magic_number: 234000               # Identifies Drift orders in MT5
+  magic_number: 234000               # Base magic number (effective = magic_number + strategy.magic_offset; D052)
   order_retry_attempts: 3            # Retries on transient broker rejects (e.g. 00:00 rollover); see D040
   order_retry_delay_seconds: 25.0    # Wait between order retries (rollover halt is ~1-2 min)
   rollover_settle_seconds: 150       # Delay before evaluating the 00:00 server candle (waits out the rollover halt); see D044

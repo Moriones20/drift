@@ -121,19 +121,34 @@ def _make_minimal_config():
         BrokerConfig,
         DriftConfig,
         ReportsConfig,
-        RiskConfig,
+        RiskGlobalConfig,
         StrategyConfig,
+        StrategyInstanceConfig,
+        StrategyRiskConfig,
         SystemConfig,
         TelegramConfig,
     )
 
     return DriftConfig(
         broker=BrokerConfig(server="demo", login=1, password="x"),
-        strategy=StrategyConfig(),
-        risk=RiskConfig(),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123"),
         reports=ReportsConfig(),
         system=SystemConfig(),
+        risk_global=RiskGlobalConfig(),
+        strategies={
+            "daily_lull": StrategyInstanceConfig(
+                name="daily_lull",
+                enabled=True,
+                magic_offset=0,
+                allocation_pct=100.0,
+                pairs=["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
+                risk=StrategyRiskConfig(),
+                params={
+                    field: getattr(StrategyConfig(), field)
+                    for field in StrategyConfig.__dataclass_fields__
+                },
+            )
+        },
     )
 
 

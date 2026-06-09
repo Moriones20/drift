@@ -107,8 +107,10 @@ from drift.config import (  # noqa: E402
     BrokerConfig,
     DriftConfig,
     ReportsConfig,
-    RiskConfig,
+    RiskGlobalConfig,
     StrategyConfig,
+    StrategyInstanceConfig,
+    StrategyRiskConfig,
     SystemConfig,
     TelegramConfig,
 )
@@ -139,13 +141,27 @@ logger = logging.getLogger(__name__)
 
 
 def _make_config() -> DriftConfig:
+    """Build a minimal DriftConfig with daily_lull strategy for test use."""
     return DriftConfig(
         broker=BrokerConfig(server="demo.icmarkets.com", login=12345, password="secret"),
-        strategy=StrategyConfig(),
-        risk=RiskConfig(),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123456"),
         reports=ReportsConfig(),
         system=SystemConfig(),
+        risk_global=RiskGlobalConfig(),
+        strategies={
+            "daily_lull": StrategyInstanceConfig(
+                name="daily_lull",
+                enabled=True,
+                magic_offset=0,
+                allocation_pct=100.0,
+                pairs=["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
+                risk=StrategyRiskConfig(),
+                params={
+                    field: getattr(StrategyConfig(), field)
+                    for field in StrategyConfig.__dataclass_fields__
+                },
+            )
+        },
     )
 
 
