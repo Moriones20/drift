@@ -808,3 +808,19 @@ Relacionado: [[D051]], [[D044]], `drift/strategies/base.py`, `drift/strategies/d
 **Diferido (follow-up):** migrar `analyze_entry_hours.py`, `analyze_exclude_rollover.py`, `analyze_spread_cost.py` y `validate_oos.py` al motor nuevo y entonces eliminar `lull_engine.py`.
 
 Relacionado: [[D055]], [[D045]], [[D046]], [[D051]], `backtest/engine.py`, `backtest/_results.py`, `backtest/run_lull.py`, `backtest/optimize_lull.py`, `tests/test_backtest_engine.py`.
+
+## D060 — Alinear el warm-up H4 del bot vivo con el backtest (ADX convergido)
+
+**Decisión (2026-06-09):** Subir `_H4_COUNT` en `drift/strategies/daily_lull.py` de **50 → 320** barras (`_M15_COUNT` se mantiene en 150). Así la `on_bar` viva computa el ADX(14) H4 **convergido**, idéntico al que valida el backtest.
+
+**Qué corrige.** [[D059]] cuantificó que el ADX es doblemente suavizado y con solo 50 barras H4 no converge: leía ~**39** cuando el valor real (serie completa) era ~**27**. Como el filtro de régimen rechaza si ADX ≥ `adx_max_threshold` (35), el bot vivo **rechazaba ~60 entradas de la hora del rollover que el backtest acepta** (39 ≥ 35 rechaza; 27 < 35 aceptaría). Resultado: el bot en paper operaba **más conservador que el edge validado** — no perdía dinero, pero no reproducía la estrategia que se backtesteó. D059 resolvió esto solo del lado backtest (su `MarketData` falso sirve `DEFAULT_WARMUP_BARS = {H4: 320, M15: 250}`); esta decisión cierra el lado **vivo**.
+
+**Por qué 320.** A 320 barras H4 el ADX coincide con la serie completa a ~1e-6, margen que nunca cruza el umbral de 35, así que las decisiones de entrada del vivo igualan a las del backtest. Es el mismo número que `DEFAULT_WARMUP_BARS["H4"]` en `backtest/engine.py` (se mantienen como constantes paralelas con comentario cruzado; `drift/` no importa de `backtest/` para no invertir la dependencia).
+
+**Es un cambio de comportamiento (deliberado, con datos).** Subir el warm-up hace que el vivo **dispare más entradas** (las de la hora rollover que antes rechazaba por ADX inflado). La guardia de spread [[D046]] sigue filtrando las entradas estructuralmente perdedoras de esa ventana, así que las entradas netas nuevas son las de R:R aceptable. El cambio se toma con la medición de D059 (cabeza fría), no a ciegas. Bug **pre-existente**: el código viejo (`strategy.py`, ya eliminado) también pedía 50 barras H4.
+
+**Costo.** Fetch H4 por tick algo mayor (320 vs 50 barras), cacheado por tick en `EngineMarketData` — despreciable.
+
+**Validación.** `tests/test_daily_lull_strategy.py::TestH4WarmupConvergence` blinda que la ventana configurada converge (coincide con la serie completa a <1e-3) y que la antigua de 50 no, y que `_H4_COUNT >= 300`. Los golden tests no se mueven (sus fixtures H4 tienen 50 barras → `market.candles` devuelve las disponibles igual).
+
+Relacionado: [[D059]], [[D046]], [[D055]], `drift/strategies/daily_lull.py`, `tests/test_daily_lull_strategy.py`.

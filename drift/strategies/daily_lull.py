@@ -41,10 +41,16 @@ from drift.strategies.base import Decision, MarketData, Signal, StrategyContext,
 
 logger = logging.getLogger(__name__)
 
-# Number of candles to request from the engine.  Mirrors main.py's live fetch
-# (M15 count=150 for ATR/RSI warmup, H4 count=50 for ADX warmup).
+# Number of candles to request from the engine.
+# M15 count=150 is ample for ATR/RSI(14) Wilder warmup (converges within ~100 bars).
+# H4 count=320 is required for ADX(14) convergence: ADX is doubly smoothed, so a
+# shallow window (the old count=50) reads a non-converged value (~39 vs the ~27
+# full-series value), spuriously tripping the adx_max_threshold filter and rejecting
+# entries the backtest accepts. 320 bars match the backtest warmup (DEFAULT_WARMUP_BARS
+# in backtest/engine.py) to ~1e-6, so live and backtest compute the same regime filter.
+# See D059.
 _M15_COUNT = 150
-_H4_COUNT = 50
+_H4_COUNT = 320
 
 
 # ---------------------------------------------------------------------------

@@ -510,5 +510,45 @@ class TestParamsAndRegistry:
         assert isinstance(market, MarketData)
 
 
+class TestH4WarmupConvergence:
+    """D059: the H4 ADX regime filter needs a deep warmup window to converge.
+
+    ADX is doubly smoothed (Wilder smoothing of DX, itself derived from smoothed
+    DM/TR), so a shallow window leaves the current-bar value non-converged and
+    spuriously trips the adx_max_threshold filter.  ``_H4_COUNT`` must request
+    enough history that the last-bar ADX matches the full-series value, so the
+    live regime filter equals the one the backtest validated.
+    """
+
+    @staticmethod
+    def _h4_ohlc(n: int = 500) -> pd.DataFrame:
+        rng = np.random.default_rng(42)
+        idx = pd.date_range("2025-01-01", periods=n, freq="4h", tz=timezone.utc)
+        close = 1.10 + rng.normal(0, 0.0008, n).cumsum()
+        return pd.DataFrame(
+            {"high": close + 0.0012, "low": close - 0.0012, "close": close}, index=idx
+        )
+
+    def test_configured_window_converges_shallow_does_not(self) -> None:
+        from drift.indicators import adx
+        from drift.strategies.daily_lull import _H4_COUNT
+
+        df = self._h4_ohlc()
+
+        def last_adx(sub: pd.DataFrame) -> float:
+            return float(adx(sub["high"], sub["low"], sub["close"], 14).iloc[-1])
+
+        full = last_adx(df)
+        shallow = last_adx(df.iloc[-50:])  # the old _H4_COUNT
+        deep = last_adx(df.iloc[-_H4_COUNT:])  # the configured window
+
+        # The configured window matches the full-series ADX (converged).
+        assert abs(deep - full) < 1e-3, (deep, full)
+        # The old shallow window is measurably further from the converged value.
+        assert abs(shallow - full) > abs(deep - full), (shallow, deep, full)
+        # Guard against anyone lowering the window back below convergence depth.
+        assert _H4_COUNT >= 300
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
