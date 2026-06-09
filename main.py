@@ -1201,6 +1201,7 @@ def _setup_telegram_resilient(config: DriftConfig, state, tg_loop):
                     token=config.telegram.bot_token,
                     chat_id=config.telegram.chat_id,
                     state=state,
+                    config=config,
                 )
             )
             tg_loop.run_until_complete(bot_app.initialize())
