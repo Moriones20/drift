@@ -78,24 +78,78 @@ class SystemConfig:
     min_reward_fraction: float = 0.5
 
 
+# ---------------------------------------------------------------------------
+# Multi-strategy config (D052, D053, D054)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RiskGlobalConfig:
+    """Account-wide risk limits shared across all strategies (D053)."""
+
+    max_open_trades: int = 4
+    max_drawdown_percent: float = 10.0
+    max_same_currency_direction: int = 2
+
+
+@dataclass
+class StrategyRiskConfig:
+    """Per-strategy risk budget (D053).
+
+    Each strategy has its own risk parameters.  ``max_open_trades`` must be
+    <= ``risk_global.max_open_trades``; validated in ``_validate``.
+    """
+
+    percent_per_trade: float = 1.0
+    max_open_trades: int = 4
+    max_drawdown_percent: float = 10.0
+
+
+@dataclass
+class StrategyInstanceConfig:
+    """Config envelope for one strategy instance (D054).
+
+    The ``params`` dict is OPAQUE to the engine: config.py does not parse it
+    into typed fields.  Each strategy class parses its own ``params`` dict
+    internally (see D054 — "params is opaque to the engine").
+    """
+
+    name: str
+    enabled: bool
+    magic_offset: int
+    allocation_pct: float
+    pairs: list[str]
+    risk: StrategyRiskConfig
+    params: dict  # opaque per-strategy parameters — parsed by the strategy class
+
+
 DEFAULT_PAIRS = ["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"]
 
 
 @dataclass
 class DriftConfig:
     broker: BrokerConfig
-    strategy: StrategyConfig
-    risk: RiskConfig
     telegram: TelegramConfig
     reports: ReportsConfig
     system: SystemConfig
-    pairs: list[str] = field(default_factory=lambda: list(DEFAULT_PAIRS))
+    strategies: dict[str, StrategyInstanceConfig]
+    risk_global: RiskGlobalConfig = field(default_factory=RiskGlobalConfig)
+
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
 
 
 def _resolve_path(path: str | Path | None) -> Path:
     if path is not None:
         return Path(path)
     return Path(__file__).parent.parent / "config.yaml"
+
+
+# ---------------------------------------------------------------------------
+# Section parsers
+# ---------------------------------------------------------------------------
 
 
 def _parse_broker(raw: dict) -> BrokerConfig:
@@ -106,42 +160,6 @@ def _parse_broker(raw: dict) -> BrokerConfig:
         server=str(raw["server"]),
         login=int(raw["login"]),
         password=str(raw["password"]),
-    )
-
-
-def _parse_strategy(raw: dict) -> StrategyConfig:
-    defaults = StrategyConfig()
-    return StrategyConfig(
-        rsi_oversold=float(raw.get("rsi_oversold", defaults.rsi_oversold)),
-        rsi_overbought=float(raw.get("rsi_overbought", defaults.rsi_overbought)),
-        adx_max_threshold=float(raw.get("adx_max_threshold", defaults.adx_max_threshold)),
-        session_start_hour=int(raw.get("session_start_hour", defaults.session_start_hour)),
-        range_definition_hours=int(
-            raw.get("range_definition_hours", defaults.range_definition_hours)
-        ),
-        session_end_hour=int(raw.get("session_end_hour", defaults.session_end_hour)),
-        range_atr_min=float(raw.get("range_atr_min", defaults.range_atr_min)),
-        range_atr_max=float(raw.get("range_atr_max", defaults.range_atr_max)),
-        sl_atr_mult=float(raw.get("sl_atr_mult", defaults.sl_atr_mult)),
-        m15_rsi_period=int(raw.get("m15_rsi_period", defaults.m15_rsi_period)),
-        m15_atr_period=int(raw.get("m15_atr_period", defaults.m15_atr_period)),
-        h4_adx_period=int(raw.get("h4_adx_period", defaults.h4_adx_period)),
-    )
-
-
-def _parse_risk(raw: dict) -> RiskConfig:
-    defaults = RiskConfig()
-    return RiskConfig(
-        percent_per_trade=float(raw.get("percent_per_trade", defaults.percent_per_trade)),
-        max_open_trades=int(raw.get("max_open_trades", defaults.max_open_trades)),
-        max_same_currency_direction=int(
-            raw.get("max_same_currency_direction", defaults.max_same_currency_direction)
-        ),
-        max_drawdown_percent=float(raw.get("max_drawdown_percent", defaults.max_drawdown_percent)),
-        trailing_stop_atr_multiplier=float(
-            raw.get("trailing_stop_atr_multiplier", defaults.trailing_stop_atr_multiplier)
-        ),
-        use_trailing_stop=bool(raw.get("use_trailing_stop", defaults.use_trailing_stop)),
     )
 
 
@@ -185,22 +203,138 @@ def _parse_system(raw: dict) -> SystemConfig:
     )
 
 
+def _parse_risk_global(raw: dict) -> RiskGlobalConfig:
+    defaults = RiskGlobalConfig()
+    return RiskGlobalConfig(
+        max_open_trades=int(raw.get("max_open_trades", defaults.max_open_trades)),
+        max_drawdown_percent=float(raw.get("max_drawdown_percent", defaults.max_drawdown_percent)),
+        max_same_currency_direction=int(
+            raw.get("max_same_currency_direction", defaults.max_same_currency_direction)
+        ),
+    )
+
+
+def _parse_strategy_risk(raw: dict) -> StrategyRiskConfig:
+    defaults = StrategyRiskConfig()
+    return StrategyRiskConfig(
+        percent_per_trade=float(raw.get("percent_per_trade", defaults.percent_per_trade)),
+        max_open_trades=int(raw.get("max_open_trades", defaults.max_open_trades)),
+        max_drawdown_percent=float(raw.get("max_drawdown_percent", defaults.max_drawdown_percent)),
+    )
+
+
+def _parse_strategy_instance(name: str, raw: dict) -> StrategyInstanceConfig:
+    """Parse one entry under ``strategies:`` in the YAML."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"strategies.{name} must be a YAML mapping")
+    return StrategyInstanceConfig(
+        name=name,
+        enabled=bool(raw.get("enabled", True)),
+        magic_offset=int(raw.get("magic_offset", 0)),
+        allocation_pct=float(raw.get("allocation_pct", 100.0)),
+        pairs=[str(p) for p in raw.get("pairs", DEFAULT_PAIRS)],
+        risk=_parse_strategy_risk(raw.get("risk", {})),
+        params=dict(raw.get("params", {})),
+    )
+
+
+def _parse_strategies(raw: dict) -> dict[str, StrategyInstanceConfig]:
+    """Parse the ``strategies:`` block.  Returns dict keyed by strategy name."""
+    if not isinstance(raw, dict):
+        raise ValueError("strategies must be a YAML mapping")
+    return {name: _parse_strategy_instance(name, entry) for name, entry in raw.items()}
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
 def _validate(config: DriftConfig) -> None:
-    if not (0 < config.risk.percent_per_trade <= 5):
+    """Structural validation of the loaded config.
+
+    NOTE: strategy name -> class resolution (e.g. verifying "daily_lull" is in
+    STRATEGY_REGISTRY) happens in the engine at startup (Step 32), NOT here.
+    At this point the registry is empty because strategy classes have not been
+    imported yet.  See D054.
+    """
+    # At least one strategy must be enabled.
+    enabled_strategies = {name: s for name, s in config.strategies.items() if s.enabled}
+    if not enabled_strategies:
+        raise ValueError("At least one strategy must be enabled in strategies:")
+
+    # Each enabled strategy must have a non-empty pairs list.
+    for name, s in enabled_strategies.items():
+        if not s.pairs:
+            raise ValueError(f"strategies.{name}.pairs must be a non-empty list")
+
+    # Sum of allocation_pct for enabled strategies must be <= 100 (D053).
+    total_allocation = sum(s.allocation_pct for s in enabled_strategies.values())
+    if total_allocation > 100.0 + 1e-9:
         raise ValueError(
-            f"risk.percent_per_trade must be between 0 and 5, got {config.risk.percent_per_trade}"
+            f"Sum of allocation_pct for enabled strategies is {total_allocation:.2f}%, "
+            f"which exceeds 100%. Reduce allocations to prevent accidental leverage (D053)."
         )
-    if not (1 <= config.risk.max_open_trades <= 10):
+
+    # Effective magic numbers (base + offset) must be unique across ALL strategies
+    # (not just enabled ones — prevents silent conflicts when re-enabling; D052).
+    base_magic = config.system.magic_number
+    seen_magics: dict[int, str] = {}
+    for name, s in config.strategies.items():
+        effective = base_magic + s.magic_offset
+        if effective in seen_magics:
+            raise ValueError(
+                f"Duplicate effective magic number {effective} "
+                f"(system.magic_number={base_magic} + magic_offset={s.magic_offset}): "
+                f"strategies '{seen_magics[effective]}' and '{name}' share the same magic. "
+                f"Each strategy must have a unique magic_offset (D052)."
+            )
+        seen_magics[effective] = name
+
+    # Per-strategy max_open_trades must not exceed the global cap.
+    global_max = config.risk_global.max_open_trades
+    for name, s in config.strategies.items():
+        if s.risk.max_open_trades > global_max:
+            raise ValueError(
+                f"strategies.{name}.risk.max_open_trades ({s.risk.max_open_trades}) "
+                f"exceeds risk_global.max_open_trades ({global_max}). "
+                f"Per-strategy limit must be <= global limit (D053)."
+            )
+
+    # Per-strategy risk range validations (reuse existing bounds).
+    for name, s in config.strategies.items():
+        if not (0 < s.risk.percent_per_trade <= 5):
+            raise ValueError(
+                f"strategies.{name}.risk.percent_per_trade must be between 0 and 5, "
+                f"got {s.risk.percent_per_trade}"
+            )
+        if not (1 <= s.risk.max_open_trades <= 10):
+            raise ValueError(
+                f"strategies.{name}.risk.max_open_trades must be between 1 and 10, "
+                f"got {s.risk.max_open_trades}"
+            )
+        if not (1 <= s.risk.max_drawdown_percent <= 50):
+            raise ValueError(
+                f"strategies.{name}.risk.max_drawdown_percent must be between 1 and 50, "
+                f"got {s.risk.max_drawdown_percent}"
+            )
+
+    # Global risk range validations.
+    if not (1 <= config.risk_global.max_open_trades <= 10):
         raise ValueError(
-            f"risk.max_open_trades must be between 1 and 10, got {config.risk.max_open_trades}"
+            f"risk_global.max_open_trades must be between 1 and 10, "
+            f"got {config.risk_global.max_open_trades}"
         )
-    if not (1 <= config.risk.max_drawdown_percent <= 50):
+    if not (1 <= config.risk_global.max_drawdown_percent <= 50):
         raise ValueError(
-            f"risk.max_drawdown_percent must be between 1 and 50, "
-            f"got {config.risk.max_drawdown_percent}"
+            f"risk_global.max_drawdown_percent must be between 1 and 50, "
+            f"got {config.risk_global.max_drawdown_percent}"
         )
-    if not config.pairs:
-        raise ValueError("pairs must be a non-empty list")
+
+
+# ---------------------------------------------------------------------------
+# Load
+# ---------------------------------------------------------------------------
 
 
 def load_config(path: str | Path | None = None) -> DriftConfig:
@@ -220,12 +354,11 @@ def load_config(path: str | Path | None = None) -> DriftConfig:
 
     config = DriftConfig(
         broker=_parse_broker(raw.get("broker", {})),
-        strategy=_parse_strategy(raw.get("strategy", {})),
-        risk=_parse_risk(raw.get("risk", {})),
         telegram=_parse_telegram(raw.get("telegram", {})),
         reports=_parse_reports(raw.get("reports", {})),
         system=_parse_system(raw.get("system", {})),
-        pairs=[str(p) for p in raw.get("pairs", DEFAULT_PAIRS)],
+        risk_global=_parse_risk_global(raw.get("risk_global", {})),
+        strategies=_parse_strategies(raw.get("strategies", {})),
     )
 
     _validate(config)

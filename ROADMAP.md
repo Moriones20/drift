@@ -4,6 +4,8 @@
 
 Bot de forex autónomo que opera en MT5 con ICMarkets usando la estrategia Daily Lull Scalper (mean reversion sobre un rango en una ventana nocturna fija = el *daily lull*: en UTC corresponde al cierre de NY / apertura de Sydney, antes de la sesión asiática de Tokio; antes se llamaba "Asian Session Scalper", ver D041/D042), gestionando riesgo de forma estricta para generar retornos consistentes con mínima intervención.
 
+> **Evolución a plataforma multi-estrategia (D050, 2026-06):** Drift está pasando de bot mono-estrategia a **plataforma que hospeda N estrategias** sobre una sola cuenta MT5, con riesgo aislado por estrategia (presupuesto notional + drawdown propio) y un brake global de cuenta. El Daily Lull es la instancia #1. El framework se construye **antes** del go-live (Phase 2.6), en paper. Ver Phase 2.6 y D050–D057.
+
 **Audiencia:** Uso personal — trader retail con $500 de capital inicial operando desde Colombia.
 
 **Principio rector:** Toda decisión sobre el bot se toma con datos, backtesting y análisis — nunca por emoción, una mala racha, o una buena semana. Cabeza fría siempre.
@@ -145,6 +147,29 @@ Objetivo: bot funcional operando en cuenta demo de ICMarkets.
 20. Comparación de pares — ranking de pares por rendimiento, descartar/agregar según resultados
 21. Optimización de parámetros — probar variaciones de sl_atr_mult, adx_max_threshold, rsi_oversold/rsi_overbought, range_atr_min/range_atr_max (con cuidado de no overfittear)
 
+## Phase 2.6 — Plataforma multi-estrategia (pre-live)
+
+Objetivo: refactorizar la capa de orquestación (config, motor, riesgo, DB, Telegram, backtest) para hospedar N estrategias, con el Daily Lull como única instancia concreta (HC1). Se ejecuta **antes** de la Phase 3 (go-live) porque el Lull aún está en paper y es el momento más barato (D050). Fuente de verdad del diseño: D050–D057 y `docs/knowledge/strategy-framework.md`.
+
+**Restricciones de la sesión de diseño (hard constraints):**
+- HC1 — Solo framework; Daily Lull = única estrategia concreta.
+- HC2 — Una cuenta MT5; presupuesto/límites por estrategia + brake global.
+- HC3 — Timing heterogéneo: motor genérico, sin asumir la ventana del Lull.
+- HC4 — El Lull está en paper/demo, no live (sin capital real sobre su lógica).
+
+Orden de implementación (dependencias en notas de PROGRESS.md):
+
+27. **Contrato `Strategy` + registry** (`drift/strategies/base.py`) — `Strategy` Protocol (`name`, `pairs`, `timeframes`, `on_bar`), tipos `Decision` (`Open`/`Close`/`CloseAll`/`NoOp`), `MarketData` (accessor lazy+cacheado), `StrategyContext`, registry nombre→clase. Sin dependencia de MT5. (D051)
+28. **Refactor de config a `strategies[]`** — dataclasses nuevas, `risk_global`, magic base+offset, `params` opaco por estrategia, `pairs` por estrategia. Validación: magic efectivo único, suma de `allocation_pct` ≤ 100%, nombres de estrategia conocidos. Migración manual de `config.yaml` + `config.example.yaml`. (D052/D053/D054)
+29. **Port del Daily Lull al contrato** (`drift/strategies/daily_lull.py`) — `DailyLullStrategy.on_bar`, `SessionState` privado, ventana/time-stop/skip-Friday/espera-rollover como lógica interna, `DailyLullParams`. **Tests de equivalencia** vs el comportamiento actual sobre el mismo histórico. (D051/D055)
+30. **Migración de DB** — columna `strategy` en `trades`/`signals`, `strategy` NULL en `bot_events`, tabla `strategy_state`, CRUD actualizado, `ALTER TABLE` para la DB existente. (D056)
+31. **Motor de riesgo de dos niveles** (`drift/risk.py`) — sizing notional con `allocation_pct`, límites global + por estrategia, correlación global, cómputo de equity/peak/drawdown por estrategia, brake global (kill switch). (D053)
+32. **Motor genérico** (reescritura del loop de `main.py`) — reloj por suscripción (unión de timeframes), `MarketData` con fetch dedup por (par,timeframe) por tick, despacho a estrategias enabled/no-pausadas, gating de riesgo, ejecución, atribución por magic, logging con `strategy`. (D051)
+33. **Thread de monitoreo multi-estrategia** — P&L flotante por magic, peak/drawdown por estrategia → `strategy_state`, pausa por estrategia, detección de cierres atribuida. (D053/D056)
+34. **Telegram multi-estrategia** — desglose por estrategia en `/status`, `/balance`, `/trades`, `/report`; `/pause [estrategia]`, `/resume [estrategia]`, nuevo `/strategies`. Reporte semanal con sección por estrategia. (D057)
+35. **Unificación del backtest** (`backtest/engine.py`) — adaptador propio que recorre el histórico y consume el **mismo** `on_bar`; reemplaza `backtest/lull_engine.py`; se abandona Backtesting.py. Tests de equivalencia. Portfolio backtest **diferido** (ver Futuro). (D055)
+36. **Validación end-to-end en paper** — correr el framework con el Lull como única estrategia; verificar paridad con el comportamiento pre-refactor; luego proceder a Phase 3 (go-live).
+
 ## Phase 3 — Live
 
 22. Migrar a VPS Windows
@@ -159,7 +184,9 @@ Objetivo: bot funcional operando en cuenta demo de ICMarkets.
 - **Filtro de noticias:** integrar calendario económico para evitar operar durante eventos de alto impacto (si el journal muestra que es necesario)
 - **Más pares:** expandir pool de pares basado en datos de demo/live
 - **Dashboard web:** interfaz visual para monitoreo (opcional, Telegram puede ser suficiente)
-- **Multi-estrategia:** correr varias estrategias en paralelo con capital asignado
+- **Segunda estrategia concreta:** diseñar e implementar la estrategia #2 (p.ej. trend-following 24/5 en H1) sobre el framework de la Phase 2.5 — primera prueba real de que la abstracción aguanta timing heterogéneo (HC3)
+- **Portfolio backtest:** simular varias estrategias sobre una misma curva de equity (cap global de trades + correlación + drawdown de cuenta compartidos); diferido hasta que exista la estrategia #2 (D055)
+- ~~**Multi-estrategia:** correr varias estrategias en paralelo con capital asignado~~ → promovido a Phase 2.6 (D050)
 
 ---
 

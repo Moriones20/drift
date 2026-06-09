@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import logging.handlers
-import math
 import signal
 import sys
 import threading
@@ -17,26 +16,26 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from drift.config import DriftConfig, load_config
+from drift.config import DriftConfig, RiskConfig, load_config
 from drift.db import (
     close_trade_record,
     get_connection,
-    get_open_trades,
     get_stats,
+    get_strategy_state,
     get_trade_by_ticket,
     init_db,
     log_event,
     log_peak_balance,
-    log_signal,
-    log_trade,
+    set_strategy_paused,
+    upsert_strategy_peak,
 )
-from drift.executor import close_trade, get_open_positions, open_trade
+from drift.engine import Engine
+from drift.executor import close_trade, get_open_positions
 from drift.formatting import parse_utc_offset, set_display_tz
 from drift.mt5_client import (
     connect,
     disconnect,
     get_balance,
-    get_candles,
     get_equity,
     get_server_utc_offset,
     health_check,
@@ -44,8 +43,11 @@ from drift.mt5_client import (
     server_now,
 )
 from drift.report import generate_weekly_report
-from drift.risk import calculate_position_size, check_all_risk
-from drift.strategy import SessionState, Signal, closed_bars, evaluate_pair, should_close_on_time
+from drift.risk import (
+    check_drawdown,
+    check_strategy_drawdown,
+    strategy_equity,
+)
 from drift.telegram_bot import (
     BotState,
     notify_bot_status,
@@ -61,7 +63,6 @@ from drift.trailing import process_open_trades
 # Constants
 # ---------------------------------------------------------------------------
 
-CANDLE_CLOSE_DELAY_SECONDS = 5
 _LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 _PROJECT_ROOT = Path(__file__).parent
 
@@ -78,6 +79,13 @@ _last_report_date: date | None = None
 
 # Prevents race conditions between the main analysis cycle and the monitoring thread.
 _trade_lock = threading.Lock()
+
+# The monitoring thread's trailing-stop pass is broker housekeeping that only ever
+# reads use_trailing_stop (False for every current strategy — Daily Lull does not
+# trail, D029).  A bare RiskConfig() carries that default, so the monitoring thread
+# no longer depends on the transitional config.risk shim (C10) for trailing.  When
+# a trailing strategy is added, trailing moves into that strategy via the engine.
+_MONITOR_TRAILING_CONFIG = RiskConfig()
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -115,99 +123,6 @@ def _configure_logging() -> None:
 
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# M15 session timing helpers
-# ---------------------------------------------------------------------------
-
-
-def _next_m15_close(now: datetime) -> datetime:
-    """Return the next M15 boundary strictly after *now* (HH:00, HH:15, HH:30, HH:45).
-
-    *now* must be in MT5 server time so the result aligns with candle close timestamps.
-    """
-    minute = now.minute
-    # Compute next 15-minute slot strictly after current minute
-    next_slot = ((minute // 15) + 1) * 15
-    if next_slot < 60:
-        candidate = now.replace(minute=next_slot, second=0, microsecond=0)
-    else:
-        # Roll over to next hour
-        next_hour = now + timedelta(hours=1)
-        candidate = next_hour.replace(minute=0, second=0, microsecond=0)
-    return candidate
-
-
-def _in_session_window(now: datetime, config: DriftConfig) -> bool:
-    """Return True iff the current MT5 server time is inside an active Daily Lull session.
-
-    *now* must be in MT5 server time (GMT+3 for ICMarkets).  The session hours
-    (session_start_hour=21, session_end_hour=2) are defined in server time to match
-    candle timestamps and the validated backtest window.
-
-    A session spans `session_start_hour` (21) on day N to `session_end_hour` (2) on
-    day N+1.  The session is identified by its start day:
-
-      - Sessions starting Mon-Thu and Sun are valid.
-      - Sessions starting Fri are skipped (ICMarkets Sydney close around 22:00 server
-        time leaves less than the 2-hour range-definition window).
-      - Sessions starting Sat are skipped (market closed).
-
-    So Friday 00:00-01:59 server time is allowed because it is the tail of
-    Thursday's session.
-    """
-    h = now.hour
-    start = config.strategy.session_start_hour
-    end = config.strategy.session_end_hour
-
-    if h >= start:
-        # Tonight is the start of "today's" session — valid unless today is Fri or Sat.
-        return now.weekday() not in (4, 5)
-    if h < end:
-        # We are in the tail of "yesterday's" session — valid unless yesterday was Fri or Sat.
-        yesterday_weekday = (now - timedelta(days=1)).weekday()
-        return yesterday_weekday not in (4, 5)
-    return False
-
-
-def _next_session_start(now: datetime, config: DriftConfig) -> datetime:
-    """Return the next session_start_hour:00 server time strictly after *now*.
-
-    *now* must be in MT5 server time.  The returned datetime is also in server
-    time so callers can compute a consistent delta without timezone conversion.
-
-    Skips Friday and Saturday session starts (no market / not enough window).
-    Sunday 21:00 server time IS a valid session start — it is the Sydney open
-    of the new trading week.  A call on Friday 22:00 server time returns Sunday
-    21:00 server time.
-    """
-    start_hour = config.strategy.session_start_hour
-    # Start from current day's session_start_hour candidate
-    candidate = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
-    if candidate <= now:
-        candidate += timedelta(days=1)
-
-    # Skip Friday (4) and Saturday (5) — Sunday (6) is the new week's first session.
-    while candidate.weekday() in (4, 5):
-        candidate += timedelta(days=1)
-
-    return candidate
-
-
-def _post_close_delay_seconds(next_close: datetime, config: DriftConfig) -> int:
-    """Seconds to wait after an M15 close before evaluating/executing it.
-
-    The candle closing at 00:00 server time coincides with ICMarkets' daily
-    rollover halt (~1-2 min of "market closed" / wide spreads). Executing then
-    fills into the reopen gap and turned a winning signal into a loss on
-    2026-06-03 (see D040/D044). That one candle waits `rollover_settle_seconds`
-    so the market reopens and the strategy re-evaluates on a fresh price; if the
-    price has gapped away from the extreme, no entry fires. All other candles
-    use the normal short delay.
-    """
-    if next_close.hour == 0 and next_close.minute == 0:
-        return config.system.rollover_settle_seconds
-    return CANDLE_CLOSE_DELAY_SECONDS
 
 
 def _seconds_until(target: datetime, server_offset: timedelta) -> float:
@@ -260,6 +175,33 @@ def _pip_value(pair: str, info=None) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _enabled_pairs(config: DriftConfig) -> list[str]:
+    """Return the order-preserving union of pairs across enabled strategies (D054)."""
+    seen: dict[str, None] = {}
+    for instance in config.strategies.values():
+        if not instance.enabled:
+            continue
+        for pair in instance.pairs:
+            seen.setdefault(pair, None)
+    return list(seen)
+
+
+def _enabled_strategy_magics(config: DriftConfig) -> dict[str, int]:
+    """Return ``{strategy_name: effective_magic}`` for every enabled strategy.
+
+    The effective magic is ``system.magic_number + magic_offset`` — the same
+    attribution the engine uses (D052).  The monitoring thread iterates this map
+    to compute per-strategy drawdown and to build the union of magics for
+    attributed close detection.
+    """
+    base_magic = config.system.magic_number
+    return {
+        name: base_magic + instance.magic_offset
+        for name, instance in config.strategies.items()
+        if instance.enabled
+    }
+
+
 def _validate_pairs(pairs: list[str]) -> None:
     """Activate configured pairs in Market Watch and warn about missing ones.
 
@@ -290,409 +232,6 @@ def _validate_pairs(pairs: list[str]) -> None:
                 info.digits,
                 info.trade_tick_value * 10,
             )
-
-
-# ---------------------------------------------------------------------------
-# Session close helper (state D)
-# ---------------------------------------------------------------------------
-
-
-def _close_session_trades(
-    config: DriftConfig,
-    session_states: dict[str, SessionState],
-    bot_app,
-) -> None:
-    """Force-close all open positions for this bot and reset all session states.
-
-    Called at state D (M15 bar whose close stamp hour == session_end_hour).
-    """
-    with _trade_lock:
-        mt5_positions = get_open_positions(config.system.magic_number)
-        for pos in mt5_positions:
-            try:
-                logger.info(
-                    "Session close (02:00): closing ticket=%d %s", pos["ticket"], pos["pair"]
-                )
-                success = close_trade(
-                    ticket=pos["ticket"],
-                    pair=pos["pair"],
-                    lot_size=pos["volume"],
-                    direction=pos["direction"],
-                    magic=config.system.magic_number,
-                )
-                if success:
-                    import MetaTrader5 as mt5
-
-                    exit_price = 0.0
-                    pnl = pos.get("profit", 0.0)
-                    deals = mt5.history_deals_get(position=pos["ticket"])
-                    if deals:
-                        close_deal = deals[-1]
-                        exit_price = close_deal.price
-                        pnl = close_deal.profit
-
-                    # Read the settled balance fresh from MT5 so it includes
-                    # this trade's own P&L and commission (a pre-close snapshot
-                    # would omit them). See D048.
-                    balance_settled = get_balance()
-
-                    with get_connection() as db_conn:
-                        trade = get_trade_by_ticket(db_conn, pos["ticket"])
-                        if trade and trade.get("closed_at") is None:
-                            close_trade_record(
-                                db_conn,
-                                trade["id"],
-                                exit_price=exit_price,
-                                profit_loss=pnl,
-                                balance_at_close=balance_settled,
-                                close_reason="session_close",
-                            )
-                            updated = get_trade_by_ticket(db_conn, pos["ticket"])
-                            duration = (updated["duration_minutes"] or 0) if updated else 0
-                        else:
-                            duration = 0
-
-                    trade_info = {
-                        "pair": pos["pair"],
-                        "direction": pos["direction"],
-                        "entry_price": pos.get("price_open", 0.0),
-                        "exit_price": exit_price,
-                        "profit_loss": pnl,
-                        "close_reason": "session_close",
-                        "duration_minutes": duration,
-                    }
-                    _fire_and_forget(
-                        notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info)
-                    )
-            except Exception:
-                logger.exception(
-                    "Error closing session position ticket=%d %s — continuing",
-                    pos["ticket"],
-                    pos["pair"],
-                )
-
-        # Reset all session states — next session starts fresh at 21:00.
-        for pair in list(session_states.keys()):
-            session_states[pair] = SessionState()
-        logger.info("Session states reset after session close")
-
-
-# ---------------------------------------------------------------------------
-# Per-pair M15 analysis (states B and C)
-# ---------------------------------------------------------------------------
-
-
-def _analyse_pair_m15(
-    pair: str,
-    balance: float,
-    peak_balance: float,
-    equity: float,
-    peak_equity: float,
-    config: DriftConfig,
-    state: BotState,
-    session_states: dict[str, SessionState],
-    bot_app,
-    trading_allowed: bool,
-    server_offset: timedelta,
-    bar_close_time: datetime,
-) -> None:
-    """Fetch M15+H4 data and evaluate the pair for the current M15 close.
-
-    Parameters
-    ----------
-    balance:
-        Settled account balance (no floating P&L).  Used only for position
-        sizing so that risk-per-trade is computed on realised equity.
-    peak_balance:
-        Kept for backward compatibility but no longer used directly; the
-        drawdown entry gate uses peak_equity instead.
-    equity:
-        Current account equity (balance + floating P&L).  Passed to
-        check_all_risk so the drawdown entry gate matches the monitoring-thread
-        brake, which also operates on equity after commit 52d43ad.
-    peak_equity:
-        Running high-water mark of equity (maintained by _run_m15_tick and the
-        monitoring thread via peak_balance_ref).
-    trading_allowed:
-        True in state C (23:00-01:59), False in state B (21:00-22:59).
-        When False, evaluate_pair is still called so it can update session state
-        (range accumulation + locking at 23:00 is handled inside evaluate_pair /
-        update_session_state), but any resulting buy/sell signal is suppressed.
-    """
-    m15_df = get_candles(pair, "M15", count=150)
-    h4_df = get_candles(pair, "H4", count=50)
-
-    # Evaluate only CLOSED M15 bars so the live bot acts on completed-bar closes
-    # like the backtest, not the still-forming (rollover-contaminated) bar (D045).
-    m15_df = closed_bars(m15_df, bar_close_time)
-
-    signal: Signal = evaluate_pair(
-        symbol=pair,
-        m15_df=m15_df,
-        h4_df=h4_df,
-        session_state=session_states[pair],
-        config=config.strategy,
-    )
-
-    with _trade_lock:
-        with get_connection() as db_conn:
-            if not trading_allowed or signal.action not in ("buy", "sell"):
-                log_signal(db_conn, signal, trade_id=None, server_offset=server_offset)
-                return
-
-            open_trades_db = get_open_trades(db_conn)
-            # Drawdown gate uses equity so it matches the monitoring-thread brake.
-            risk_ok, risk_reason = check_all_risk(
-                balance=equity,
-                peak_balance=peak_equity,
-                open_trades=open_trades_db,
-                new_pair=pair,
-                new_direction=signal.action,
-                config=config.risk,
-            )
-            if not risk_ok:
-                logger.info("%s | risk check failed: %s", pair, risk_reason)
-                log_signal(
-                    db_conn,
-                    signal,
-                    trade_id=None,
-                    rejection_reason=f"risk: {risk_reason}",
-                    server_offset=server_offset,
-                )
-                # Roll back traded flag: risk rejected, so we have not really traded.
-                session_states[pair].traded = False
-                return
-
-            import MetaTrader5 as mt5
-
-            # Fetch symbol_info once; reuse it for both pip value and volume
-            # constraint validation to avoid two IPC calls to the MT5 terminal.
-            sym_info = mt5.symbol_info(pair)
-
-            pip_mult = _pip_multiplier(pair)
-            pip_val = _pip_value(pair, info=sym_info)
-            sl_pips = abs(signal.entry_price - signal.sl) * pip_mult
-
-            lot_size = calculate_position_size(
-                balance=balance,
-                risk_percent=config.risk.percent_per_trade,
-                stop_loss_pips=sl_pips,
-                pip_value=pip_val,
-            )
-
-            if lot_size <= 0:
-                logger.warning("%s | position size is 0 — skipping trade", pair)
-                log_signal(
-                    db_conn,
-                    signal,
-                    trade_id=None,
-                    rejection_reason="lot_size_zero",
-                    server_offset=server_offset,
-                )
-                session_states[pair].traded = False
-                return
-
-            # Validate lot_size against the broker's real volume constraints for
-            # this symbol.  risk.py returns a mathematically correct raw value but
-            # deliberately knows nothing about MT5 — the adjustment lives here
-            # where symbol_info is already available.
-            if sym_info is not None:
-                vol_step = sym_info.volume_step
-                vol_min = sym_info.volume_min
-                vol_max = sym_info.volume_max
-
-                # Round down to the nearest volume_step.
-                if vol_step > 0:
-                    adjusted = round(math.floor(lot_size / vol_step) * vol_step, 10)
-                    if adjusted != lot_size:
-                        logger.info(
-                            "%s | lot_size %.4f rounded down to %.4f (volume_step=%.4f)",
-                            pair,
-                            lot_size,
-                            adjusted,
-                            vol_step,
-                        )
-                    lot_size = adjusted
-
-                # Skip if still below volume_min.
-                if lot_size < vol_min:
-                    logger.warning(
-                        "%s | lot_size %.4f is below volume_min %.4f — skipping trade",
-                        pair,
-                        lot_size,
-                        vol_min,
-                    )
-                    log_signal(
-                        db_conn,
-                        signal,
-                        trade_id=None,
-                        rejection_reason="lot_below_min",
-                        server_offset=server_offset,
-                    )
-                    session_states[pair].traded = False
-                    return
-
-                # Cap to volume_max.  A capped trade still respects risk on the
-                # downside (actual risk is lower than targeted); skipping would be
-                # overly conservative for a small max.
-                if lot_size > vol_max:
-                    logger.warning(
-                        "%s | lot_size %.4f exceeds volume_max %.4f — capping",
-                        pair,
-                        lot_size,
-                        vol_max,
-                    )
-                    lot_size = vol_max
-
-            ticket = open_trade(
-                pair=pair,
-                direction=signal.action,
-                lot_size=lot_size,
-                stop_loss=signal.sl,
-                take_profit=signal.tp,
-                magic=config.system.magic_number,
-                max_retries=config.system.order_retry_attempts,
-                retry_delay_seconds=config.system.order_retry_delay_seconds,
-                guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
-                entry_reference=signal.entry_price,
-                min_reward_fraction=config.system.min_reward_fraction,
-            )
-
-            if ticket is None:
-                logger.error("%s | open_trade failed", pair)
-                log_signal(db_conn, signal, trade_id=None, server_offset=server_offset)
-                session_states[pair].traded = False
-                return
-
-            entry_price = signal.entry_price
-            positions = mt5.positions_get(ticket=ticket)
-            if positions:
-                entry_price = positions[0].price_open
-
-            trade_id = log_trade(
-                db_conn,
-                pair=pair,
-                direction=signal.action,
-                entry_price=entry_price,
-                stop_loss=signal.sl,
-                take_profit=signal.tp,
-                position_size=lot_size,
-                balance_at_open=balance,
-                mt5_ticket=ticket,
-            )
-
-            log_signal(db_conn, signal, trade_id=trade_id, server_offset=server_offset)
-
-            # session_states[pair].traded is already True (set inside evaluate_pair).
-
-            risk_usd = balance * config.risk.percent_per_trade / 100
-            trade_info = {
-                "pair": pair,
-                "direction": signal.action,
-                "entry_price": entry_price,
-                "stop_loss": signal.sl,
-                "take_profit": signal.tp,
-                "position_size": lot_size,
-                "risk_usd": risk_usd,
-                "risk_pct": config.risk.percent_per_trade,
-            }
-            _fire_and_forget(notify_trade_opened(bot_app.bot, config.telegram.chat_id, trade_info))
-            logger.info(
-                "%s | trade opened ticket=%d direction=%s lot=%.2f",
-                pair,
-                ticket,
-                signal.action,
-                lot_size,
-            )
-
-
-# ---------------------------------------------------------------------------
-# M15 session cycle (states B + C + D) — called once per M15 candle close
-# ---------------------------------------------------------------------------
-
-
-def _run_m15_tick(
-    config: DriftConfig,
-    state: BotState,
-    peak_balance_ref: list[float],
-    session_states: dict[str, SessionState],
-    bot_app,
-    bar_close_time: datetime,
-    server_offset: timedelta,
-) -> None:
-    """Process one M15 candle close.
-
-    Dispatches to state B (range definition), C (trading), or D (session close).
-    """
-    hour = bar_close_time.hour
-
-    # State D — session close at session_end_hour (02:00 server time)
-    if should_close_on_time(bar_close_time, config.strategy):
-        logger.info(
-            "=== Session close (state D) at %s server time ===",
-            bar_close_time.strftime("%H:%M"),
-        )
-        _close_session_trades(config, session_states, bot_app)
-        _fire_and_forget(
-            notify_bot_status(
-                bot_app.bot,
-                config.telegram.chat_id,
-                "stopped",
-                "Daily Lull session closed (02:00 server time) — sleeping until next session",
-            )
-        )
-        return
-
-    # States B (21:00-22:59) and C (23:00-01:59)
-    # Determine whether entries are allowed (state C only)
-    trading_allowed = hour in (23, 0, 1)
-
-    if not (hour in (21, 22) or trading_allowed):
-        # Outside the active window — should not normally reach here because the
-        # main loop only calls this function during the session window, but guard
-        # defensively.
-        return
-
-    logger.info(
-        "=== M15 tick (state %s) %s server time ===",
-        "C" if trading_allowed else "B",
-        bar_close_time.strftime("%H:%M"),
-    )
-
-    try:
-        balance = get_balance()
-        equity = get_equity()
-    except RuntimeError:
-        logger.exception("Cannot get balance/equity — skipping M15 tick")
-        return
-
-    if equity > peak_balance_ref[0]:
-        peak_balance_ref[0] = equity
-        logger.info("Peak equity updated: %.2f", peak_balance_ref[0])
-        with get_connection() as db_conn:
-            log_peak_balance(db_conn, peak_balance_ref[0])
-
-    for pair in config.pairs:
-        if state.paused:
-            logger.info("Bot paused — skipping pair %s", pair)
-            continue
-        try:
-            _analyse_pair_m15(
-                pair=pair,
-                balance=balance,
-                peak_balance=peak_balance_ref[0],
-                equity=equity,
-                peak_equity=peak_balance_ref[0],
-                config=config,
-                state=state,
-                session_states=session_states,
-                bot_app=bot_app,
-                trading_allowed=trading_allowed,
-                server_offset=server_offset,
-                bar_close_time=bar_close_time,
-            )
-        except Exception:
-            logger.exception("Unhandled error analysing %s", pair)
 
 
 # ---------------------------------------------------------------------------
@@ -841,14 +380,30 @@ def _monitoring_tick(
             with get_connection() as db_conn:
                 log_peak_balance(db_conn, peak_balance_ref[0])
 
-        drawdown_ok, dd_reason = _check_drawdown_pause(
-            equity, peak_balance_ref[0], config, state, bot_app
-        )
+        # Global brake (kill switch) — pauses EVERYTHING (state.paused).  Measured
+        # on account equity vs the global equity peak using risk_global (D053);
+        # this no longer reads the config.risk compat shim (C10).
+        drawdown_ok, _ = _check_drawdown_pause(equity, peak_balance_ref[0], config, state, bot_app)
         if not drawdown_ok:
             return
 
-        mt5_positions = get_open_positions(config.system.magic_number)
-        mt5_tickets = {p["ticket"] for p in mt5_positions}
+        # Per-strategy positions (by effective magic) drive both the per-strategy
+        # drawdown brake and the union of tickets used for attributed close
+        # detection (D052/D053).
+        strategy_magics = _enabled_strategy_magics(config)
+        positions_by_strategy: dict[str, list[dict]] = {
+            name: get_open_positions(magic) for name, magic in strategy_magics.items()
+        }
+
+        # Per-strategy drawdown brake — pauses ONLY the breaching strategy
+        # (strategy_state.paused), distinct from the global kill switch above.
+        for name, positions in positions_by_strategy.items():
+            _check_strategy_drawdown_pause(name, positions, balance, config, bot_app)
+
+        # Union of all enabled strategies' open positions for close detection.
+        # A ticket disappearing from any strategy's magic is a real close (D031).
+        all_positions = [p for positions in positions_by_strategy.values() for p in positions]
+        mt5_tickets = {p["ticket"] for p in all_positions}
 
         pending_tickets = _detect_closed_trades(known_tickets, mt5_tickets, config, bot_app)
 
@@ -857,8 +412,8 @@ def _monitoring_tick(
         known_tickets.clear()
         known_tickets |= mt5_tickets | pending_tickets
 
-        if mt5_positions:
-            process_open_trades(mt5_positions, config.risk)
+        if all_positions:
+            process_open_trades(all_positions, _MONITOR_TRAILING_CONFIG)
 
     _check_weekly_report(config, balance, peak_balance_ref[0], bot_app)
 
@@ -870,9 +425,13 @@ def _check_drawdown_pause(
     state: BotState,
     bot_app,
 ) -> tuple[bool, str]:
-    from drift.risk import check_drawdown
+    """Global drawdown kill switch — pauses the whole account (state.paused).
 
-    ok, reason = check_drawdown(equity, peak_equity, config.risk.max_drawdown_percent)
+    Measured on account equity vs the global equity peak using
+    ``risk_global.max_drawdown_percent`` (D053).  Mirrors the engine's
+    ``_trip_global_brake`` so a brake tripped by either context pauses everything.
+    """
+    ok, reason = check_drawdown(equity, peak_equity, config.risk_global.max_drawdown_percent)
     if not ok and not state.paused:
         state.paused = True
         logger.warning("Drawdown limit reached: %s — bot paused", reason)
@@ -888,6 +447,69 @@ def _check_drawdown_pause(
         )
         return False, reason
     return True, ""
+
+
+def _check_strategy_drawdown_pause(
+    strategy_name: str,
+    positions: list[dict],
+    balance: float,
+    config: DriftConfig,
+    bot_app,
+) -> None:
+    """Per-strategy drawdown brake — pauses only this strategy (D053, D056).
+
+    Computes the strategy's individual equity curve
+    (``allocated_baseline + realized_pnl + floating_pnl``), keeps its peak in
+    ``strategy_state``, and when drawdown breaches the strategy's own limit sets
+    ``strategy_state.paused`` so the engine stops opening new entries for it on
+    its next dispatch.  Open positions are kept (pause = hold, D053) — they stay
+    protected by their server-side SL/TP.
+
+    allocated_baseline is computed from the CURRENT account balance
+    (``balance * allocation_pct/100``).  A baseline anchored to the balance at
+    the moment the strategy was enabled would be a more stable denominator, but
+    it is not persisted yet; the current-balance approximation tracks the
+    notional allocation the strategy actually sizes against (D053) and is
+    consistent with the engine's own per-strategy brake in
+    ``Engine._check_strategy_drawdown`` (same formula), so both contexts agree.
+
+    Must be called while holding ``_trade_lock`` (the caller does).
+    """
+    instance = config.strategies.get(strategy_name)
+    if instance is None:  # pragma: no cover - defensive
+        return
+
+    allocated_baseline = balance * instance.allocation_pct / 100.0
+    floating = sum(p.get("profit", 0.0) for p in positions)
+
+    with get_connection() as db_conn:
+        realized = get_stats(db_conn, strategy=strategy_name).get("total_pnl", 0.0) or 0.0
+        equity = strategy_equity(allocated_baseline, realized, floating)
+
+        row = get_strategy_state(db_conn, strategy_name)
+        stored_peak = (row["peak_equity"] if row else 0.0) or 0.0
+        already_paused = bool(row["paused"]) if row else False
+        peak = max(stored_peak, equity)
+        upsert_strategy_peak(db_conn, strategy_name, equity)
+
+        ok, reason = check_strategy_drawdown(equity, peak, instance.risk.max_drawdown_percent)
+        if ok or already_paused:
+            return
+
+        set_strategy_paused(db_conn, strategy_name, True)
+        logger.warning(
+            "%s | per-strategy drawdown reached: %s — strategy paused", strategy_name, reason
+        )
+        log_event(db_conn, "drawdown_alert", detail=reason, balance=equity, strategy=strategy_name)
+
+    _fire_and_forget(
+        notify_bot_status(
+            bot_app.bot,
+            config.telegram.chat_id,
+            "paused",
+            f"Strategy {strategy_name} paused — {reason}",
+        )
+    )
 
 
 def _detect_closed_trades(
@@ -949,12 +571,16 @@ def _detect_closed_trades(
                 "profit_loss": pnl,
                 "close_reason": close_reason,
                 "duration_minutes": duration or 0,
+                # The strategy was attributed at open time by the engine (D056);
+                # surface it so multi-strategy close notifications are unambiguous.
+                "strategy": trade.get("strategy"),
             }
             _fire_and_forget(notify_trade_closed(bot_app.bot, config.telegram.chat_id, trade_info))
             logger.info(
-                "Detected closed trade ticket=%d pair=%s pnl=%.2f reason=%s",
+                "Detected closed trade ticket=%d pair=%s strategy=%s pnl=%.2f reason=%s",
                 ticket,
                 trade["pair"],
+                trade.get("strategy"),
                 pnl,
                 close_reason,
             )
@@ -1004,16 +630,33 @@ def _shutdown(
     shutdown_event.set()
 
     if state.stop_requested:
-        mt5_positions = get_open_positions(config.system.magic_number)
-        for pos in mt5_positions:
-            logger.info("Stop requested — closing ticket=%d %s", pos["ticket"], pos["pair"])
-            close_trade(
-                ticket=pos["ticket"],
-                pair=pos["pair"],
-                lot_size=pos["volume"],
-                direction=pos["direction"],
-                magic=config.system.magic_number,
-            )
+        base_magic = config.system.magic_number
+        for instance_cfg in config.strategies.values():
+            if not instance_cfg.enabled:
+                continue
+            effective_magic = base_magic + instance_cfg.magic_offset
+            mt5_positions = get_open_positions(effective_magic)
+            for pos in mt5_positions:
+                logger.info(
+                    "Stop requested — closing ticket=%d %s (magic=%d)",
+                    pos["ticket"],
+                    pos["pair"],
+                    effective_magic,
+                )
+                try:
+                    close_trade(
+                        ticket=pos["ticket"],
+                        pair=pos["pair"],
+                        lot_size=pos["volume"],
+                        direction=pos["direction"],
+                        magic=effective_magic,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Error closing ticket=%d %s on shutdown — continuing",
+                        pos["ticket"],
+                        pos["pair"],
+                    )
 
     try:
         balance = get_balance()
@@ -1053,6 +696,7 @@ def _setup_telegram_resilient(config: DriftConfig, state, tg_loop):
                     token=config.telegram.bot_token,
                     chat_id=config.telegram.chat_id,
                     state=state,
+                    config=config,
                 )
             )
             tg_loop.run_until_complete(bot_app.initialize())
@@ -1122,13 +766,17 @@ def main() -> None:
         # once, so a process running continuously across a US DST change
         # (≈Mar/Nov) keeps a stale offset until restarted — restart the bot
         # after each DST transition.
-        _server_offset = get_server_utc_offset(config.pairs[0] if config.pairs else "EURUSD")
+        # Union of pairs across all enabled strategies (D054): this is what gets
+        # activated in Market Watch and what the offset derivation samples.
+        all_pairs = _enabled_pairs(config)
+
+        _server_offset = get_server_utc_offset(all_pairs[0] if all_pairs else "EURUSD")
         logger.info(
             "MT5 server offset: UTC%+d — scheduler aligned to server time",
             round(_server_offset.total_seconds() / 3600),
         )
 
-        _validate_pairs(config.pairs)
+        _validate_pairs(all_pairs)
 
         try:
             balance = get_balance()
@@ -1152,9 +800,6 @@ def main() -> None:
             equity,
             peak_balance,
         )
-
-        # Per-pair session state — reset at the start of each session (21:00 server time).
-        session_states: dict[str, SessionState] = {pair: SessionState() for pair in config.pairs}
 
         state = BotState()
         shutdown_event = threading.Event()
@@ -1202,127 +847,32 @@ def main() -> None:
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
 
-        logger.info("Drift bot running — M15 Daily Lull session scheduler active")
+        logger.info("Drift bot running — multi-strategy engine active")
 
-        # Track whether we are currently inside a session to detect the B→A transition.
-        _session_active: bool = False
+        # The engine (Step 32b) hosts every enabled strategy, drives the
+        # next_wake scheduler (D058), serves deduplicated market data, gates
+        # two-level risk (D053), executes/attributes by magic (D052), and
+        # handles each strategy's Decision.  It shares _trade_lock with the
+        # monitoring thread and reuses the same notification hooks.  All the
+        # session-window/timing/state logic that used to live in this loop is now
+        # strategy-private (D051).
+        engine = Engine(
+            config=config,
+            state=state,
+            peak_balance_ref=peak_balance_ref,
+            bot_app=bot_app,
+            server_offset=_server_offset,
+            trade_lock=_trade_lock,
+            shutdown_event=shutdown_event,
+            fire_and_forget=_fire_and_forget,
+            notify_trade_opened=notify_trade_opened,
+            notify_trade_closed=notify_trade_closed,
+            notify_bot_status=notify_bot_status,
+            notify_error=notify_error,
+        )
 
         try:
-            while not state.stop_requested:
-                try:
-                    # All session-window decisions use MT5 server time so they
-                    # align with the candle timestamps and the strategy's hour
-                    # checks (session_start_hour=21, session_end_hour=2 are
-                    # defined in server time).  The weekly-report trigger in
-                    # _check_weekly_report continues to use real UTC so it fires
-                    # on the user's configured wall-clock schedule.
-                    now = server_now(_server_offset)
-
-                    # --- State A: outside window — sleep until next session start ---
-                    if not _in_session_window(now, config):
-                        if _session_active:
-                            # Transitioned from inside → outside — session already closed at 02:00.
-                            _session_active = False
-
-                        next_start = _next_session_start(now, config)
-                        wait_secs = (
-                            _seconds_until(next_start, _server_offset) + CANDLE_CLOSE_DELAY_SECONDS
-                        )
-                        logger.info(
-                            "Outside window (state A) — sleeping until %s server time (%.0fs)",
-                            next_start.strftime("%Y-%m-%d %H:%M"),
-                            wait_secs,
-                        )
-
-                        deadline = time.monotonic() + wait_secs
-                        while time.monotonic() < deadline and not state.stop_requested:
-                            time.sleep(min(10.0, deadline - time.monotonic()))
-
-                        if state.stop_requested:
-                            break
-
-                        # Refresh now; re-check window.
-                        continue
-
-                    # --- Entering session for the first time (B starts) ---
-                    if not _session_active:
-                        # Re-derive the server offset at each session start so a
-                        # long-running process picks up US DST transitions
-                        # (≈Mar/Nov) without a restart (D041).  Cheap: once per
-                        # session.  If it changed, realign by recomputing `now`
-                        # before doing anything window-dependent.
-                        refreshed = get_server_utc_offset(
-                            config.pairs[0] if config.pairs else "EURUSD"
-                        )
-                        if refreshed != _server_offset:
-                            logger.warning(
-                                "MT5 server offset changed UTC%+d → UTC%+d (DST?) — "
-                                "realigning scheduler",
-                                round(_server_offset.total_seconds() / 3600),
-                                round(refreshed.total_seconds() / 3600),
-                            )
-                            _server_offset = refreshed
-                            continue
-
-                        _session_active = True
-                        # Reset all session states at session start.
-                        for pair in config.pairs:
-                            session_states[pair] = SessionState()
-                        logger.info("Session started — all session states reset")
-                        _fire_and_forget(
-                            notify_bot_status(
-                                bot_app.bot,
-                                config.telegram.chat_id,
-                                "started",
-                                "Daily Lull session started (21:00 server time)",
-                            )
-                        )
-
-                    # --- States B + C + D: wait for next M15 close and process tick ---
-                    next_close = _next_m15_close(now)
-                    post_close_delay = _post_close_delay_seconds(next_close, config)
-                    wait_secs = _seconds_until(next_close, _server_offset) + post_close_delay
-                    logger.info(
-                        "Next M15 close at %s server time — sleeping %.0fs%s",
-                        next_close.strftime("%H:%M"),
-                        wait_secs,
-                        " (rollover settle)"
-                        if post_close_delay != CANDLE_CLOSE_DELAY_SECONDS
-                        else "",
-                    )
-
-                    deadline = time.monotonic() + wait_secs
-                    while time.monotonic() < deadline and not state.stop_requested:
-                        time.sleep(min(10.0, deadline - time.monotonic()))
-
-                    if state.stop_requested:
-                        break
-
-                    bar_close_time = next_close
-                    _run_m15_tick(
-                        config=config,
-                        state=state,
-                        peak_balance_ref=peak_balance_ref,
-                        session_states=session_states,
-                        bot_app=bot_app,
-                        bar_close_time=bar_close_time,
-                        server_offset=_server_offset,
-                    )
-
-                    # After state D, the session is over — next iteration will detect
-                    # outside-window and enter state A.
-
-                except Exception:
-                    logger.exception("Unexpected error in main loop — pausing bot and retrying")
-                    state.paused = True
-                    _fire_and_forget(
-                        notify_error(
-                            bot_app.bot,
-                            config.telegram.chat_id,
-                            "Unexpected error in main loop — bot paused. Use /resume after investigation.",  # noqa: E501
-                        )
-                    )
-                    time.sleep(60)
+            engine.run()
         finally:
             _shutdown(config, state, bot_app, shutdown_event)
 

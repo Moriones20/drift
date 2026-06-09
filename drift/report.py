@@ -10,6 +10,8 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from drift.config import DriftConfig
+from drift.db import get_stats
 from drift.formatting import format_duration, get_display_tz, pnl_str
 
 logger = logging.getLogger(__name__)
@@ -31,10 +33,48 @@ def _period_label(since: datetime) -> str:
     return f"{start_str} - {end_str}"
 
 
+def _strategy_section(conn: sqlite3.Connection, since_iso: str, config: DriftConfig) -> str:
+    """Return an HTML section with per-strategy stats for the weekly report."""
+    lines: list[str] = []
+    for name, strat in config.strategies.items():
+        if not strat.enabled:
+            continue
+        strat_stats = get_stats(conn, strategy=name)
+        total = strat_stats.get("total_trades", 0)
+        winning = strat_stats.get("winning_trades", 0)
+        losing = total - winning
+        win_rate = strat_stats.get("win_rate", 0.0) * 100
+        total_pnl = strat_stats.get("total_pnl") or 0.0
+
+        # Weekly P&L for this strategy (last 7 days only)
+        rows = conn.execute(
+            "SELECT profit_loss FROM trades"
+            " WHERE closed_at IS NOT NULL AND closed_at >= ? AND strategy = ?",
+            (since_iso, name),
+        ).fetchall()
+        week_total = len(rows)
+        week_wins = sum(1 for r in rows if (r[0] or 0.0) > 0)
+        week_pnl = sum(r[0] or 0.0 for r in rows)
+        week_win_rate = (week_wins / week_total * 100) if week_total > 0 else 0.0
+
+        lines.append(
+            f"  <b>{name}</b>\n"
+            f"    Week: {week_total} trades  Win rate: {week_win_rate:.1f}%"
+            f"  Net P&amp;L: {pnl_str(week_pnl)}\n"
+            f"    All-time: {total} ({winning}W / {losing}L)"
+            f"  Win rate: {win_rate:.1f}%  Total P&amp;L: {pnl_str(total_pnl)}"
+        )
+
+    if not lines:
+        return ""
+    return "<b>BY STRATEGY</b>\n" + "\n".join(lines)
+
+
 def generate_weekly_report(
     conn: sqlite3.Connection,
     current_balance: float,
     peak_balance: float,
+    config: DriftConfig | None = None,
 ) -> str:
     """Generate an HTML weekly report string from trades closed in the last 7 days.
 
@@ -63,7 +103,7 @@ def generate_weekly_report(
         drawdown_pct = (
             (peak_balance - current_balance) / peak_balance * 100 if peak_balance > 0 else 0.0
         )
-        return (
+        report_no_trades = (
             "📊 <b>WEEKLY REPORT</b>\n"
             f"Period: {period_label}\n\n"
             "<b>No trades this week.</b>\n\n"
@@ -73,6 +113,11 @@ def generate_weekly_report(
             f"Drawdown: {drawdown_pct:.1f}%\n"
             f"Open Trades: {open_count}"
         )
+        if config is not None:
+            strategy_sec = _strategy_section(conn, since_iso, config)
+            if strategy_sec:
+                report_no_trades += f"\n\n{strategy_sec}"
+        return report_no_trades
 
     total = len(trades)
     wins = sum(1 for t in trades if (t["profit_loss"] or 0.0) > 0)
@@ -137,6 +182,11 @@ def generate_weekly_report(
         f"Drawdown: {drawdown_pct:.1f}%\n"
         f"Open Trades: {open_count}"
     )
+
+    if config is not None:
+        strategy_sec = _strategy_section(conn, since_iso, config)
+        if strategy_sec:
+            report += f"\n\n{strategy_sec}"
 
     logger.info(
         "Weekly report generated: %d trades, net P&L=%.2f, win_rate=%.1f%%",

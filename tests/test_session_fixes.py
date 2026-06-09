@@ -121,19 +121,34 @@ def _make_minimal_config():
         BrokerConfig,
         DriftConfig,
         ReportsConfig,
-        RiskConfig,
+        RiskGlobalConfig,
         StrategyConfig,
+        StrategyInstanceConfig,
+        StrategyRiskConfig,
         SystemConfig,
         TelegramConfig,
     )
 
     return DriftConfig(
         broker=BrokerConfig(server="demo", login=1, password="x"),
-        strategy=StrategyConfig(),
-        risk=RiskConfig(),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123"),
         reports=ReportsConfig(),
         system=SystemConfig(),
+        risk_global=RiskGlobalConfig(),
+        strategies={
+            "daily_lull": StrategyInstanceConfig(
+                name="daily_lull",
+                enabled=True,
+                magic_offset=0,
+                allocation_pct=100.0,
+                pairs=["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
+                risk=StrategyRiskConfig(),
+                params={
+                    field: getattr(StrategyConfig(), field)
+                    for field in StrategyConfig.__dataclass_fields__
+                },
+            )
+        },
     )
 
 
@@ -474,156 +489,10 @@ class TestTradesMigration(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Test 3: _close_session_trades isolates per-position failures
+# Test 3: _close_session_trades — removed in C10 cleanup
+# The function was deleted from main.py (engine took over session-close, D051).
+# Its D048 settled-balance behaviour is covered by test_engine.py.
 # ---------------------------------------------------------------------------
-
-
-class TestCloseSessionTradesIsolation(unittest.TestCase):
-    """D031: a failure on one position must not abort the rest, and must not raise."""
-
-    def _make_position(self, ticket: int, pair: str) -> dict:
-        return {
-            "ticket": ticket,
-            "pair": pair,
-            "direction": "buy",
-            "volume": 0.10,
-            "price_open": 0.9500,
-            "profit": 20.0,
-        }
-
-    def setUp(self) -> None:
-        self.db_path, self.conn = _fresh_db()
-        self.config = _make_minimal_config()
-
-        # Pre-insert DB records so _close_session_trades can find them by ticket.
-        self.ticket_a = 7001
-        self.ticket_b = 7002
-        self.ticket_c = 7003
-        _insert_open_trade(self.conn, ticket=self.ticket_a)
-        _insert_open_trade(self.conn, ticket=self.ticket_b)
-        _insert_open_trade(self.conn, ticket=self.ticket_c)
-        self.conn.close()  # close so init_db-produced path is used via get_connection
-
-    def tearDown(self) -> None:
-        Path(self.db_path).unlink(missing_ok=True)
-
-    def test_remaining_positions_closed_when_first_raises(self) -> None:
-        """Position A raises on close_trade; positions B and C must still be processed."""
-        from drift.strategy import SessionState
-        from main import _close_session_trades
-
-        positions = [
-            self._make_position(self.ticket_a, "EURCHF"),
-            self._make_position(self.ticket_b, "AUDNZD"),
-            self._make_position(self.ticket_c, "EURGBP"),
-        ]
-
-        close_trade_calls: list[int] = []
-
-        def _fake_close_trade(ticket, pair, lot_size, direction, magic):
-            if ticket == self.ticket_a:
-                raise RuntimeError("Simulated MT5 close failure")
-            close_trade_calls.append(ticket)
-            return True
-
-        bot_app = MagicMock()
-        bot_app.bot = MagicMock()
-
-        session_states: dict = {
-            "EURCHF": SessionState(),
-            "AUDNZD": SessionState(),
-            "EURGBP": SessionState(),
-        }
-
-        with (
-            patch("main.get_open_positions", return_value=positions),
-            patch("main.close_trade", side_effect=_fake_close_trade),
-            patch("main.get_balance", return_value=10000.0),
-            patch("main.get_connection") as mock_get_conn,
-        ):
-            # Provide a real temp DB connection through the context manager mock.
-            real_conn = sqlite3.connect(self.db_path)
-            real_conn.row_factory = sqlite3.Row
-            real_conn.execute("PRAGMA foreign_keys = ON")
-            ctx = MagicMock()
-            ctx.__enter__ = MagicMock(return_value=real_conn)
-            ctx.__exit__ = MagicMock(return_value=False)
-            mock_get_conn.return_value = ctx
-
-            # Must not raise even though position A fails.
-            try:
-                _close_session_trades(
-                    config=self.config,
-                    session_states=session_states,
-                    bot_app=bot_app,
-                )
-            finally:
-                real_conn.close()
-
-        # B and C were passed to close_trade (A raised before reaching its append).
-        self.assertIn(self.ticket_b, close_trade_calls)
-        self.assertIn(self.ticket_c, close_trade_calls)
-
-    def test_function_does_not_raise_on_total_failure(self) -> None:
-        """All positions fail — the function must still return normally."""
-        from drift.strategy import SessionState
-        from main import _close_session_trades
-
-        positions = [self._make_position(self.ticket_a, "EURCHF")]
-
-        bot_app = MagicMock()
-        bot_app.bot = MagicMock()
-
-        session_states = {"EURCHF": SessionState()}
-
-        with (
-            patch("main.get_open_positions", return_value=positions),
-            patch("main.close_trade", side_effect=RuntimeError("total failure")),
-        ):
-            # Must not propagate the exception.
-            _close_session_trades(
-                config=self.config,
-                session_states=session_states,
-                bot_app=bot_app,
-            )
-
-    def test_balance_at_close_is_settled_balance(self) -> None:
-        """D048: persists the fresh settled balance from get_balance(), not a snapshot."""
-        from drift.strategy import SessionState
-        from main import _close_session_trades
-
-        settled = 9876.54  # distinct from balance_at_open (10000.0)
-        positions = [self._make_position(self.ticket_b, "AUDNZD")]
-        bot_app = MagicMock()
-        bot_app.bot = MagicMock()
-        session_states = {"AUDNZD": SessionState()}
-
-        with (
-            patch("main.get_open_positions", return_value=positions),
-            patch("main.close_trade", return_value=True),
-            patch("main.get_balance", return_value=settled),
-            patch("main.get_connection") as mock_get_conn,
-        ):
-            real_conn = sqlite3.connect(self.db_path)
-            real_conn.row_factory = sqlite3.Row
-            ctx = MagicMock()
-            ctx.__enter__ = MagicMock(return_value=real_conn)
-            ctx.__exit__ = MagicMock(return_value=False)
-            mock_get_conn.return_value = ctx
-            try:
-                _close_session_trades(
-                    config=self.config,
-                    session_states=session_states,
-                    bot_app=bot_app,
-                )
-                row = real_conn.execute(
-                    "SELECT balance_at_close FROM trades WHERE mt5_ticket = ?",
-                    (self.ticket_b,),
-                ).fetchone()
-            finally:
-                real_conn.close()
-
-        self.assertAlmostEqual(row["balance_at_close"], settled)
 
 
 # ---------------------------------------------------------------------------

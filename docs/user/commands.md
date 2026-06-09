@@ -2,6 +2,10 @@
 
 El bot acepta comandos unicamente desde el chat configurado en `telegram.chat_id`. Cualquier otro chat es ignorado silenciosamente.
 
+> ⚠️ Esquema multi-estrategia (en implementacion — ver D050-D057)
+>
+> Drift es ahora una plataforma que hospeda N estrategias sobre una sola cuenta. Los comandos de consulta (`/status`, `/balance`, `/trades`, `/report`) muestran el **agregado de cuenta** mas un **desglose por estrategia**. `/pause` y `/resume` aceptan un nombre de estrategia opcional, y hay un nuevo comando `/strategies`. `/stop` sigue siendo global.
+
 ---
 
 ## /status
@@ -12,7 +16,9 @@ Muestra el estado actual del bot en tiempo real.
 - Estado del bot: corriendo o pausado.
 - Conexion con MT5: conectado o desconectado.
 - Tiempo activo desde el inicio (uptime).
-- Cantidad de trades abiertos actualmente.
+- Cantidad de trades abiertos actualmente (total de la cuenta).
+
+**Desglose por estrategia:** para cada estrategia activa, su estado (corriendo o pausada) y su numero de trades abiertos.
 
 **Cuando usarlo:** para verificar rapidamente que el bot esta operando normalmente, especialmente despues de reiniciarlo o tras una pausa.
 
@@ -23,12 +29,15 @@ Muestra el estado actual del bot en tiempo real.
 Lista todos los trades abiertos en este momento.
 
 **Informacion por trade:**
+- Estrategia que abrio el trade.
 - Par y direccion (BUY o SELL).
 - Precio de entrada.
 - Stop loss y take profit.
 - Tamaño en lotes.
 - P&L flotante actual (si esta disponible).
 - Hora de apertura.
+
+Los trades se presentan agrupados por estrategia, con el agregado de la cuenta al final.
 
 **Cuando usarlo:** para revisar las posiciones activas y sus niveles de riesgo.
 
@@ -54,27 +63,33 @@ Muestra los ultimos 5 trades cerrados.
 
 Muestra el estado financiero de la cuenta.
 
-**Informacion que devuelve:**
+**Informacion que devuelve (agregado de cuenta):**
 - Balance actual de la cuenta (obtenido en tiempo real desde MT5).
 - Balance pico historico desde que el bot inicio.
-- Drawdown actual en porcentaje respecto al pico.
+- Drawdown actual en porcentaje respecto al pico (relevante para el kill switch global).
 - P&L total acumulado de todos los trades cerrados.
 
-**Cuando usarlo:** para monitorear la salud financiera de la cuenta y el drawdown.
+**Desglose por estrategia:** para cada estrategia, su capital asignado (notional), su P&L acumulado y su drawdown propio respecto a su pico de equity individual (relevante para su brake por estrategia).
+
+**Cuando usarlo:** para monitorear la salud financiera de la cuenta y el drawdown, tanto a nivel global como por estrategia.
 
 ---
 
 ## /pause
 
-Pausa el bot: deja de buscar nuevas señales y no abre nuevos trades.
+Pausa el bot: deja de buscar nuevas señales y no abre nuevos trades. Acepta un nombre de estrategia opcional.
 
-**Comportamiento:**
-- Los trades abiertos se mantienen con sus stop loss y take profit activos.
+**Uso:**
+- `/pause` (sin argumento) → pausa **toda la cuenta** (todas las estrategias).
+- `/pause daily_lull` → pausa **solo** esa estrategia; las demas siguen operando.
+
+**Comportamiento (en ambos casos):**
+- Los trades abiertos de lo pausado se mantienen con sus stop loss y take profit activos (pausar nunca cierra posiciones; ver D053).
 - El hilo de monitoreo sigue corriendo: se detectan cierres por SL/TP y se verifica el drawdown.
 - El bot responde a comandos de Telegram normalmente.
-- Si el bot ya esta pausado, informa que ya lo esta.
+- Si lo indicado ya esta pausado, informa que ya lo esta. Si el nombre de estrategia no existe, lo informa.
 
-**Cuando usarlo:** ante noticias economicas importantes, condiciones de mercado inusuales, o cuando se quiere revisar algo sin apagar el bot completamente.
+**Cuando usarlo:** ante noticias economicas importantes, condiciones de mercado inusuales, o cuando se quiere revisar algo (de una estrategia o de toda la cuenta) sin apagar el bot completamente.
 
 Para reanudar, usar `/resume`.
 
@@ -82,12 +97,16 @@ Para reanudar, usar `/resume`.
 
 ## /resume
 
-Reanuda el bot despues de una pausa.
+Reanuda el bot despues de una pausa. Acepta un nombre de estrategia opcional, en simetria con `/pause`.
+
+**Uso:**
+- `/resume` (sin argumento) → reanuda **toda la cuenta**.
+- `/resume daily_lull` → reanuda **solo** esa estrategia.
 
 **Comportamiento:**
-- El bot vuelve a analizar señales en el siguiente cierre de vela M15 dentro de la ventana activa (23:00-01:59 hora servidor MT5 = 15:00-17:59 Bogota).
-- Funciona tanto para pausas manuales (via `/pause`) como para pausas automaticas por drawdown.
-- Si el bot no esta pausado, informa que ya esta corriendo.
+- Lo reanudado vuelve a analizar señales en el siguiente cierre de vela correspondiente (para el Daily Lull, una vela M15 dentro de su ventana activa, 23:00-01:59 hora servidor MT5 = 15:00-17:59 Bogota).
+- Funciona tanto para pausas manuales (via `/pause`) como para pausas automaticas por drawdown (kill switch global o brake por estrategia).
+- Si lo indicado no esta pausado, informa que ya esta corriendo. Si el nombre de estrategia no existe, lo informa.
 
 **Cuando usarlo:** despues de un `/pause` manual, o despues de revisar y aceptar la situacion tras una pausa automatica por drawdown.
 
@@ -95,14 +114,33 @@ Reanuda el bot despues de una pausa.
 
 ## /stop
 
-Cierra todos los trades abiertos y apaga el bot completamente.
+Cierra todos los trades abiertos y apaga el bot completamente. **Siempre es global** — no acepta nombre de estrategia.
 
 **Comportamiento:**
-- Cierra todas las posiciones abiertas al precio de mercado actual.
+- Cierra todas las posiciones abiertas al precio de mercado actual, de todas las estrategias.
 - Detiene el loop principal, el hilo de monitoreo y el bot de Telegram.
 - El proceso termina. Se debe reiniciar manualmente con `python main.py`.
 
-**Cuando usarlo:** para apagar el bot de forma controlada, especialmente antes de hacer cambios en la configuracion o actualizar el codigo. No usarlo como pausa — para eso esta `/pause`.
+**Cuando usarlo:** para apagar el bot de forma controlada, especialmente antes de hacer cambios en la configuracion o actualizar el codigo. No usarlo como pausa — para eso esta `/pause`. Para detener una sola estrategia sin apagar el bot, usar `/pause daily_lull`.
+
+---
+
+## /strategies
+
+> ⚠️ Esquema multi-estrategia (en implementacion — ver D050-D057)
+
+Lista todas las estrategias configuradas con su estado operativo, a modo de panel de control de la plataforma.
+
+**Informacion por estrategia:**
+- Nombre de la estrategia.
+- `enabled`: si esta activada en la config (`true`/`false`).
+- `paused`: si esta pausada en este momento (manual o por su brake de drawdown).
+- `allocation_pct`: su asignacion notional de capital.
+- Magic efectivo en MT5 (base + offset; p.ej. 234000 para el Daily Lull).
+- Trades abiertos actualmente.
+- Drawdown actual respecto a su pico de equity propio.
+
+**Cuando usarlo:** para ver de un vistazo que estrategias estan vivas, cuales estan pausadas y como va el riesgo de cada una.
 
 ---
 
@@ -110,7 +148,7 @@ Cierra todos los trades abiertos y apaga el bot completamente.
 
 Genera un reporte de rendimiento completo bajo demanda.
 
-**Informacion que devuelve:**
+**Informacion que devuelve (agregado de cuenta):**
 - Trades abiertos en este momento.
 - Total de trades cerrados.
 - Ganadores y perdedores.
@@ -119,7 +157,9 @@ Genera un reporte de rendimiento completo bajo demanda.
 - P&L total acumulado.
 - Duracion promedio de los trades.
 
-**Cuando usarlo:** para evaluar el desempeno historico del bot en cualquier momento. El reporte cubre todos los trades registrados en la base de datos desde el inicio.
+**Desglose por estrategia:** las mismas metricas (trades abiertos, cerrados, win rate, profit factor, P&L, drawdown) calculadas para cada estrategia por separado, ademas del agregado.
+
+**Cuando usarlo:** para evaluar el desempeno historico del bot en cualquier momento, a nivel global y por estrategia. El reporte cubre todos los trades registrados en la base de datos desde el inicio.
 
 ---
 
@@ -132,8 +172,8 @@ Ademas de los comandos, el bot envia notificaciones de forma automatica en los s
 | Inicio del bot | Confirma que el bot arranco, con el balance inicial. |
 | Trade abierto | Par, direccion, precio de entrada, SL, TP, tamaño en lotes y riesgo en USD. |
 | Trade cerrado | Par, direccion, precio de entrada y salida, P&L, motivo de cierre y duracion. |
-| Pausa por drawdown | Avisa cuando el drawdown supero el limite configurado y el bot se pauso automaticamente. |
+| Pausa por drawdown | Avisa cuando el drawdown supero el limite configurado y se pauso automaticamente. Indica si fue el kill switch global (toda la cuenta) o el brake de una estrategia concreta (solo esa). |
 | Error en el loop | Si ocurre un error inesperado en el loop principal, el bot se pausa y notifica para que se investigue. |
 | Reconexion a MT5 | Si se pierde y se recupera la conexion con MT5. |
 | Cierre del bot | Confirma que el bot se apago correctamente. |
-| Reporte semanal | Enviado automaticamente segun la config (`reports.weekly_report_day` / `weekly_report_hour` / `timezone`). Con los valores por defecto: domingo a las 20:00 UTC-5 (lunes 01:00 UTC). Mismo contenido que `/report`. |
+| Reporte semanal | Enviado automaticamente segun la config (`reports.weekly_report_day` / `weekly_report_hour` / `timezone`). Con los valores por defecto: domingo a las 20:00 UTC-5 (lunes 01:00 UTC). Mismo contenido que `/report`, incluyendo una **seccion por estrategia** ademas del agregado de cuenta. |

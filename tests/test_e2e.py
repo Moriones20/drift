@@ -108,7 +108,10 @@ from drift.config import (  # noqa: E402
     DriftConfig,
     ReportsConfig,
     RiskConfig,
+    RiskGlobalConfig,
     StrategyConfig,
+    StrategyInstanceConfig,
+    StrategyRiskConfig,
     SystemConfig,
     TelegramConfig,
 )
@@ -139,13 +142,27 @@ logger = logging.getLogger(__name__)
 
 
 def _make_config() -> DriftConfig:
+    """Build a minimal DriftConfig with daily_lull strategy for test use."""
     return DriftConfig(
         broker=BrokerConfig(server="demo.icmarkets.com", login=12345, password="secret"),
-        strategy=StrategyConfig(),
-        risk=RiskConfig(),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123456"),
         reports=ReportsConfig(),
         system=SystemConfig(),
+        risk_global=RiskGlobalConfig(),
+        strategies={
+            "daily_lull": StrategyInstanceConfig(
+                name="daily_lull",
+                enabled=True,
+                magic_offset=0,
+                allocation_pct=100.0,
+                pairs=["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
+                risk=StrategyRiskConfig(),
+                params={
+                    field: getattr(StrategyConfig(), field)
+                    for field in StrategyConfig.__dataclass_fields__
+                },
+            )
+        },
     )
 
 
@@ -168,7 +185,7 @@ def _make_signal(
     reason: str = "lull_scalper_buy range_low=0.8950 rsi=28.0 adx=15.0",
 ) -> "Signal":  # noqa: F821
     """Build a minimal Signal for the Daily Lull Scalper schema."""
-    from drift.strategy import Signal
+    from drift.strategies.base import Signal
 
     now = datetime.now(timezone.utc)
     return Signal(
@@ -211,7 +228,7 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
             open_trades=[],
             new_pair="EURUSD",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertTrue(ok)
         self.assertEqual(reason, "")
@@ -290,7 +307,7 @@ class TestRiskRejectionMaxTrades(unittest.TestCase):
             open_trades=open_trades,
             new_pair="EURGBP",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertFalse(ok)
         self.assertIn("max trades reached", reason)
@@ -303,7 +320,7 @@ class TestRiskRejectionMaxTrades(unittest.TestCase):
             open_trades=open_trades,
             new_pair="EURGBP",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertFalse(ok)
 
@@ -380,7 +397,7 @@ class TestCorrelationRejection(unittest.TestCase):
             open_trades=open_trades,
             new_pair="EURCAD",
             new_direction="buy",
-            config=self.config.risk,
+            config=RiskConfig(),
         )
         self.assertFalse(ok)
         self.assertIn("EUR", reason)

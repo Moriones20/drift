@@ -643,3 +643,168 @@ Relacionado: [[D031]] (aislamiento por posición en el cierre), `drift/db.py` (`
 **Origen:** el resolver DNS del router (192.168.80.1) caído el 8-jun; el ruteo por IP funcionaba (ping a 8.8.8.8 OK) pero ninguna resolución de nombres. Problema de red del usuario, pero destapó la fragilidad del arranque.
 
 Relacionado: `main.py` (`_setup_telegram_resilient`), `tests/test_startup_resilience.py`, [[D047]] (otra robustez de arranque ante condiciones de red/mercado).
+
+## D050 — Pivote a plataforma multi-estrategia (framework primero, antes del go-live)
+
+**Decisión (2026-06-08, sesión `/spec`):** Drift evoluciona de bot mono-estrategia a **plataforma que hospeda N estrategias** sobre una sola cuenta MT5, con el Daily Lull como instancia #1. El framework se construye **antes** del go-live (Phase 3), en paper, y el Lull sale live ya sobre la arquitectura multi-estrategia. Esta sesión es **solo diseño**; produce docs, no código.
+
+**Por qué framework primero:** El Lull aún está en **paper/demo, no live** (no hay capital real sobre su lógica). El costo de construir el framework es fijo y es lo más barato que será nunca: una sola estrategia que portar, sin downside live (el peor bug es un trade demo distinto). Sacar el Lull live mono-estrategia y refactorizar después implicaría meter cambios estructurales en un sistema con capital real corriendo. El ROADMAP ya listaba "Multi-estrategia" en *Futuro*; esto ejecuta esa rama antes de lo previsto porque el momento (pre-live) es óptimo.
+
+**Alternativa descartada:** Go-live del Lull primero, refactor después. Rechazada por el riesgo de refactorizar un sistema live y por desperdiciar la ventana barata del paper.
+
+**Pitch actualizado:** de *"bot que opera el Daily Lull"* a *"plataforma de trading autónoma que hospeda N estrategias con riesgo aislado por estrategia sobre una cuenta"*.
+
+Relacionado: [[D051]], [[D052]], [[D053]], [[D054]], [[D055]], [[D056]], [[D057]], `ROADMAP.md` (Phase 2.6).
+
+## D051 — Contrato `Strategy.on_bar` + motor "reloj por suscripción" (timing heterogéneo)
+
+**Decisión:** El motor (`main.py` reescrito) NO conoce ventanas de sesión. Solo conoce cierres de vela. Cada estrategia **declara los timeframes que quiere** (`timeframes: frozenset[str]`, p.ej. `{"M15"}`) y el motor hace tick en la **unión** de esos límites. En cada tick llama a `strategy.on_bar(pair, timeframe, bar_close_time, market, ctx) -> Decision`. La estrategia decide internamente (según su propia lógica de ventana/estado) qué hacer; devuelve `Open(signal) | Close(ticket) | CloseAll(reason) | NoOp`.
+
+**Reparto motor/estrategia:**
+- **Motor (compartido, una vez):** reloj y sleep stop-aware; `MarketData` (fetch de velas dedup por (par, timeframe) por tick — si dos estrategias piden el mismo par/TF, se baja una vez); gating de riesgo (global + por estrategia); ejecución, atribución por magic, logging, notificación, detección de cierres; threads de monitoreo y Telegram.
+- **Estrategia (privado):** su estado per-par (el `SessionState` del Lull deja de vivir en `main.py`); su lógica de ventana/timing; sus params; sus reglas especiales (skip-Friday, time-stop a las 02:00, espera de rollover) pasan a ser **lógica interna del Lull**, no del motor.
+
+**Por qué:** HC3 — el timing es heterogéneo (una trend-following futura sería 24/5 en H1, sin ventana). Un motor que asuma la ventana del Lull no escala. "Motor tonto, estrategia lista" mantiene el timing donde pertenece.
+
+**Alternativas descartadas:** (a) Motor con "ventanas de sesión" como concepto de primera clase — acopla el motor a un modelo de timing concreto. (b) Un thread independiente por estrategia — da aislamiento pero, con una cuenta y un brake de riesgo compartido (HC2), los threads pelean por el lock de riesgo/DB; la concurrencia se vuelve el problema dominante. Un solo reloj con estrategias como objetos es más simple y suficiente.
+
+Relacionado: [[D050]], [[D055]] (el mismo `on_bar` es la fuente de verdad del backtest), `drift/strategies/base.py`.
+
+## D052 — Magic number base + offset por estrategia
+
+**Decisión:** `system.magic_number` (234000) pasa a ser la **base**. Cada estrategia define `magic_offset` en su config; el magic efectivo = base + offset. `get_open_positions(magic)` filtra por magic exacto → atribución de posiciones a nivel del **broker** (fuente de verdad cuando el bot reinicia o la DB se desincroniza). `_validate` rechaza dos estrategias con el mismo magic efectivo.
+
+**Migración:** El Daily Lull usa `magic_offset: 0` → magic efectivo **234000**, idéntico a hoy, así adopta sus posiciones demo vivas sin huérfanos. La convención informal "magic 0 = orden manual" no aplica aquí porque Drift nunca abrió trades manuales con magic 0; lo que importa es unicidad frente a otros EA.
+
+**Por qué magic Y columna DB (D056), no solo uno:** la columna DB es para reporting legible; el magic es para control operativo (detección de cierres SL/TP, force-close de sesión, reconstrucción tras reinicio). MT5 es la fuente de verdad de posiciones abiertas; el magic es lo único que reconstruye "de quién es esta posición" si la DB falla.
+
+**Alternativa descartada:** magics totalmente independientes por estrategia (sin base común) — más libre pero pierde el prefijo `2340xx` que identifica a Drift de un vistazo.
+
+Relacionado: [[D050]], [[D056]], `drift/config.py`, `drift/executor.py`.
+
+## D053 — Riesgo en dos niveles: presupuesto notional por estrategia + brake global
+
+**Decisión:** Sobre una sola cuenta, la "asignación de capital" es **notional** (no reserva ni mueve dinero real; solo cambia el número sobre el que cada estrategia dimensiona). Position sizing:
+
+```
+capital_asignado(estrategia) = balance_cuenta * (allocation_pct / 100)
+risk_usd(trade)              = capital_asignado * (percent_per_trade / 100)
+```
+
+`percent_per_trade` pasa de global a **por estrategia**. Límites en dos niveles:
+
+| Límite | Nivel |
+|---|---|
+| `max_open_trades` | ambos (cap global de cuenta + cap por estrategia ≤ global) |
+| `max_drawdown_percent` | ambos (brake global = kill switch que pausa TODO; brake por estrategia = pausa solo esa) |
+| `max_same_currency_direction` (correlación) | **global** (la correlación es riesgo de cuenta sin importar quién abrió) |
+
+- **Suma de allocations ≤ 100%**, validado en `_validate`. Permite < 100% (colchón) pero rechaza > 100% (apalancamiento accidental, contra el principio "cabeza fría").
+- **Pausa = mantener posiciones (opción a) en AMBOS niveles.** Una estrategia (o la cuenta) pausada deja de abrir nuevos pero mantiene los abiertos, protegidos por su SL/TP en servidor. Consistente con el `/pause` y el brake actuales. Cerrar a mercado al pausar materializaría la pérdida en el peor momento (especialmente perverso para mean reversion, donde el trade está en pérdida justo cuando más probable es que revierta). Si más adelante se quiere un "cierre de emergencia", se añade como decisión aparte.
+- **Drawdown por estrategia** requiere su curva de equity individual: `capital_asignado_baseline + P&L_realizado(estrategia, DB) + P&L_flotante(estrategia, posiciones por su magic)`, con peak por estrategia persistido en `strategy_state` (D056). El thread de monitoreo lo calcula cada 30s (ya tiene las posiciones en mano).
+
+Relacionado: [[D050]], [[D056]], `drift/risk.py`. HC2.
+
+## D054 — Esquema de config: lista `strategies[]` anidada, migración manual
+
+**Decisión:** `strategy:` (bloque plano singular) → `strategies:` (mapa de instancias por nombre). Lo compartido (broker, telegram, reports) se queda arriba; el riesgo global se renombra a `risk_global:`; `pairs` deja de ser global y baja a cada estrategia (la unión de pares activos es lo que se activa en Market Watch). Cada instancia:
+
+```yaml
+strategies:
+  daily_lull:
+    enabled: true
+    magic_offset: 0
+    allocation_pct: 100
+    pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
+    risk: { percent_per_trade: 1.0, max_open_trades: 4, max_drawdown_percent: 10.0 }
+    params: { rsi_oversold: 35.0, ... }   # = el StrategyConfig actual, opaco para el motor
+```
+
+- **`params` es opaco para el motor.** Cada estrategia define su propio dataclass (el `StrategyConfig` actual → `DailyLullParams`) y parsea su dict `params`. El motor solo conoce `enabled`, `magic_offset`, `allocation_pct`, `pairs`, `risk`. Una estrategia futura mete sus propios params sin tocar config global.
+- **Registry** `{"daily_lull": DailyLullStrategy}` mapea nombre → clase; nombre desconocido = error de validación.
+- **`enabled: false`** desactiva sin borrar (A/B, apagado vía config + restart).
+- **Migración manual** del `config.yaml` live (no loader retrocompat). Es un archivo que se edita a mano una vez; soportar ambos esquemas sería deuda permanente para un evento único.
+- **Anidado** (sub-bloques `risk`/`params`) en vez de aplanado — separa "qué arriesga" de "cómo opera" y escala mejor.
+
+Relacionado: [[D050]], [[D052]], [[D053]], `drift/config.py`, `config.example.yaml`.
+
+## D055 — Backtest unificado: `on_bar` única fuente de verdad; portfolio backtest diferido
+
+**Decisión:** El contrato `on_bar` (D051) es la **única** implementación de la lógica de señal. Live y backtest la consumen:
+- **Live:** el motor llama `on_bar` por cada cierre real.
+- **Backtest:** un **adaptador propio** (loop simple sobre el histórico) recorre las barras y llama al *mismo* `on_bar` con `MarketData`/`ctx` que sirven datos históricos. `backtest/lull_engine.py` (hoy una **segunda implementación portada a mano**, con riesgo de divergencia) se reemplaza. Se abandona Backtesting.py; las métricas (PF, Sharpe, DD) se calculan sobre la curva de equity resultante.
+- **Tests de equivalencia:** mismas señales sobre el mismo histórico antes/después del port (baratos aunque no haya capital, HC4).
+- **Portfolio backtest** (varias estrategias sobre una curva de equity compartida, con cap global de trades + correlación + drawdown de cuenta) se **difiere** a cuando exista la estrategia #2. Construirlo ahora sería infraestructura sin nada que probar.
+
+**Por qué unificar ya:** con HC4 (paper, sin capital real) es el momento más barato; cada estrategia futura sobre una base duplicada multiplica la deuda. Sin downside live.
+
+**Alternativa descartada:** dejar la duplicación actual y unificar después — perpetúa el smell y arriesga que el bot live opere distinto de lo validado.
+
+Relacionado: [[D050]], [[D051]], `backtest/`, `drift/strategies/`.
+
+## D056 — Atribución en DB: columna `strategy` + tabla `strategy_state`
+
+**Decisión:**
+- `trades` y `signals` ganan `strategy TEXT NOT NULL` (el `name` legible, no el magic). Índice en `trades(strategy)`. Migración: `ALTER TABLE ... ADD COLUMN strategy TEXT NOT NULL DEFAULT 'daily_lull'` (todo lo histórico es Lull).
+- `bot_events` gana `strategy TEXT NULL` (NULL = evento global de cuenta; no-NULL = evento de una estrategia, p.ej. su pausa por drawdown propio).
+- Nueva tabla `strategy_state(strategy PK, peak_equity, paused, updated_at)` para el drawdown por estrategia (D053).
+
+```sql
+CREATE TABLE strategy_state (
+    strategy    TEXT PRIMARY KEY,
+    peak_equity REAL NOT NULL,
+    paused      INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL
+);
+```
+
+Relacionado: [[D050]], [[D052]], [[D053]], `drift/db.py`, `docs/ARCHITECTURE.md` (schema).
+
+## D057 — Telegram: comandos global + por estrategia
+
+**Decisión:** El plano de control desglosa por estrategia:
+- `/status`, `/balance`, `/trades`, `/report` muestran el agregado de cuenta **y** el desglose por estrategia (P&L, drawdown, trades abiertos, estado pausado).
+- `/pause` y `/resume` aceptan argumento opcional: sin args = toda la cuenta; con nombre (`/pause daily_lull`) = solo esa estrategia.
+- Nuevo `/strategies` — lista cada estrategia con su estado (enabled, paused, allocation, magic, trades abiertos, drawdown).
+- `/stop` sigue siendo global (apaga el bot entero).
+- Reporte semanal incluye sección por estrategia.
+
+**Por qué:** con presupuesto y drawdown por estrategia (D053), el usuario necesita ver y controlar cada una por separado, no solo el agregado.
+
+Relacionado: [[D050]], [[D053]], `drift/telegram_bot.py`, `docs/user/commands.md`.
+
+## D058 — Scheduling del motor por `next_wake` + extensiones del contrato
+
+**Decisión (2026-06-08, Step 32a):** El motor (Step 32b) no programa el sleep a partir de ventanas de sesión; le **pregunta a cada estrategia su próximo despertar** vía un nuevo método del contrato `next_wake(now) -> datetime | None`. El motor duerme hasta el **mínimo** de los `next_wake` de las estrategias activas y luego aplica el delay de broker. Refina [[D051]].
+
+**(a) `next_wake` devuelve un boundary limpio; el delay de broker vive en el motor.** `next_wake` devuelve el **próximo instante de cierre de vela** (en hora servidor MT5) que la estrategia necesita evaluar, o `None` si está dormida indefinidamente. **No** incluye ningún retraso. El motor, tras despertar al boundary mínimo, le suma el delay post-cierre de broker: el `CANDLE_CLOSE_DELAY` normal (5s) y el **rollover-settle de [[D044]]** para el boundary 00:00. El delay es comportamiento del broker (rollover diario de ICMarkets, aplica a cualquier estrategia que despierte a las 00:00), no de una estrategia concreta, así que pertenece al motor. Mantenerlo fuera de `next_wake` evita que cada estrategia futura tenga que re-implementar la lógica de rollover.
+
+**(b) La ventana de sesión y el skip-Friday/Saturday van DENTRO de la estrategia.** La elección entre "próximo cierre M15" (dentro de la ventana) y "próximo inicio de sesión" (fuera), el cálculo del inicio de sesión saltando viernes/sábado, y el tail 00:00-01:59 son **lógica específica del Lull** (D051: motor tonto, estrategia lista). `DailyLullStrategy.next_wake` porta 1:1 las funciones que hoy viven en `main.py` (`_in_session_window`, `_next_m15_close`, `_next_session_start`) usando **solo sus propios params** (`session_start_hour`/`session_end_hour`), nunca config global. La equivalencia con la lógica actual del loop está blindada por `tests/test_daily_lull_next_wake.py` (batería amplia de timestamps: dentro/fuera de ventana, viernes, sábado, domingo 20:00/21:00, tail 00:30/01:45, borde 02:00, jueves 23:50).
+
+**(c) Extensiones del contrato `Strategy`.** El port a la plataforma añadió al Protocol, todas refinando [[D051]]:
+- `on_fill(pair, signal, ticket)` y `on_order_rejected(pair, signal, reason)` (Step 29) — hooks de ciclo de vida tras la decisión de abrir: la estrategia confirma o revierte estado (el Lull marca `traded` solo en `on_fill`) sin que el motor toque su estado privado.
+- `next_wake(now)` (Step 32a, esta decisión) — la pista de scheduling descrita arriba.
+
+**Alternativas descartadas:** (a) meter el delay de broker dentro de `next_wake` — duplicaría la lógica de rollover en cada estrategia y acoplaría la estrategia al broker; (b) dejar el scheduling en el motor con "ventanas de sesión" de primera clase — es justo lo que D051 rechaza (no escala a una trend-following 24/5 sin ventana).
+
+Relacionado: [[D051]], [[D044]], `drift/strategies/base.py`, `drift/strategies/daily_lull.py`, `tests/test_daily_lull_next_wake.py`.
+
+## D059 — Motor de backtest propio sobre `on_bar`; warm-up profundo para equivalencia con `lull_engine`
+
+**Decisión (2026-06-08, Step 35):** Se construye `backtest/engine.py`, un motor de backtest propio (loop simple, **sin Backtesting.py**) que consume el **mismo `DailyLullStrategy.on_bar`** que el bot vivo (cumple [[D055]]). `backtest/run_lull.py` y `backtest/optimize_lull.py` se repuntan a este motor. `backtest/lull_engine.py` **no se elimina** (los scripts de research `analyze_*.py`/`validate_oos.py` lo siguen usando; su migración queda diferida).
+
+**Reparto decisión/fill.** El `on_bar` es la única fuente de la *lógica de señal* (cuándo entrar, SL, TP=midpoint del rango, time-stop a las 02:00). El *modelo de fills* (cómo una decisión se vuelve trade) es responsabilidad del **motor**, y replica EXACTAMENTE el de Backtesting.py tal como lo usa `lull_engine`:
+- Entrada a mercado y salidas (cruce de midpoint, time-stop) llenan al **open de la barra siguiente**.
+- El SL es un stop de broker intrabar (chequeado también en la barra de entrada, como hace Backtesting.py al reprocesar el SL recién adjuntado); un gap a través del stop llena al peor de open/stop.
+- Comisión relativa `abs(size)*price*commission` cobrada en entrada **y** salida; sizing all-in en unidades enteras.
+- La curva de equity se registra por barra (`cash + P&L flotante` al cierre), como `_Broker.next`. Las métricas (return, win rate, profit factor, max drawdown, Sharpe) se calculan en `backtest/_results.compute_metrics` replicando las fórmulas de `compute_stats` de Backtesting.py (incluido el `geometric_mean` que rellena NaN con 0).
+
+**OJO — el TP NO se modela como en el vivo.** El executor vivo manda un **TP de broker** (orden límite intrabar); `lull_engine` lo modela como `position.close()` cuando el cierre cruza el midpoint (fill al open siguiente). Para que la equivalencia con `lull_engine` se cumpla, el motor reproduce el **midpoint-close-al-open-siguiente**, NO un TP de broker intrabar. Es una decisión deliberada: el objetivo de Step 35 es equivalencia con el backtest existente, no con el fill vivo. (Que el backtest llene sin spread mientras el vivo paga spread/TP de broker es exactamente lo que [[D046]] mide y filtra; no es regresión.)
+
+**Divergencia encontrada y resuelta — warm-up de indicadores.** El `on_bar` vivo pide una ventana **acotada** (`_H4_COUNT=50` barras H4); el ADX (doblemente suavizado, DI→DX) **no converge** en 50 barras, mientras `lull_engine` lo computa sobre la **serie completa**. Con 50 barras el ADX salía inflado (ej. 39.1 vs 27.1 real) y rechazaba ~60 entradas en la hora de rollover → 82 trades vs 141. **Solución:** el motor sirve a `on_bar` una ventana **profunda pero acotada** (`DEFAULT_WARMUP_BARS = {H4: 320, M15: 250}`) vía el `MarketData` falso; a 320 barras H4 el ADX coincide con la serie completa a ~1e-6 (y las decisiones de entrada son bit-exactas, porque 1e-6 nunca cruza el umbral ADX<35). Ventanas acotadas mantienen el loop O(n). Con esto la equivalencia es **exacta a precisión de float**: trades, return, profit factor, win rate, max drawdown idénticos; Sharpe a ~1e-9. Guardado por `tests/test_backtest_engine.py` (dataset sintético determinista que ejerce buy/sell, SL, TP y time-stop; más un test de datos reales opt-in vía `DRIFT_RUN_SLOW_BACKTEST=1`).
+
+**Costo conocido — optimización lenta.** Como cada combo del grid de `optimize_lull.py` arranca el `on_bar` vivo sobre todo el histórico (~55 s/par con el atajo de saltar horas fuera de sesión), el grid-search es mucho más lento que el optimizador en C de Backtesting.py. Es la consecuencia directa de [[D055]] (una sola implementación de la señal). Aceptado: `optimize_lull` mantiene su interfaz/salida pero advierte del costo; el usuario puede reducir el grid o correrlo de noche.
+
+**Diferido (follow-up):** migrar `analyze_entry_hours.py`, `analyze_exclude_rollover.py`, `analyze_spread_cost.py` y `validate_oos.py` al motor nuevo y entonces eliminar `lull_engine.py`.
+
+Relacionado: [[D055]], [[D045]], [[D046]], [[D051]], `backtest/engine.py`, `backtest/_results.py`, `backtest/run_lull.py`, `backtest/optimize_lull.py`, `tests/test_backtest_engine.py`.

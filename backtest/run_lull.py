@@ -19,14 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backtest.download_data import download_lull_all, load_lull_data
-from backtest.lull_engine import (
-    LULL_PAIRS,
-    format_results,
-    prepare_lull_data,
-    run_lull_backtest,
-    save_results,
-)
+from backtest._results import format_metrics_results, save_metrics_results
+from backtest.download_data import LULL_PAIRS, download_lull_all, load_lull_data
+from backtest.engine import build_lull_strategy, run_backtest
 from drift.config import load_config
 
 logging.basicConfig(
@@ -213,12 +208,9 @@ def main() -> None:
         print(f"{'=' * 50}")
 
         df_h4, df_m15 = load_lull_data(symbol, DATA_DIR)
-        df_bt = prepare_lull_data(df_h4, df_m15)
 
-        stats, _bt = run_lull_backtest(
-            df_bt,
-            cash=CASH,
-            commission=COMMISSION,
+        lull = build_lull_strategy(
+            [symbol],
             sl_atr_mult=strategy.sl_atr_mult,
             adx_max_threshold=strategy.adx_max_threshold,
             rsi_oversold=strategy.rsi_oversold,
@@ -226,21 +218,26 @@ def main() -> None:
             range_atr_min=strategy.range_atr_min,
             range_atr_max=strategy.range_atr_max,
         )
+        result = run_backtest(lull, df_m15, df_h4, symbol, cash=CASH, commission=COMMISSION)
+        metrics = result.metrics
 
-        print(format_results(symbol, stats))
-        save_results(symbol, stats, RESULTS_DIR)
+        period_start = result.equity_curve.index[0] if len(result.equity_curve) else "?"
+        period_end = result.equity_curve.index[-1] if len(result.equity_curve) else "?"
+
+        print(format_metrics_results(symbol, metrics, period_start, period_end))
+        save_metrics_results(symbol, metrics, RESULTS_DIR, period_start, period_end)
 
         summary_rows.append(
             {
                 "symbol": symbol,
-                "return_pct": _safe_float(stats.get("Return [%]")),
-                "win_rate": _safe_float(stats.get("Win Rate [%]")),
-                "profit_factor": _safe_float(stats.get("Profit Factor")),
-                "max_drawdown_pct": _safe_float(stats.get("Max. Drawdown [%]")),
-                "trades": _safe_float(stats.get("# Trades")),
-                "sharpe": _safe_float(stats.get("Sharpe Ratio")),
-                "start": str(stats.get("Start", "?")),
-                "end": str(stats.get("End", "?")),
+                "return_pct": _safe_float(metrics.get("return_pct")),
+                "win_rate": _safe_float(metrics.get("win_rate")),
+                "profit_factor": _safe_float(metrics.get("profit_factor")),
+                "max_drawdown_pct": _safe_float(metrics.get("max_drawdown_pct")),
+                "trades": _safe_float(metrics.get("trades")),
+                "sharpe": _safe_float(metrics.get("sharpe")),
+                "start": str(period_start),
+                "end": str(period_end),
             }
         )
 

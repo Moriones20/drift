@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from drift import mt5_client  # noqa: E402
 from drift.db import init_db, log_signal  # noqa: E402
 from drift.formatting import format_time, parse_utc_offset  # noqa: E402
-from drift.strategy import Signal  # noqa: E402
+from drift.strategies.base import Signal  # noqa: E402
 
 
 def _make_test_db() -> tuple[str, sqlite3.Connection]:

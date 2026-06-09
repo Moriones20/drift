@@ -1,5 +1,6 @@
 # Credentials & local config (never commit real config)
 config.yaml
+config.yaml.*
 
 # Database files
 data/*.db

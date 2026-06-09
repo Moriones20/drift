@@ -22,12 +22,11 @@ from itertools import product
 from pathlib import Path
 
 import pandas as pd
-from backtesting import Backtest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backtest.download_data import LULL_PAIRS, download_lull_all, load_lull_data
-from backtest.lull_engine import DailyLullStrategy, prepare_lull_data
+from backtest.engine import build_lull_strategy, run_backtest
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,29 +95,42 @@ def _passes_keep_criteria(pf: float, wr: float, max_dd: float, trades: float) ->
     )
 
 
-def _extract_metrics(stats: pd.Series) -> dict:
-    """Extract the key metric dict from a bt.run() / bt.optimize() result."""
-    return {
-        "return_pct": _safe_float(stats.get("Return [%]")),
-        "win_rate": _safe_float(stats.get("Win Rate [%]")),
-        "profit_factor": _safe_float(stats.get("Profit Factor")),
-        "max_drawdown_pct": _safe_float(stats.get("Max. Drawdown [%]")),
-        "trades": _safe_float(stats.get("# Trades")),
-        "sharpe": _safe_float(stats.get("Sharpe Ratio")),
-        "equity_final": _safe_float(stats.get("Equity Final [$]")),
-    }
+def _grid_combos() -> list[dict[str, float]]:
+    """Build the full constrained parameter grid (replaces bt.optimize's grid)."""
+    combos: list[dict[str, float]] = []
+    for sl, adx, rsi_os, rsi_ob, rng_min, rng_max in product(
+        SL_ATR_MULT, ADX_MAX_THRESHOLD, RSI_OVERSOLD, RSI_OVERBOUGHT, RANGE_ATR_MIN, RANGE_ATR_MAX
+    ):
+        if rsi_os < rsi_ob and rng_min < rng_max:
+            combos.append(
+                {
+                    "sl_atr_mult": sl,
+                    "adx_max_threshold": adx,
+                    "rsi_oversold": rsi_os,
+                    "rsi_overbought": rsi_ob,
+                    "range_atr_min": rng_min,
+                    "range_atr_max": rng_max,
+                }
+            )
+    return combos
 
 
-def _extract_params(stats: pd.Series) -> dict:
-    """Pull chosen parameters off the _strategy attribute of an optimize() result."""
-    s = stats._strategy
+def _run_combo(symbol: str, m15: pd.DataFrame, h4: pd.DataFrame, combo: dict[str, float]) -> dict:
+    """Run one parameter combo through the engine and return its metrics dict."""
+    strategy = build_lull_strategy([symbol], **combo)
+    result = run_backtest(strategy, m15, h4, symbol, cash=CASH, commission=COMMISSION)
+    m = result.metrics
+    # ``equity_final`` keeps the universal-search's maximand; derive it from the
+    # equity curve since the engine reports a return percent, not a final value.
+    equity_final = float(result.equity_curve.iloc[-1]) if len(result.equity_curve) else float("nan")
     return {
-        "sl_atr_mult": getattr(s, "sl_atr_mult", float("nan")),
-        "adx_max_threshold": getattr(s, "adx_max_threshold", float("nan")),
-        "rsi_oversold": getattr(s, "rsi_oversold", float("nan")),
-        "rsi_overbought": getattr(s, "rsi_overbought", float("nan")),
-        "range_atr_min": getattr(s, "range_atr_min", float("nan")),
-        "range_atr_max": getattr(s, "range_atr_max", float("nan")),
+        "return_pct": _safe_float(m.get("return_pct")),
+        "win_rate": _safe_float(m.get("win_rate")),
+        "profit_factor": _safe_float(m.get("profit_factor")),
+        "max_drawdown_pct": _safe_float(m.get("max_drawdown_pct")),
+        "trades": _safe_float(m.get("trades")),
+        "sharpe": _safe_float(m.get("sharpe")),
+        "equity_final": _safe_float(equity_final),
     }
 
 
@@ -127,54 +139,47 @@ def _extract_params(stats: pd.Series) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def optimize_pair(symbol: str, df: pd.DataFrame) -> dict | None:
-    """Run bt.optimize() for one pair and return a result dict, or None on failure."""
-    logger.info("Optimizing %s — grid: 5×4×3×3×3×3 = 1620 combos", symbol)
+def optimize_pair(symbol: str, m15: pd.DataFrame, h4: pd.DataFrame) -> dict | None:
+    """Grid-search one pair with the new engine; return the best-combo result.
 
-    bt = Backtest(
-        df,
-        DailyLullStrategy,
-        cash=CASH,
-        commission=COMMISSION,
-        exclusive_orders=True,
-    )
+    Replaces Backtesting.py's ``bt.optimize`` with an explicit Python loop over
+    the same constrained grid, scoring each combo by final equity (the previous
+    ``maximize="Equity Final [$]"``).  Slower than the C-optimized search, since
+    every combo drives the live ``on_bar`` over the full history (D055).
+    """
+    combos = _grid_combos()
+    logger.info("Optimizing %s — %d combos (engine grid search)", symbol, len(combos))
 
-    try:
-        stats = bt.optimize(
-            sl_atr_mult=SL_ATR_MULT,
-            adx_max_threshold=ADX_MAX_THRESHOLD,
-            rsi_oversold=RSI_OVERSOLD,
-            rsi_overbought=RSI_OVERBOUGHT,
-            range_atr_min=RANGE_ATR_MIN,
-            range_atr_max=RANGE_ATR_MAX,
-            maximize="Equity Final [$]",
-            constraint=lambda p: (
-                p.rsi_oversold < p.rsi_overbought and p.range_atr_min < p.range_atr_max
-            ),
-            return_heatmap=False,
-        )
-    except Exception as exc:
-        logger.warning("Optimization failed for %s: %s", symbol, exc)
-        return None
+    best_metrics: dict | None = None
+    best_params: dict | None = None
+    best_equity: float = float("-inf")
 
-    trades = _safe_float(stats.get("# Trades"))
-    if not math.isfinite(trades) or trades == 0:
+    for combo in combos:
+        metrics = _run_combo(symbol, m15, h4, combo)
+        trades = metrics["trades"]
+        if not math.isfinite(trades) or trades == 0:
+            continue
+        eq = metrics["equity_final"]
+        if math.isfinite(eq) and eq > best_equity:
+            best_equity = eq
+            best_metrics = metrics
+            best_params = combo
+
+    if best_metrics is None or best_params is None:
         logger.warning("No trades found during optimization for %s — skipping", symbol)
         return None
 
-    metrics = _extract_metrics(stats)
-    params = _extract_params(stats)
     keep = _passes_keep_criteria(
-        metrics["profit_factor"],
-        metrics["win_rate"],
-        metrics["max_drawdown_pct"],
-        metrics["trades"],
+        best_metrics["profit_factor"],
+        best_metrics["win_rate"],
+        best_metrics["max_drawdown_pct"],
+        best_metrics["trades"],
     )
 
     return {
         "symbol": symbol,
-        "params": params,
-        "metrics": metrics,
+        "params": best_params,
+        "metrics": best_metrics,
         "keep": keep,
     }
 
@@ -249,7 +254,7 @@ def _build_reduced_grid(pair_results: list[dict]) -> list[dict[str, float]]:
 
 def find_universal_params(
     kept_results: list[dict],
-    pair_dfs: dict[str, pd.DataFrame],
+    pair_data: dict[str, tuple[pd.DataFrame, pd.DataFrame]],
 ) -> dict | None:
     """Brute-force search over a reduced grid to find params that maximise total equity.
 
@@ -276,28 +281,16 @@ def find_universal_params(
 
         for r in kept_results:
             symbol = r["symbol"]
-            df = pair_dfs[symbol]
+            m15, h4 = pair_data[symbol]
 
-            bt = Backtest(
-                df,
-                DailyLullStrategy,
-                cash=CASH,
-                commission=COMMISSION,
-                exclusive_orders=True,
-            )
-            try:
-                stats = bt.run(**combo)
-            except Exception:
-                total_equity = float("-inf")
-                break
-
-            eq = _safe_float(stats.get("Equity Final [$]"))
+            metrics = _run_combo(symbol, m15, h4, combo)
+            eq = metrics["equity_final"]
             if not math.isfinite(eq):
                 total_equity = float("-inf")
                 break
 
             total_equity += eq
-            per_pair[symbol] = _extract_metrics(stats)
+            per_pair[symbol] = metrics
 
         if total_equity > best_equity:
             best_equity = total_equity
@@ -515,11 +508,11 @@ def main() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ---- Load data for all pairs ----
-    pair_dfs: dict[str, pd.DataFrame] = {}
+    pair_data: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
     for symbol in LULL_PAIRS:
         logger.info("Loading data for %s", symbol)
         df_h4, df_m15 = load_lull_data(symbol, DATA_DIR)
-        pair_dfs[symbol] = prepare_lull_data(df_h4, df_m15)
+        pair_data[symbol] = (df_m15, df_h4)
 
     # ---- Per-pair optimization ----
     print()
@@ -530,12 +523,15 @@ def main() -> None:
         f"×{len(RSI_OVERBOUGHT)}×{len(RANGE_ATR_MIN)}×{len(RANGE_ATR_MAX)}"
         f" = 1620 combos per pair"
     )
+    print("  NOTE: the unified engine drives the live on_bar per combo (D055), so")
+    print("  this grid search is much slower than the old Backtesting.py optimizer.")
     print("=" * 60)
 
     all_results: list[dict] = []
 
     for symbol in LULL_PAIRS:
-        result = optimize_pair(symbol, pair_dfs[symbol])
+        m15, h4 = pair_data[symbol]
+        result = optimize_pair(symbol, m15, h4)
         if result is None:
             logger.warning("Skipping %s — optimization returned no result", symbol)
             continue
@@ -567,7 +563,7 @@ def main() -> None:
         len(kept_results),
         [r["symbol"] for r in kept_results],
     )
-    universal = find_universal_params(kept_results, pair_dfs)
+    universal = find_universal_params(kept_results, pair_data)
 
     if universal:
         _print_universal_comparison(kept_results, universal)

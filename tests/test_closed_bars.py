@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from drift.strategy import closed_bars
+from drift.engine import closed_bars
 
 
 def _df(times: list[str]) -> pd.DataFrame:
