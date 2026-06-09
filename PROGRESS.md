@@ -167,6 +167,7 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - **Disparador:** al reiniciar para cargar D048, un fallo DNS transitorio (router 192.168.80.1 caído; resolución de nombres caída pero ruteo por IP OK) en el arranque de Telegram tiró el proceso con `httpx.ConnectError: getaddrinfo failed`. El handler FATAL decía "NSSM should restart" pero corre por Task Scheduler (sin auto-restart) → **bot quedó caído**.
 - **D049 — `_setup_telegram_resilient`.** Reintenta setup+initialize de Telegram con backoff (10 intentos, ~7 min de tolerancia) antes de rendirse; Telegram es plano de control, no dependencia de trading. Corregidas referencias obsoletas a NSSM → Task Scheduler.
 - Tests: **129 pasan** (nuevo `test_startup_resilience.py`).
-- **Pendiente de entorno (usuario):** (a) arreglar el DNS del router para que el bot pueda arrancar; (b) configurar la tarea "Drift" con restart-on-failure como 2ª capa. NO reiniciar el bot hasta que el DNS esté arriba (con DNS caído reintenta ~7 min y se rinde).
+- **DNS:** recuperado; bot reiniciado limpio (Telegram registró 8 comandos, offset UTC+3, durmiendo hasta 09-jun 21:00 servidor). D046+D047+D048+D049 todos live.
+- **Task Scheduler "Drift" reforzada (2ª capa de robustez):** ya tenía restart-on-failure 3×1min — insuficiente (los 3 reintentos cayeron contra el mismo DNS muerto en ~3 min y se agotaron). Ahora **RestartCount=5, RestartInterval=PT2M, StartWhenAvailable=True** (resto intacto: ExecutionTimeLimit ilimitado, MultipleInstances=IgnoreNew). Combinado con la ventana de ~7 min de reintento interno de D049, tolera apagones de red prolongados.
 
 - Next session starts at Step 22 (Phase 3: Go Live).
