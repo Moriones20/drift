@@ -64,25 +64,36 @@ Diseño: D050–D057, `ROADMAP.md` Phase 2.6, `docs/knowledge/strategy-framework
 
 > **En cada sesión: leer PROGRESS.md primero.** Los pasos abajo tienen dependencias — respétalas. Delegar a subagentes los módulos independientes (ver Parallelism).
 
+Estado: implementada vía /orchestrate en rama `feat/multi-strategy-platform` (2026-06-08/09). Steps 27-35 hechos y verificados; suite 282 passed / 2 skipped (slow opt-in), ruff limpio. Step 36 (validación e2e en paper) pendiente — manual. Nota: Step 32 se dividió en 32a (next_wake/timing) + 32b (motor); se añadió un chunk de cleanup (C10) para la fase "contract" del expand/contract. Decisiones nuevas: D058 (scheduling por next_wake), D059 (backtest engine + warm-up ADX).
+
 ### Batch MS-A — Fundación (Steps 27-28)
-- [ ] 27. Contrato `Strategy` + registry + tipos (`drift/strategies/base.py`): `Strategy` Protocol, `Decision` (Open/Close/CloseAll/NoOp), `MarketData`, `StrategyContext`, registry. Sin dependencia MT5. (D051)
-- [ ] 28. Refactor de config a `strategies[]`: dataclasses, `risk_global`, magic base+offset, `params` opaco, `pairs` por estrategia; validación (magic único, allocations ≤100%, nombres conocidos); migración manual de config.yaml + config.example.yaml. (D052/D053/D054)
+- [x] 27. Contrato `Strategy` + registry + tipos (`drift/strategies/base.py`). (D051) — `4840e1c`
+- [x] 28. Refactor de config a `strategies[]` con validación (magic único, allocations ≤100%) + migración de config.example.yaml. (D052/D053/D054) — `eb3867f`
 
-### Batch MS-B — Módulos independientes (Steps 29-31) — paralelizables tras MS-A
-- [ ] 29. Port del Daily Lull al contrato (`drift/strategies/daily_lull.py`): `on_bar`, `SessionState` privado, ventana/time-stop/skip-Friday/rollover internos, `DailyLullParams`. **Tests de equivalencia** vs comportamiento actual. (D051/D055)
-- [ ] 30. Migración de DB: columna `strategy` en trades/signals, `strategy` NULL en bot_events, tabla `strategy_state`, CRUD, ALTER de DB existente. (D056)
-- [ ] 31. Motor de riesgo de dos niveles (`drift/risk.py`): sizing notional con allocation, límites global+estrategia, correlación global, equity/peak/drawdown por estrategia, brake global. (D053)
+### Batch MS-B — Módulos independientes (Steps 29-31) — corridos en paralelo (worktrees)
+- [x] 29. Port del Daily Lull al contrato (`drift/strategies/daily_lull.py`), tests de equivalencia. (D051/D055) — `ad7ff3c`
+- [x] 30. Migración de DB: `strategy` en trades/signals, `strategy_state`, ALTER idempotente. (D056) — `179e12f`
+- [x] 31. Motor de riesgo de dos niveles (`drift/risk.py`): sizing notional + límites global/estrategia. (D053) — `e87d246`
 
-### Batch MS-C — Motor (Step 32) — depende de 27-31
-- [ ] 32. Motor genérico (reescritura del loop de `main.py`): reloj por suscripción (unión de timeframes), `MarketData` dedup, despacho a estrategias enabled/no-pausadas, gating de riesgo, ejecución, atribución por magic, logging con `strategy`. (D051)
+### Batch MS-C — Motor (Step 32, dividido) — depende de 27-31
+- [x] 32a. `next_wake` + port del timing (ventana/skip-Friday) a la estrategia, equivalencia vs main.py. (D058) — `aa6485f`
+- [x] 32b. Motor genérico (`drift/engine.py` + reescritura del loop de `main.py`): scheduler por next_wake, MarketData dedup, despacho, gating de riesgo, atribución por magic. (D051) — `7082ab0` (+ fix `_shutdown` magic `be8f297`)
 
 ### Batch MS-D — Control y observabilidad (Steps 33-34)
-- [ ] 33. Thread de monitoreo multi-estrategia: P&L flotante por magic, peak/drawdown por estrategia → `strategy_state`, pausa por estrategia, detección de cierres atribuida. (D053/D056)
-- [ ] 34. Telegram multi-estrategia: desglose en /status,/balance,/trades,/report; /pause [estrategia], /resume [estrategia], /strategies; reporte semanal por estrategia. (D057)
+- [x] 33. Monitoreo multi-estrategia: drawdown por estrategia → `strategy_state`, pausa coordinada motor↔monitor, cierres atribuidos por magic. (D053/D056) — `f46ef23`
+- [x] 34. Telegram multi-estrategia: desglose por estrategia, `/pause [x]`, `/resume [x]`, `/strategies`, reporte semanal por estrategia. (D057) — `1631ecc`
 
 ### Batch MS-E — Backtest y validación (Steps 35-36)
-- [ ] 35. Unificación del backtest (`backtest/engine.py`): adaptador propio que consume el mismo `on_bar`; reemplaza lull_engine.py; se abandona Backtesting.py; tests de equivalencia. Portfolio backtest diferido. (D055) — depende de 29
-- [ ] 36. Validación end-to-end en paper: framework con Lull como única estrategia; paridad vs comportamiento pre-refactor; luego proceder a Phase 3.
+- [x] 35. Backtest unificado (`backtest/engine.py`): loop propio que consume el mismo `on_bar`, equivalencia **bit-exact** vs lull_engine; repuntados run_lull/optimize. Alcance núcleo: lull_engine.py se conserva (analyze_*/validate_oos siguen usándolo). (D055/D059) — `6e36730`
+- [x] (cleanup C10) Quitado shim transitorio + `drift/strategy.py`; golden tests; `Signal` repuntado a base; `closed_bars` a engine. — `8973aca`
+- [ ] 36. **Validación end-to-end en paper** (manual, PENDIENTE): migrar `config.yaml` al esquema nuevo, correr el framework con el Lull, verificar paridad y proceder a Phase 3.
+
+#### Pendientes / follow-ups de la Phase 2.6
+- **Migrar `config.yaml` real** al esquema `strategies[]` (no versionado; `load_config` ahora lo exige). Ver `config.example.yaml`.
+- **Fidelidad ADX live vs backtest (D059):** la `on_bar` viva pide 50 barras H4 → ADX no converge (≈39 vs ≈27 de serie completa) y rechaza ~60 entradas de la hora rollover que el backtest acepta. Decisión "cabeza fría" pendiente: alinear el warm-up H4 live con el backtest (subir el `count`) tras analizar el impacto.
+- **Migración del tooling de research** (analyze_entry_hours/analyze_exclude_rollover/analyze_spread_cost/validate_oos) al nuevo `backtest/engine.py` y eliminación de `lull_engine.py` — diferido (re-validar D045/D046/OOS).
+- **`optimize_lull.py`** ahora es más lento (~55s/par/combo) por correr `on_bar` sobre todo el histórico — inherente a D055.
+- **Portfolio backtest** (varias estrategias en una curva de equity) — diferido hasta la estrategia #2 (D055).
 
 ## Phase 3 — Live
 
