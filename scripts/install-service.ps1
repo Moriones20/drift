@@ -10,7 +10,9 @@
         servicio).  Esto es obligatorio: el paquete MetaTrader5 esta instalado en el
         perfil del usuario y el terminal MT5 corre en la sesion interactiva; un servicio
         en Session 0 no puede conectar con ese terminal.
-      - Reinicia el proceso hasta 3 veces (cada 1 minuto) si muere.
+      - Reinicia el proceso hasta 5 veces (cada 2 minutos) si muere, y arranca
+        apenas pueda si se perdio el horario (StartWhenAvailable). Junto con el
+        reintento interno de Telegram (~7 min, D049) tolera apagones de red.
       - Tiempo de ejecucion ilimitado (bot de larga duracion).
       - Se puede iniciar con bateria y no se detiene por inactividad.
 
@@ -114,9 +116,13 @@ $principal = New-ScheduledTaskPrincipal `
     -RunLevel Limited
 
 # Configuracion: restart en fallo, sin limite de tiempo, sin restriccion de bateria.
+# RestartCount/Interval = 5 reintentos cada 2 min: junto con la ventana de
+# reintento interno de Telegram (~7 min, D049) tolera apagones de red prolongados.
+# StartWhenAvailable = arranca apenas pueda si se perdio el horario (maquina dormida).
 $settings = New-ScheduledTaskSettingsSet `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -RestartCount 5 `
+    -RestartInterval (New-TimeSpan -Minutes 2) `
+    -StartWhenAvailable `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `

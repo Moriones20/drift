@@ -56,14 +56,20 @@ Unregister-ScheduledTask -TaskName Drift   # eliminar la tarea
 
 ### Mecanismo de restart y global error handler
 
-Hay dos capas complementarias de supervivencia:
+Hay tres capas complementarias de supervivencia:
 
-- **Error handler de Python** (`main.py`): cualquier excepción de Python que escapa todos los
-  handlers internos es capturada en el nivel más alto, logueada con traza completa en
-  `logs/drift.log`, notificada por Telegram, registrada en la DB, y luego el proceso termina con
-  error para que Task Scheduler lo reinicie.
-- **Task Scheduler**: reinicia el proceso hasta 3 veces con intervalo de 1 minuto si muere
-  por cualquier motivo, incluyendo crashes nativos que Python no puede capturar.
+- **Arranque resiliente de Telegram** (`main.py`, D049): si la red/DNS falla justo al arrancar
+  (Telegram es el plano de control, no una dependencia de trading), el setup reintenta con
+  backoff hasta ~7 minutos antes de rendirse, en vez de morir al primer fallo. Un blip de red
+  ya no tumba el arranque.
+- **Error handler de Python** (`main.py`): cualquier excepción que escapa todos los handlers
+  internos es capturada en el nivel más alto, logueada con traza completa en `logs/drift.log`,
+  notificada por Telegram, registrada en la DB, y luego el proceso termina con error para que
+  Task Scheduler lo reinicie.
+- **Task Scheduler**: reinicia el proceso hasta **5 veces con intervalo de 2 minutos** si muere
+  por cualquier motivo (incluyendo crashes nativos que Python no puede capturar), y arranca
+  apenas pueda si se perdió el horario por máquina dormida (`StartWhenAvailable`). Estos valores
+  los fija `scripts/install-service.ps1`; si re-registrás la tarea, quedan aplicados.
 
 > **Requisito de sesión:** el terminal MetaTrader 5 debe estar corriendo y logueado en la
 > misma sesión interactiva.  Si cerrás MT5 y el bot sigue vivo, el reconnect automático
@@ -341,6 +347,34 @@ Si `health_check` falla repetidamente:
 1. Abrí MT5 manualmente y verificá que estés logueado.
 2. Verificá que `broker.server` en `config.yaml` sea el valor vigente correcto: `ICMarketsSC-Demo`. Si quedó un nombre viejo (ej. `ICMarketsSC-MT5-Demo`), corregilo a `ICMarketsSC-Demo`.
 3. Si el broker te desautenticó, volvé a loguear desde la terminal MT5.
+
+### Bot caído / no arranca (red o DNS)
+
+Síntoma: no hay proceso `pythonw.exe main.py` corriendo y el log termina con
+`httpx.ConnectError: [Errno 11001] getaddrinfo failed` o similar durante el setup
+de Telegram.
+
+Causa típica: el resolver DNS de la red está caído (p.ej. el router no resuelve
+nombres aunque el ruteo por IP funcione). El arranque de D049 reintenta ~7 min;
+si la red no vuelve en ese plazo, el proceso muere y Task Scheduler reintenta
+hasta 5 veces (cada 2 min). Un apagón de red más largo agota ambas capas.
+
+Diagnóstico:
+
+```powershell
+# ¿Resuelve nombres?
+Resolve-DnsName api.telegram.org
+# Si falla pero el ruteo por IP funciona (ping a 8.8.8.8 OK), es el DNS local:
+Resolve-DnsName api.telegram.org -Server 8.8.8.8   # si esto SÍ resuelve, el problema es el resolver del router
+```
+
+Solución: restablecer el DNS de la red (arreglar/reiniciar el router, o apuntar el
+adaptador a un resolver público 8.8.8.8 / 1.1.1.1). Cuando `Resolve-DnsName
+api.telegram.org` resuelva, reiniciá la tarea:
+
+```powershell
+Start-ScheduledTask -TaskName Drift
+```
 
 ### Bot no responde a comandos Telegram
 

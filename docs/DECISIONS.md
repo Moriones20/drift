@@ -600,7 +600,9 @@ Relacionado: [[D044]], [[D040]], [[D043]] (reconciliación de métricas), `backt
 
 **Por qué D044/D045 no bastaban:** D045 arregla la *señal* (vela cerrada); D044 saca la *ejecución* del halt. Pero ninguno mira el **spread** en el momento del fill. El backtest llena al **open de la vela siguiente (precio único, sin spread)**, así que nunca ve este costo — destapa que parte del edge "92% en la hora 00" podía estar inflado por fills sin spread justo cuando el spread real es máximo.
 
-**Efecto:** Con `min_reward_fraction=0.5`, las 3 entradas de 2026-06-04 se habrían rechazado (reward tras spread negativo en las tres). Filtra entradas estructuralmente perdedoras sin tocar las sanas. Pendiente: re-correr el backtest con modelo de spread realista (sobre todo inflado en la hora del rollover) para revalidar el edge.
+**Efecto:** Con `min_reward_fraction=0.5`, las 3 entradas de 2026-06-04 se habrían rechazado (reward tras spread negativo en las tres). Filtra entradas estructuralmente perdedoras sin tocar las sanas.
+
+**Revalidación del edge con spread (2026-06-08, `backtest/analyze_spread_cost.py`):** re-tasado bajo spread realista (normal + inflado en rollover, anclado a los gaps vivos del 4-jun), el edge cae de **+8.75% bruto** a **+5.11% (modelo central: solo exceso de rollover)** y **+3.10% (pesimista: spread completo en todo)** sobre ~1.4-2 años. El **47% de los trades** caen en la ventana rollover (00:00-00:29). Conclusión: el edge es real pero ~la mitad de lo anunciado — expectativa go-live **low-single-digit anual**, no ~9%. D046 no está en ese modelo y debería empujar el realizado hacia arriba (rechaza justo las peores entradas rollover).
 
 **Complementa:** [[D045]] (señal sobre vela cerrada) + [[D044]] (ejecución post-halt) + [[D040]] (retry/guardia de reversión). D046 es la cuarta capa: aunque señal y timing sean correctos, no se entra si el spread mata el R:R.
 
