@@ -1016,16 +1016,33 @@ def _shutdown(
     shutdown_event.set()
 
     if state.stop_requested:
-        mt5_positions = get_open_positions(config.system.magic_number)
-        for pos in mt5_positions:
-            logger.info("Stop requested — closing ticket=%d %s", pos["ticket"], pos["pair"])
-            close_trade(
-                ticket=pos["ticket"],
-                pair=pos["pair"],
-                lot_size=pos["volume"],
-                direction=pos["direction"],
-                magic=config.system.magic_number,
-            )
+        base_magic = config.system.magic_number
+        for instance_cfg in config.strategies.values():
+            if not instance_cfg.enabled:
+                continue
+            effective_magic = base_magic + instance_cfg.magic_offset
+            mt5_positions = get_open_positions(effective_magic)
+            for pos in mt5_positions:
+                logger.info(
+                    "Stop requested — closing ticket=%d %s (magic=%d)",
+                    pos["ticket"],
+                    pos["pair"],
+                    effective_magic,
+                )
+                try:
+                    close_trade(
+                        ticket=pos["ticket"],
+                        pair=pos["pair"],
+                        lot_size=pos["volume"],
+                        direction=pos["direction"],
+                        magic=effective_magic,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Error closing ticket=%d %s on shutdown — continuing",
+                        pos["ticket"],
+                        pos["pair"],
+                    )
 
     try:
         balance = get_balance()
