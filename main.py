@@ -30,6 +30,7 @@ from drift.db import (
     log_signal,
     log_trade,
 )
+from drift.engine import Engine
 from drift.executor import close_trade, get_open_positions, open_trade
 from drift.formatting import parse_utc_offset, set_display_tz
 from drift.mt5_client import (
@@ -258,6 +259,17 @@ def _pip_value(pair: str, info=None) -> float:
 # ---------------------------------------------------------------------------
 # Startup validation
 # ---------------------------------------------------------------------------
+
+
+def _enabled_pairs(config: DriftConfig) -> list[str]:
+    """Return the order-preserving union of pairs across enabled strategies (D054)."""
+    seen: dict[str, None] = {}
+    for instance in config.strategies.values():
+        if not instance.enabled:
+            continue
+        for pair in instance.pairs:
+            seen.setdefault(pair, None)
+    return list(seen)
 
 
 def _validate_pairs(pairs: list[str]) -> None:
@@ -1122,13 +1134,17 @@ def main() -> None:
         # once, so a process running continuously across a US DST change
         # (≈Mar/Nov) keeps a stale offset until restarted — restart the bot
         # after each DST transition.
-        _server_offset = get_server_utc_offset(config.pairs[0] if config.pairs else "EURUSD")
+        # Union of pairs across all enabled strategies (D054): this is what gets
+        # activated in Market Watch and what the offset derivation samples.
+        all_pairs = _enabled_pairs(config)
+
+        _server_offset = get_server_utc_offset(all_pairs[0] if all_pairs else "EURUSD")
         logger.info(
             "MT5 server offset: UTC%+d — scheduler aligned to server time",
             round(_server_offset.total_seconds() / 3600),
         )
 
-        _validate_pairs(config.pairs)
+        _validate_pairs(all_pairs)
 
         try:
             balance = get_balance()
@@ -1152,9 +1168,6 @@ def main() -> None:
             equity,
             peak_balance,
         )
-
-        # Per-pair session state — reset at the start of each session (21:00 server time).
-        session_states: dict[str, SessionState] = {pair: SessionState() for pair in config.pairs}
 
         state = BotState()
         shutdown_event = threading.Event()
@@ -1202,127 +1215,32 @@ def main() -> None:
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
 
-        logger.info("Drift bot running — M15 Daily Lull session scheduler active")
+        logger.info("Drift bot running — multi-strategy engine active")
 
-        # Track whether we are currently inside a session to detect the B→A transition.
-        _session_active: bool = False
+        # The engine (Step 32b) hosts every enabled strategy, drives the
+        # next_wake scheduler (D058), serves deduplicated market data, gates
+        # two-level risk (D053), executes/attributes by magic (D052), and
+        # handles each strategy's Decision.  It shares _trade_lock with the
+        # monitoring thread and reuses the same notification hooks.  All the
+        # session-window/timing/state logic that used to live in this loop is now
+        # strategy-private (D051).
+        engine = Engine(
+            config=config,
+            state=state,
+            peak_balance_ref=peak_balance_ref,
+            bot_app=bot_app,
+            server_offset=_server_offset,
+            trade_lock=_trade_lock,
+            shutdown_event=shutdown_event,
+            fire_and_forget=_fire_and_forget,
+            notify_trade_opened=notify_trade_opened,
+            notify_trade_closed=notify_trade_closed,
+            notify_bot_status=notify_bot_status,
+            notify_error=notify_error,
+        )
 
         try:
-            while not state.stop_requested:
-                try:
-                    # All session-window decisions use MT5 server time so they
-                    # align with the candle timestamps and the strategy's hour
-                    # checks (session_start_hour=21, session_end_hour=2 are
-                    # defined in server time).  The weekly-report trigger in
-                    # _check_weekly_report continues to use real UTC so it fires
-                    # on the user's configured wall-clock schedule.
-                    now = server_now(_server_offset)
-
-                    # --- State A: outside window — sleep until next session start ---
-                    if not _in_session_window(now, config):
-                        if _session_active:
-                            # Transitioned from inside → outside — session already closed at 02:00.
-                            _session_active = False
-
-                        next_start = _next_session_start(now, config)
-                        wait_secs = (
-                            _seconds_until(next_start, _server_offset) + CANDLE_CLOSE_DELAY_SECONDS
-                        )
-                        logger.info(
-                            "Outside window (state A) — sleeping until %s server time (%.0fs)",
-                            next_start.strftime("%Y-%m-%d %H:%M"),
-                            wait_secs,
-                        )
-
-                        deadline = time.monotonic() + wait_secs
-                        while time.monotonic() < deadline and not state.stop_requested:
-                            time.sleep(min(10.0, deadline - time.monotonic()))
-
-                        if state.stop_requested:
-                            break
-
-                        # Refresh now; re-check window.
-                        continue
-
-                    # --- Entering session for the first time (B starts) ---
-                    if not _session_active:
-                        # Re-derive the server offset at each session start so a
-                        # long-running process picks up US DST transitions
-                        # (≈Mar/Nov) without a restart (D041).  Cheap: once per
-                        # session.  If it changed, realign by recomputing `now`
-                        # before doing anything window-dependent.
-                        refreshed = get_server_utc_offset(
-                            config.pairs[0] if config.pairs else "EURUSD"
-                        )
-                        if refreshed != _server_offset:
-                            logger.warning(
-                                "MT5 server offset changed UTC%+d → UTC%+d (DST?) — "
-                                "realigning scheduler",
-                                round(_server_offset.total_seconds() / 3600),
-                                round(refreshed.total_seconds() / 3600),
-                            )
-                            _server_offset = refreshed
-                            continue
-
-                        _session_active = True
-                        # Reset all session states at session start.
-                        for pair in config.pairs:
-                            session_states[pair] = SessionState()
-                        logger.info("Session started — all session states reset")
-                        _fire_and_forget(
-                            notify_bot_status(
-                                bot_app.bot,
-                                config.telegram.chat_id,
-                                "started",
-                                "Daily Lull session started (21:00 server time)",
-                            )
-                        )
-
-                    # --- States B + C + D: wait for next M15 close and process tick ---
-                    next_close = _next_m15_close(now)
-                    post_close_delay = _post_close_delay_seconds(next_close, config)
-                    wait_secs = _seconds_until(next_close, _server_offset) + post_close_delay
-                    logger.info(
-                        "Next M15 close at %s server time — sleeping %.0fs%s",
-                        next_close.strftime("%H:%M"),
-                        wait_secs,
-                        " (rollover settle)"
-                        if post_close_delay != CANDLE_CLOSE_DELAY_SECONDS
-                        else "",
-                    )
-
-                    deadline = time.monotonic() + wait_secs
-                    while time.monotonic() < deadline and not state.stop_requested:
-                        time.sleep(min(10.0, deadline - time.monotonic()))
-
-                    if state.stop_requested:
-                        break
-
-                    bar_close_time = next_close
-                    _run_m15_tick(
-                        config=config,
-                        state=state,
-                        peak_balance_ref=peak_balance_ref,
-                        session_states=session_states,
-                        bot_app=bot_app,
-                        bar_close_time=bar_close_time,
-                        server_offset=_server_offset,
-                    )
-
-                    # After state D, the session is over — next iteration will detect
-                    # outside-window and enter state A.
-
-                except Exception:
-                    logger.exception("Unexpected error in main loop — pausing bot and retrying")
-                    state.paused = True
-                    _fire_and_forget(
-                        notify_error(
-                            bot_app.bot,
-                            config.telegram.chat_id,
-                            "Unexpected error in main loop — bot paused. Use /resume after investigation.",  # noqa: E501
-                        )
-                    )
-                    time.sleep(60)
+            engine.run()
         finally:
             _shutdown(config, state, bot_app, shutdown_event)
 
