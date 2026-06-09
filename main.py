@@ -65,6 +65,13 @@ CANDLE_CLOSE_DELAY_SECONDS = 5
 _LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 _PROJECT_ROOT = Path(__file__).parent
 
+# Telegram setup is the control plane; a transient network/DNS failure at
+# startup must not kill an autonomous bot. Retry with capped backoff before
+# giving up. See D049.
+_TELEGRAM_SETUP_MAX_ATTEMPTS = 10
+_TELEGRAM_SETUP_BASE_DELAY_SECONDS = 15.0
+_TELEGRAM_SETUP_MAX_DELAY_SECONDS = 60.0
+
 # Weekly report trigger is derived from config.reports at runtime.
 # Tracks the date of the last sent report to avoid duplicate sends.
 _last_report_date: date | None = None
@@ -1029,6 +1036,50 @@ def _shutdown(
 # ---------------------------------------------------------------------------
 
 
+def _setup_telegram_resilient(config: DriftConfig, state, tg_loop):
+    """Set up and initialise the Telegram bot, retrying transient network errors.
+
+    A DNS/network blip at startup (e.g. router DNS briefly down) raised an
+    unhandled httpx.ConnectError that killed the whole process — even though
+    trading does not need Telegram up that instant. Retry with capped backoff so
+    the bot waits out a transient outage; re-raise only after exhausting all
+    attempts. See D049.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, _TELEGRAM_SETUP_MAX_ATTEMPTS + 1):
+        try:
+            bot_app = tg_loop.run_until_complete(
+                setup_bot(
+                    token=config.telegram.bot_token,
+                    chat_id=config.telegram.chat_id,
+                    state=state,
+                )
+            )
+            tg_loop.run_until_complete(bot_app.initialize())
+            if attempt > 1:
+                logger.info("Telegram setup succeeded on attempt %d", attempt)
+            return bot_app
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _TELEGRAM_SETUP_MAX_ATTEMPTS:
+                delay = min(
+                    _TELEGRAM_SETUP_BASE_DELAY_SECONDS * attempt,
+                    _TELEGRAM_SETUP_MAX_DELAY_SECONDS,
+                )
+                logger.warning(
+                    "Telegram setup failed (attempt %d/%d): %r — retrying in %.0fs",
+                    attempt,
+                    _TELEGRAM_SETUP_MAX_ATTEMPTS,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+    logger.error(
+        "Telegram setup failed after %d attempts — giving up", _TELEGRAM_SETUP_MAX_ATTEMPTS
+    )
+    raise last_exc
+
+
 def main() -> None:
     _configure_logging()
     logger.info("Drift bot starting")
@@ -1112,14 +1163,7 @@ def main() -> None:
         global _tg_loop
         _tg_loop = tg_loop
 
-        bot_app = tg_loop.run_until_complete(
-            setup_bot(
-                token=config.telegram.bot_token,
-                chat_id=config.telegram.chat_id,
-                state=state,
-            )
-        )
-        tg_loop.run_until_complete(bot_app.initialize())
+        bot_app = _setup_telegram_resilient(config, state, tg_loop)
 
         _crash_bot_app = bot_app
 
@@ -1300,10 +1344,12 @@ def main() -> None:
         #   1. Log the full traceback so the crash leaves evidence in drift.log.
         #   2. Attempt a best-effort Telegram notification (non-blocking).
         #   3. Record a DB event if the DB was already initialised.
-        #   4. Re-raise so the process exits with a non-zero code and NSSM can
-        #      restart it.  Never swallow the exception here.
+        #   4. Exit with a non-zero code so the Task Scheduler "Drift" task (which
+        #      must be configured to restart on failure) relaunches it.  Never
+        #      swallow the exception here.
         logger.exception(
-            "FATAL: unhandled exception in main() — process will exit and NSSM should restart: %s",
+            "FATAL: unhandled exception in main() — process will exit; "
+            "Task Scheduler should restart the Drift task: %s",
             exc,
         )
 
@@ -1312,7 +1358,7 @@ def main() -> None:
                 notify_error(
                     _crash_bot_app.bot,
                     _crash_config.telegram.chat_id,
-                    f"FATAL crash — bot exiting for NSSM restart. Error: {exc!r}",
+                    f"FATAL crash — bot exiting for Task Scheduler restart. Error: {exc!r}",
                 )
             )
             # Brief pause so the notification has a chance to dispatch.

@@ -629,3 +629,15 @@ Relacionado: [[D041]], [[D039]], `drift/mt5_client.py`, `tests/test_timezones.py
 **Efecto:** `balance_at_close` ahora refleja el balance real de la cuenta tras cada cierre, así los reportes y la reconstrucción de balance cuadran con MT5. Sin red de seguridad perdida: si `get_balance()` falla, en el cierre de sesión la excepción se aísla por posición (D031) y la reconciliación del hilo de monitoreo la recupera en el siguiente ciclo.
 
 Relacionado: [[D031]] (aislamiento por posición en el cierre), `drift/db.py` (`close_trade_record`), `main.py`, `tests/test_session_fixes.py` (test_balance_at_close_is_settled_balance).
+
+## D049 — Arranque de Telegram resiliente: un fallo de red transitorio no debe matar el bot
+
+**Decisión (2026-06-08):** El setup del bot de Telegram (`setup_bot` + `bot_app.initialize()`) se hace vía `_setup_telegram_resilient`, que reintenta ante cualquier excepción con backoff escalonado (`_TELEGRAM_SETUP_MAX_ATTEMPTS=10`, base 15s, tope 60s ≈ ~7 min de tolerancia) y solo re-lanza (fatal) tras agotar los intentos. Antes el setup era de un solo tiro y cualquier error subía sin manejo.
+
+**Bug que corrige:** Al reiniciar para cargar D048, un fallo DNS transitorio (`httpx.ConnectError: [Errno 11001] getaddrinfo failed`, el resolver del router caído) en el arranque de Telegram **mató el proceso entero** — aunque operar no necesita Telegram en ese instante. Peor: el handler FATAL decía "NSSM should restart" pero el bot corre por **Task Scheduler**, que no estaba configurado para reiniciar ante fallo → el bot quedó **caído** sin relevantarse. Telegram es el plano de control/notificación, no una dependencia de trading: esperar a que la red vuelva es lo correcto para un bot autónomo 24/5.
+
+**Efecto:** Un blip de red en el arranque ya no tumba el bot; espera y reintenta. Corregidas también las referencias obsoletas a "NSSM" en el handler FATAL → ahora apuntan a Task Scheduler. **Pendiente de entorno (no código):** configurar la tarea "Drift" para reiniciar ante fallo (`Set-ScheduledTask` con RestartCount/RestartInterval), como segunda capa por si el proceso muere por algo fuera de la ventana de reintentos.
+
+**Origen:** el resolver DNS del router (192.168.80.1) caído el 8-jun; el ruteo por IP funcionaba (ping a 8.8.8.8 OK) pero ninguna resolución de nombres. Problema de red del usuario, pero destapó la fragilidad del arranque.
+
+Relacionado: `main.py` (`_setup_telegram_resilient`), `tests/test_startup_resilience.py`, [[D047]] (otra robustez de arranque ante condiciones de red/mercado).

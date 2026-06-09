@@ -163,4 +163,10 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - **Conclusión:** el edge **es real pero ~la mitad** de lo anunciado: realista **+3% a +5%** sobre el período, no +8.75%. Caveat: depende de los supuestos de spread (3 observaciones vivas). **D046 no está en este modelo** — en vivo, su guardia rechaza las entradas rollover donde el spread se come >50% del TP (las peores), así que el realizado-con-D046 debería ubicarse en o por encima del central.
 - Ajustar expectativas para go-live: pensar en **low-single-digit anual**, no ~9%.
 
+### Mantenimiento 2026-06-08 — arranque resiliente (D049)
+- **Disparador:** al reiniciar para cargar D048, un fallo DNS transitorio (router 192.168.80.1 caído; resolución de nombres caída pero ruteo por IP OK) en el arranque de Telegram tiró el proceso con `httpx.ConnectError: getaddrinfo failed`. El handler FATAL decía "NSSM should restart" pero corre por Task Scheduler (sin auto-restart) → **bot quedó caído**.
+- **D049 — `_setup_telegram_resilient`.** Reintenta setup+initialize de Telegram con backoff (10 intentos, ~7 min de tolerancia) antes de rendirse; Telegram es plano de control, no dependencia de trading. Corregidas referencias obsoletas a NSSM → Task Scheduler.
+- Tests: **129 pasan** (nuevo `test_startup_resilience.py`).
+- **Pendiente de entorno (usuario):** (a) arreglar el DNS del router para que el bot pueda arrancar; (b) configurar la tarea "Drift" con restart-on-failure como 2ª capa. NO reiniciar el bot hasta que el DNS esté arriba (con DNS caído reintenta ~7 min y se rinde).
+
 - Next session starts at Step 22 (Phase 3: Go Live).
