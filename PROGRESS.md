@@ -58,6 +58,32 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - [x] 8. Sincronizar docs (reescribir PROGRESS legacy, barrer ARCHITECTURE/docs por friday_close/EMA/MACD)
 - [x] 9. Tests de regresión del ciclo de sesión (session_close, cierre aislado, weekly trigger, migración) — 21 tests nuevos, 102 en total
 
+## Phase 2.6 — Plataforma multi-estrategia (pre-live)
+
+Diseño: D050–D057, `ROADMAP.md` Phase 2.6, `docs/knowledge/strategy-framework.md`. Se ejecuta **antes** de la Phase 3 (framework primero, D050). Restricciones: HC1 (solo framework, Lull única estrategia), HC2 (una cuenta, presupuesto por estrategia + brake global), HC3 (timing heterogéneo), HC4 (Lull en paper).
+
+> **En cada sesión: leer PROGRESS.md primero.** Los pasos abajo tienen dependencias — respétalas. Delegar a subagentes los módulos independientes (ver Parallelism).
+
+### Batch MS-A — Fundación (Steps 27-28)
+- [ ] 27. Contrato `Strategy` + registry + tipos (`drift/strategies/base.py`): `Strategy` Protocol, `Decision` (Open/Close/CloseAll/NoOp), `MarketData`, `StrategyContext`, registry. Sin dependencia MT5. (D051)
+- [ ] 28. Refactor de config a `strategies[]`: dataclasses, `risk_global`, magic base+offset, `params` opaco, `pairs` por estrategia; validación (magic único, allocations ≤100%, nombres conocidos); migración manual de config.yaml + config.example.yaml. (D052/D053/D054)
+
+### Batch MS-B — Módulos independientes (Steps 29-31) — paralelizables tras MS-A
+- [ ] 29. Port del Daily Lull al contrato (`drift/strategies/daily_lull.py`): `on_bar`, `SessionState` privado, ventana/time-stop/skip-Friday/rollover internos, `DailyLullParams`. **Tests de equivalencia** vs comportamiento actual. (D051/D055)
+- [ ] 30. Migración de DB: columna `strategy` en trades/signals, `strategy` NULL en bot_events, tabla `strategy_state`, CRUD, ALTER de DB existente. (D056)
+- [ ] 31. Motor de riesgo de dos niveles (`drift/risk.py`): sizing notional con allocation, límites global+estrategia, correlación global, equity/peak/drawdown por estrategia, brake global. (D053)
+
+### Batch MS-C — Motor (Step 32) — depende de 27-31
+- [ ] 32. Motor genérico (reescritura del loop de `main.py`): reloj por suscripción (unión de timeframes), `MarketData` dedup, despacho a estrategias enabled/no-pausadas, gating de riesgo, ejecución, atribución por magic, logging con `strategy`. (D051)
+
+### Batch MS-D — Control y observabilidad (Steps 33-34)
+- [ ] 33. Thread de monitoreo multi-estrategia: P&L flotante por magic, peak/drawdown por estrategia → `strategy_state`, pausa por estrategia, detección de cierres atribuida. (D053/D056)
+- [ ] 34. Telegram multi-estrategia: desglose en /status,/balance,/trades,/report; /pause [estrategia], /resume [estrategia], /strategies; reporte semanal por estrategia. (D057)
+
+### Batch MS-E — Backtest y validación (Steps 35-36)
+- [ ] 35. Unificación del backtest (`backtest/engine.py`): adaptador propio que consume el mismo `on_bar`; reemplaza lull_engine.py; se abandona Backtesting.py; tests de equivalencia. Portfolio backtest diferido. (D055) — depende de 29
+- [ ] 36. Validación end-to-end en paper: framework con Lull como única estrategia; paridad vs comportamiento pre-refactor; luego proceder a Phase 3.
+
 ## Phase 3 — Live
 
 ### Session 8: Go Live (Steps 22-26)
@@ -170,4 +196,10 @@ Plan completo: `docs/plans/audit-fixes.md`. Decisiones: D030–D036.
 - **DNS:** recuperado; bot reiniciado limpio (Telegram registró 8 comandos, offset UTC+3, durmiendo hasta 09-jun 21:00 servidor). D046+D047+D048+D049 todos live.
 - **Task Scheduler "Drift" reforzada (2ª capa de robustez):** ya tenía restart-on-failure 3×1min — insuficiente (los 3 reintentos cayeron contra el mismo DNS muerto en ~3 min y se agotaron). Ahora **RestartCount=5, RestartInterval=PT2M, StartWhenAvailable=True** (resto intacto: ExecutionTimeLimit ilimitado, MultipleInstances=IgnoreNew). Combinado con la ventana de ~7 min de reintento interno de D049, tolera apagones de red prolongados.
 
-- Next session starts at Step 22 (Phase 3: Go Live).
+### Diseño 2026-06-08 — Plataforma multi-estrategia (sesión /spec, D050–D057)
+- **Pivote planeado:** Drift pasa de bot mono-estrategia a plataforma multi-estrategia (D050). El framework se construye **antes** del go-live (Phase 2.6), en paper (HC4). Daily Lull = instancia #1.
+- **Decisiones:** D050 (pivote/secuencia), D051 (contrato `on_bar` + motor reloj-por-suscripción), D052 (magic base+offset), D053 (riesgo dos niveles + allocations ≤100% + pausa mantiene posiciones), D054 (config `strategies[]` anidado, migración manual), D055 (backtest unificado, portfolio diferido), D056 (DB `strategy` + `strategy_state`), D057 (Telegram por estrategia).
+- **Artefactos:** ROADMAP Phase 2.6 (steps 27-36), DECISIONS D050-D057, ARCHITECTURE actualizado, `docs/knowledge/strategy-framework.md` (nuevo), docs/user (configuration/commands) actualizados, CLAUDE.md actualizado.
+- **Pendiente de implementación:** todo (esto fue solo diseño). Empezar por Step 27.
+
+- **Secuencia recomendada:** Phase 2.6 (Steps 27-36, multi-estrategia) **antes** de Phase 3 (Step 22, Go Live). Next session starts at **Step 27** (Phase 2.6: Contrato Strategy).

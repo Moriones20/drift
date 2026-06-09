@@ -2,6 +2,8 @@
 
 Bot de forex autónomo. Estrategia: Daily Lull Scalper en M15, mean reversion durante la ventana 21:00-02:00 hora servidor MT5 (GMT+2 invierno/+3 verano) sobre un rango definido en las primeras 2 horas. (La ventana es el *daily lull*: cierre de NY → antes de Tokio, la franja más tranquila del día; en Bogotá es una franja de tarde, 13:00-18:00. Antes se llamaba "Asian Session Scalper" — ver D041/D042.) Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
 
+> **Evolución a plataforma multi-estrategia (D050, Phase 2.6):** Drift está pasando de bot mono-estrategia a **plataforma que hospeda N estrategias** sobre una cuenta MT5, con riesgo aislado por estrategia (presupuesto notional + drawdown propio) y brake global. El motor es genérico ("reloj por suscripción", D051): no conoce ventanas, solo cierres de vela; cada estrategia implementa el contrato `Strategy.on_bar`. El Daily Lull es la instancia #1. Diseño en D050–D057 y `docs/knowledge/strategy-framework.md`. **En implementación** — ver `PROGRESS.md` Phase 2.6 (Steps 27-36).
+
 ## Key Documents
 
 | Documento | Propósito |
@@ -10,6 +12,7 @@ Bot de forex autónomo. Estrategia: Daily Lull Scalper en M15, mean reversion du
 | `PROGRESS.md` | Checklist de implementación — leer primero en cada sesión |
 | `docs/DECISIONS.md` | Decisiones de diseño con rationale — no re-litigar |
 | `docs/ARCHITECTURE.md` | Diagramas, data flow, schema SQL, file structure |
+| `docs/knowledge/strategy-framework.md` | Contrato `Strategy.on_bar`, motor reloj-por-suscripción, cómo añadir una estrategia (Phase 2.6) |
 | `docs/knowledge/mt5-python-api.md` | Referencia de la API de MT5 con Python |
 | `docs/knowledge/telegram-bot-setup.md` | Setup del bot de Telegram y formato de mensajes |
 | `docs/knowledge/trend-following-indicators.md` | Fórmulas e implementación de EMA, MACD, ATR (**estrategia histórica — ver encabezado del archivo**) |
@@ -28,16 +31,18 @@ Bot de forex autónomo. Estrategia: Daily Lull Scalper en M15, mean reversion du
 
 ## Core Architecture
 
+Estructura **actual** (mono-estrategia). La Phase 2.6 generaliza `main.py` a un motor reloj-por-suscripción y mueve la lógica de `strategy.py` a `drift/strategies/daily_lull.py` bajo el contrato `Strategy.on_bar` (ver D050–D057 y `docs/ARCHITECTURE.md`):
+
 ```
 main.py (M15 loop dentro de ventana 21:00-02:00 hora servidor MT5)
   → mt5_client.py    (datos de mercado)
   → indicators.py    (RSI, ATR, ADX)
-  → strategy.py      (¿comprar/vender/nada?)
-  → risk.py          (position sizing, límites)
+  → strategy.py      (¿comprar/vender/nada?)   # → strategies/daily_lull.py en Phase 2.6
+  → risk.py          (position sizing, límites)  # → dos niveles (global + estrategia) en Phase 2.6
   → executor.py      (abrir/cerrar trades)
   → trailing.py      (no activo — use_trailing_stop: false)
-  → db.py            (logging completo)
-  → telegram_bot.py  (notificaciones + comandos)
+  → db.py            (logging completo)          # → columna strategy + strategy_state en Phase 2.6
+  → telegram_bot.py  (notificaciones + comandos) # → por estrategia en Phase 2.6
 ```
 
 ## Design Priorities
@@ -54,7 +59,7 @@ main.py (M15 loop dentro de ventana 21:00-02:00 hora servidor MT5)
 - Cada módulo es un archivo independiente en `drift/`
 - Config en `config.yaml`, nunca hardcodeado
 - Credenciales no se versionan — usar `config.example.yaml` como template
-- Magic number `234000` identifica órdenes de Drift en MT5
+- Magic number: `234000` es la **base**; cada estrategia suma su `magic_offset` (magic efectivo = base + offset, D052). El Daily Lull usa offset 0 → magic 234000. Único por estrategia, validado.
 - Todas las fechas en DB se guardan en UTC (ISO 8601)
 
 ## Implementation Order
@@ -76,7 +81,12 @@ If something is ambiguous, make a decision, document it in `docs/DECISIONS.md`, 
 | 5 | 14-16 | Safety + testing: security systems, weekly report, end-to-end demo test |
 | 6 | 17-19 | Backtesting setup and historical data |
 | 7 | 20-21 | Backtest analysis and parameter optimization |
-| 8 | 22-26 | Go live: VPS, live account, monitoring |
+| MS-A | 27-28 | Multi-estrategia (Phase 2.6): contrato `Strategy` + refactor de config |
+| MS-B | 29-31 | Multi-estrategia: port del Lull, migración DB, riesgo de dos niveles |
+| MS-C | 32 | Multi-estrategia: motor genérico (reescritura del loop) |
+| MS-D | 33-34 | Multi-estrategia: monitoreo por estrategia + Telegram por estrategia |
+| MS-E | 35-36 | Multi-estrategia: backtest unificado + validación e2e en paper |
+| 8 | 22-26 | Go live: VPS, live account, monitoring (DESPUÉS de Phase 2.6, D050) |
 
 ### Parallelism
 
@@ -84,6 +94,7 @@ Steps that can run concurrently via subagents:
 - Steps 5 + 11: indicators module and database module are independent
 - Steps 9 + 10: executor and trailing stop are independent modules
 - Steps 12 + 15: Telegram commands and weekly report logic are independent
+- Steps 29 + 30 + 31 (Phase 2.6): port del Lull, migración DB y riesgo de dos niveles son módulos independientes una vez existen el contrato (27) y la config (28). Step 35 (backtest) puede arrancar en paralelo en cuanto exista el port (29).
 
 ## Context Management
 

@@ -16,11 +16,65 @@ Credenciales para conectarse a MetaTrader 5. Los tres campos son **obligatorios*
 
 ---
 
-## strategy
+## risk_global
 
-Parametros de los indicadores tecnicos. Todos tienen valores por defecto y no es necesario modificarlos para el uso normal.
+> ⚠️ Esquema multi-estrategia (en implementacion — ver D050-D057)
 
-### Parametros de filtro
+Limites de riesgo a nivel de **cuenta completa**, validos para todas las estrategias en conjunto. Reemplazan al antiguo bloque `risk:`. Son los topes mas importantes para proteger el capital: ninguna estrategia individual puede saltarselos.
+
+| Campo | Tipo | Default | Rango valido | Descripcion |
+|---|---|---|---|---|
+| `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente en **toda la cuenta**, sumando todas las estrategias y todos los pares. Cap global: cada estrategia tiene ademas su propio `max_open_trades` que debe ser ≤ este valor. |
+| `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | **Kill switch global.** Si el drawdown de la cuenta desde su pico de balance supera este porcentaje, el bot pausa **TODO** (todas las estrategias) y notifica por Telegram. Requiere `/resume` manual para reactivar. |
+| `max_same_currency_direction` | entero | `2` | — | Maximo de trades en la misma direccion para una misma divisa base o cotizada, **a nivel de cuenta** sin importar que estrategia los abrio. Limita la exposicion correlacionada. La correlacion es riesgo de cuenta, por eso este limite es siempre global (ver D053). |
+
+---
+
+## strategies
+
+> ⚠️ Esquema multi-estrategia (en implementacion — ver D050-D057)
+
+Drift es una **plataforma que hospeda N estrategias** sobre una sola cuenta MT5 (ver D050). El antiguo bloque plano `strategy:` (singular) se reemplaza por un **mapa `strategies:`** donde cada clave es el nombre de una instancia de estrategia. Hoy hay una sola estrategia, `daily_lull`, pero el esquema esta preparado para alojar mas.
+
+Cada estrategia se aisla del resto: tiene su propio presupuesto de capital, sus propios pares, su propio riesgo y sus propios parametros. El motor solo conoce los campos compartidos (`enabled`, `magic_offset`, `allocation_pct`, `pairs`, `risk`); el bloque `params` es **opaco** para el motor — cada estrategia parsea sus propios parametros (ver D054).
+
+### Campos comunes de cada estrategia
+
+| Campo | Tipo | Descripcion |
+|---|---|---|
+| `enabled` | booleano | Activa o desactiva la estrategia sin borrar su configuracion. `false` la apaga (util para A/B o para detenerla via config + reinicio). |
+| `magic_offset` | entero | Desplazamiento entero **unico** por estrategia. El magic efectivo en MT5 = `system.magic_number` (base) + `magic_offset` (ver D052). El Daily Lull usa `magic_offset: 0` → magic efectivo **234000** (identico al actual, asi adopta sus posiciones demo vivas sin huerfanos). Dos estrategias no pueden compartir el mismo magic efectivo: el bot rechaza la config al arrancar. |
+| `allocation_pct` | decimal | Asignacion **notional** de capital para esta estrategia, en porcentaje (ver bloque siguiente). La **suma de todas las `allocation_pct` debe ser ≤ 100** (ver D053). |
+| `pairs` | lista | Pares de divisas que opera **esta** estrategia. `pairs` ya no es global: baja a cada estrategia. La union de los pares de todas las estrategias activas es lo que el bot activa en el Market Watch de MT5. Los nombres deben coincidir exactamente con los simbolos del terminal MT5; si un par no existe o no es visible, el bot lo omite y registra un aviso al iniciar. |
+| `risk` | mapa | Limites de riesgo **propios** de la estrategia (ver abajo). |
+| `params` | mapa | Parametros internos de la estrategia, opacos para el motor (ver abajo). |
+
+### Asignacion notional (`allocation_pct`)
+
+La asignacion de capital es **notional**: no reserva ni mueve dinero real entre estrategias (hay una sola cuenta). Solo cambia el numero sobre el que cada estrategia dimensiona sus posiciones. El sizing de cada trade se calcula asi (ver D053):
+
+```
+capital_asignado(estrategia) = balance_cuenta * (allocation_pct / 100)
+risk_usd(trade)              = capital_asignado * (percent_per_trade / 100)
+```
+
+Ejemplo: con un balance de $10,000, una estrategia con `allocation_pct: 60` y `percent_per_trade: 1.0` arriesga `10000 * 0.60 * 0.01 = $60` por trade, en lugar de $100. Bajar la asignacion **encoge** el sizing de esa estrategia; no aparta capital fisico.
+
+**Regla:** la suma de `allocation_pct` de todas las estrategias debe ser **≤ 100%**. Se permite menos de 100% (deja un colchon sin asignar), pero el bot **rechaza** una suma mayor a 100% al arrancar, porque implicaria apalancamiento accidental (contra el principio "cabeza fria").
+
+### Bloque `risk` por estrategia
+
+| Campo | Tipo | Default | Rango valido | Descripcion |
+|---|---|---|---|---|
+| `percent_per_trade` | decimal | `1.0` | 0.01 a 5.0 | Porcentaje del **capital asignado** a la estrategia arriesgado por trade (ver formula de sizing arriba). Este parametro paso de global a por-estrategia. |
+| `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente **de esta estrategia**. Debe ser ≤ `risk_global.max_open_trades`. |
+| `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | Brake **por estrategia**: si el drawdown de la curva de equity propia de la estrategia supera este porcentaje, se pausa **solo esa** estrategia (mantiene sus posiciones abiertas, deja de abrir nuevas) y notifica. No afecta a las demas. El kill switch global vive en `risk_global`. |
+
+### Bloque `params` por estrategia (daily_lull)
+
+El bloque `params` es opaco para el motor: contiene los parametros propios de la logica de cada estrategia. Para `daily_lull` son los antiguos parametros de indicadores, ventana de sesion, filtro de rango e indicadores.
+
+**Filtro de entrada**
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
@@ -28,9 +82,7 @@ Parametros de los indicadores tecnicos. Todos tienen valores por defecto y no es
 | `rsi_oversold` | decimal | `35.0` | Nivel de RSI por debajo del cual se considera que el precio esta sobrevendido. Las entradas de compra requieren RSI < este valor. |
 | `rsi_overbought` | decimal | `65.0` | Nivel de RSI por encima del cual se considera que el precio esta sobrecomprado. Las entradas de venta requieren RSI > este valor. |
 
-### Daily Lull Scalper — ventana de sesion
-
-La estrategia opera solo durante el *daily lull* — la franja de menor liquidez del dia forex (cierre de Nueva York, antes de la apertura de Tokio), cuando el mercado es mas tranquilo y los precios tienden a moverse en rango. Las horas son hora del servidor MT5 (GMT+2 invierno / GMT+3 verano), no UTC.
+**Ventana de sesion** — la estrategia opera solo durante el *daily lull* (cierre de Nueva York, antes de la apertura de Tokio), cuando el mercado es mas tranquilo y los precios tienden a moverse en rango. Las horas son hora del servidor MT5 (GMT+2 invierno / GMT+3 verano), no UTC.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
@@ -38,16 +90,14 @@ La estrategia opera solo durante el *daily lull* — la franja de menor liquidez
 | `range_definition_hours` | entero | `2` | Duracion en horas de la fase de definicion del rango (21:00-23:00 hora servidor MT5 = 13:00-15:00 Bogota). Durante este periodo solo se actualiza el maximo y minimo de la sesion. |
 | `session_end_hour` | entero | `2` | Hora del servidor MT5 (GMT+2/+3) de cierre de la sesion. A las 02:00 hora servidor (= 18:00 Bogota) se cierran todos los trades abiertos de la sesion y el estado se reinicia. |
 
-### Daily Lull Scalper — filtro de calidad del rango
-
-El rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 hora servidor MT5, GMT+2/+3) debe ser suficientemente amplio para tener margen de beneficio, pero no tan amplio que indique volatilidad excesiva.
+**Filtro de calidad del rango** — el rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 hora servidor MT5) debe ser suficientemente amplio para tener margen de beneficio, pero no tanto que indique volatilidad excesiva.
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
 | `range_atr_min` | decimal | `1.0` | Ancho minimo del rango como multiplo del ATR. Si el rango es menor a `1.0 x ATR`, el mercado es demasiado quieto y no se opera esa sesion. |
 | `range_atr_max` | decimal | `4.0` | Ancho maximo del rango como multiplo del ATR. Si el rango supera `4.0 x ATR`, hay demasiada volatilidad (noticia o evento) y se salta la sesion. |
 
-### Daily Lull Scalper — parametros de riesgo e indicadores
+**Riesgo de la entrada e indicadores**
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
@@ -56,38 +106,40 @@ El rango de la sesion (diferencia entre maximo y minimo de 21:00-23:00 hora serv
 | `m15_atr_period` | entero | `14` | Periodo del ATR calculado sobre barras M15. Se usa para dimensionar el rango, el SL y el TP. |
 | `h4_adx_period` | entero | `14` | Periodo del ADX calculado sobre barras H4. Filtra sesiones donde hay una tendencia fuerte en curso (ADX > `adx_max_threshold`). |
 
----
+### Ejemplo completo
 
-## risk
-
-Parametros de gestion de riesgo. Son los mas importantes para proteger el capital.
-
-| Campo | Tipo | Default | Rango valido | Descripcion |
-|---|---|---|---|---|
-| `percent_per_trade` | decimal | `1.0` | 0.01 a 5.0 | Porcentaje del balance arriesgado por trade. Con 1.0%, en una cuenta de $10,000 el riesgo maximo por trade es $100. |
-| `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente en todos los pares. |
-| `max_same_currency_direction` | entero | `2` | — | Maximo de trades en la misma direccion para una misma divisa base o cotizada. Limita la exposicion correlacionada. |
-| `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | Si el drawdown desde el pico de balance supera este porcentaje, el bot se pausa automaticamente y notifica por Telegram. Requiere `/resume` manual para reactivar. |
-
----
-
-## pairs
-
-Lista de pares de divisas a monitorear. Debe contener al menos un par.
+Con el Daily Lull como unica estrategia (asignacion 100%, offset 0):
 
 ```yaml
-pairs:
-  - AUDNZD
-  - EURCHF
-  - EURJPY
-  - GBPJPY
-  - EURGBP
+risk_global:
+  max_open_trades: 4
+  max_drawdown_percent: 10.0
+  max_same_currency_direction: 2
+
+strategies:
+  daily_lull:
+    enabled: true
+    magic_offset: 0            # magic efectivo = 234000 (base + offset)
+    allocation_pct: 100        # suma de todas las estrategias debe ser <= 100
+    pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
+    risk:
+      percent_per_trade: 1.0
+      max_open_trades: 4       # debe ser <= risk_global.max_open_trades
+      max_drawdown_percent: 10.0
+    params:
+      rsi_oversold: 35.0
+      rsi_overbought: 65.0
+      adx_max_threshold: 35.0
+      session_start_hour: 21
+      range_definition_hours: 2
+      session_end_hour: 2
+      range_atr_min: 1.0
+      range_atr_max: 4.0
+      sl_atr_mult: 2.5
+      m15_rsi_period: 14
+      m15_atr_period: 14
+      h4_adx_period: 14
 ```
-
-Los nombres deben coincidir exactamente con los simbolos disponibles en el terminal MT5. Si un par configurado no existe o no es visible en MT5, el bot lo omite y registra un aviso en el log al iniciar.
-
-Para agregar un par: añadirlo a la lista con el nombre exacto del simbolo en MT5.
-Para quitar un par: eliminar la linea correspondiente. Los trades abiertos de ese par no se ven afectados.
 
 ---
 
@@ -122,7 +174,7 @@ Parametros internos del bot. No es necesario modificarlos salvo casos especifico
 |---|---|---|---|
 | `loop_check_interval_seconds` | entero | `30` | Intervalo en segundos del hilo de monitoreo. Controla con que frecuencia se verifican trades cerrados y se chequea el drawdown. |
 | `mt5_reconnect_interval_seconds` | entero | `300` | Intervalo minimo entre intentos de reconexion a MT5 si se pierde la conexion. |
-| `magic_number` | entero | `234000` | Numero magico que identifica las ordenes de Drift en MT5. Permite que el bot distinga sus propias posiciones de otras que pueda haber en la cuenta. No modificar salvo que haya conflicto con otro EA. |
+| `magic_number` | entero | `234000` | Magic number **base** de Drift en MT5. El magic efectivo de cada estrategia = esta base + el `magic_offset` de la estrategia (ver D052). Permite atribuir cada posicion del broker a la estrategia que la abrio y distinguir las ordenes de Drift de cualquier otra en la cuenta. No modificar salvo que haya conflicto con otro EA. |
 | `order_retry_attempts` | entero | `3` | Reintentos extra al abrir una orden ante rechazos transitorios del broker (p.ej. `retcode 10018 "market closed"` durante el rollover diario de las 00:00 hora servidor). Los rechazos fatales (stops invalidos, sin fondos) no se reintentan. `0` = un solo intento. Ver D040. |
 | `order_retry_delay_seconds` | decimal | `25.0` | Segundos de espera entre reintentos de orden. El halt del rollover dura ~1-2 min; 3 intentos x 25s cubren ~75s. Cada reintento bloquea el tick M15 de ese par hasta que termina. |
 | `rollover_settle_seconds` | entero | `150` | Segundos que espera el bot antes de evaluar/ejecutar **solo** la vela que cierra a las 00:00 hora servidor (el rollover diario del broker). Deja que el mercado reabra y la estrategia re-evalua sobre precio fresco, evitando llenar en el gap de reapertura. Las demas velas se ejecutan a los ~5s normales. Ver D044. |
