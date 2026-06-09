@@ -669,9 +669,17 @@ class Engine:
             )
 
             if ticket is None:
-                logger.error("%s/%s | open_trade failed", hosted.name, pair)
-                self._reject(db_conn, hosted, signal, "open_trade_failed")
-                instance.on_order_rejected(pair, signal, "open_trade_failed")
+                # open_trade returned no ticket. This covers both expected skips
+                # (the D046 spread guard / price-reverted guard, which executor
+                # logs at WARNING) and genuine broker failures (which executor
+                # logs at ERROR). The executor already logged the specific cause
+                # at the right level, so this summary stays at WARNING — a spread
+                # guard skip is not an engine error.
+                logger.warning(
+                    "%s/%s | open_trade returned no ticket — see executor log", hosted.name, pair
+                )
+                self._reject(db_conn, hosted, signal, "open_trade_no_ticket")
+                instance.on_order_rejected(pair, signal, "open_trade_no_ticket")
                 return
 
             self._record_open(db_conn, hosted, pair, signal, lot_size, ticket, balance)
