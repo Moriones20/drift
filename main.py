@@ -356,14 +356,22 @@ def _monitoring_tick(
                 log_event(db_conn, "reconnect", detail="MT5 reconnected")
             _fire_and_forget(
                 notify_bot_status(
-                    bot_app.bot, config.telegram.chat_id, "started", "MT5 reconnected"
+                    bot_app.bot,
+                    config.telegram.chat_id,
+                    "reconnected",
+                    "Connection to MT5 restored. Trading resumes normally.",
                 )
             )
         else:
             with get_connection() as db_conn:
                 log_event(db_conn, "error", detail="MT5 reconnect failed")
             _fire_and_forget(
-                notify_error(bot_app.bot, config.telegram.chat_id, "MT5 reconnect failed")
+                notify_error(
+                    bot_app.bot,
+                    config.telegram.chat_id,
+                    "Lost connection to MT5 and could not reconnect. "
+                    "No trades will open while it's down — will keep retrying on the next check.",
+                )
             )
         return
 
@@ -441,8 +449,9 @@ def _check_drawdown_pause(
             notify_bot_status(
                 bot_app.bot,
                 config.telegram.chat_id,
-                "paused",
-                f"Drawdown limit reached: {reason}",
+                "drawdown_global",
+                f"{reason}\nAll strategies paused. Open positions stay open — "
+                "review and use /resume when ready.",
             )
         )
         return False, reason
@@ -506,8 +515,9 @@ def _check_strategy_drawdown_pause(
         notify_bot_status(
             bot_app.bot,
             config.telegram.chat_id,
-            "paused",
-            f"Strategy {strategy_name} paused — {reason}",
+            "drawdown_strategy",
+            f"<b>{strategy_name}</b>: {reason}\nThis strategy is paused; the rest keep running. "
+            f"Open positions stay open — use /resume {strategy_name} when ready.",
         )
     )
 
@@ -831,12 +841,15 @@ def main() -> None:
         with get_connection() as db_conn:
             log_event(db_conn, "start", detail="Drift bot started", balance=balance)
 
+        enabled_names = [n for n, s in config.strategies.items() if s.enabled]
+        strat_summary = ", ".join(enabled_names) if enabled_names else "none"
         _fire_and_forget(
             notify_bot_status(
                 bot_app.bot,
                 config.telegram.chat_id,
                 "started",
-                f"Balance: ${balance:.2f}",
+                f"Balance ${balance:.2f}  ·  "
+                f"{len(enabled_names)} strategy(ies) live: {strat_summary}",
             )
         )
 

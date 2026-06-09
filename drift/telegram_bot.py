@@ -272,23 +272,30 @@ async def notify_error(bot: Bot, chat_id: str, error_msg: str) -> None:
     await send_notification(bot, chat_id, text)
 
 
+# Each status maps to (icon, title) so the message reflects what actually happened.
+# Distinctions that matter to the reader (D057):
+#   - Booting the process ("BOT ONLINE") is NOT the same as a trading session
+#     opening ("SESSION OPEN") — different icon and title so a 21:00 session wake
+#     never reads like the bot just restarted.
+#   - Recovering the MT5 link ("MT5 RECONNECTED") is NOT a fresh boot.
+#   - A protective drawdown halt is an alarm (🚨), visually distinct from a routine
+#     manual /pause (⏸️), and it says whether one strategy or the whole account stopped.
+#   - Session open/close are calm lifecycle events, never an alarming "BOT STOPPED".
+_STATUS_STYLES: dict[str, tuple[str, str]] = {
+    "started": ("🚀", "BOT ONLINE"),
+    "stopped": ("🛑", "BOT STOPPED"),
+    "paused": ("⏸️", "PAUSED"),
+    "resumed": ("▶️", "RESUMED"),
+    "session_started": ("🌙", "SESSION OPEN"),
+    "session_closed": ("😴", "SESSION CLOSED"),
+    "reconnected": ("🔌", "MT5 RECONNECTED"),
+    "drawdown_strategy": ("🚨", "STRATEGY HALTED — DRAWDOWN"),
+    "drawdown_global": ("🚨", "ACCOUNT HALTED — DRAWDOWN"),
+}
+
+
 async def notify_bot_status(bot: Bot, chat_id: str, status: str, detail: str = "") -> None:
-    icons = {
-        "started": "🚀",
-        "stopped": "🛑",
-        "paused": "⏸️",
-        "resumed": "▶️",
-        "session_started": "🌙",
-        "session_closed": "😴",
-    }
-    # Calm, non-alarming titles for routine lifecycle events (a session opening or
-    # closing is normal operation, not the bot stopping — D057).
-    titles = {
-        "session_started": "SESSION STARTED",
-        "session_closed": "SESSION CLOSED",
-    }
-    icon = icons.get(status, "ℹ️")
-    title = titles.get(status, f"BOT {status.upper()}")
+    icon, title = _STATUS_STYLES.get(status, ("ℹ️", f"BOT {status.upper()}"))
     now = format_time(datetime.now(timezone.utc))
     text = f"{icon} <b>{title}</b>  ·  {now} UTC-5"
     if detail:

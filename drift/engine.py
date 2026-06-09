@@ -884,8 +884,9 @@ class Engine:
             self._notify_bot_status(
                 self.bot_app.bot,
                 self.config.telegram.chat_id,
-                "paused",
-                f"Strategy {hosted.name} paused — {reason}",
+                "drawdown_strategy",
+                f"<b>{hosted.name}</b>: {reason}\nThis strategy is paused; the rest keep running. "
+                f"Open positions stay open — use /resume {hosted.name} when ready.",
             )
         )
 
@@ -900,8 +901,9 @@ class Engine:
             self._notify_bot_status(
                 self.bot_app.bot,
                 self.config.telegram.chat_id,
-                "paused",
-                f"Drawdown limit reached: {reason}",
+                "drawdown_global",
+                f"{reason}\nAll strategies paused. Open positions stay open — "
+                "review and use /resume when ready.",
             )
         )
 
