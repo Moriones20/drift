@@ -889,3 +889,19 @@ Relacionado: [[D062]], [[D053]], `drift/db.py`, `drift/telegram_bot.py`. Impleme
 **Alternativa descartada — "congelar todo" (actual):** simple y predecible, pero deja posiciones pasadas su hora de cierre solo bajo SL/TP. Se prefirió honrar las salidas porque un cierre es reducción de riesgo, no riesgo nuevo.
 
 Relacionado: [[D053]], [[D057]], `drift/engine.py`. Implementa: Phase 2.7 Step 40.
+
+---
+
+### D065 — Offset de servidor robusto en arranque frío (guard +2/+3 + refresh antes del wake)
+
+**Contexto.** Bug observado **en vivo el 2026-06-10** durante la validación e2e de Step 36. La máquina se reinició en frío por la mañana; MT5 arrancó con el feed frío y `get_server_utc_offset` derivó **UTC-5** (raw≈-19516s, un tick ~8h rancio) en vez del real **UTC+3**. El guard de stale-tick de D047 solo rechazaba offsets fuera de ±14h, y -5h **cae dentro** de esa banda → pasó. El scheduler computó el primer sleep con ese offset malo (`sleeping 42805s` → habría despertado a las 21:00 hora local en vez de 21:00 server) y, aunque `_refresh_server_offset` corrigió el offset 2s después, lo hizo **después** de computar el `wait_secs` → el sleep ya estaba envenenado y el bot **se habría saltado la sesión entera**. (No es regresión de Phase 2.7; el código de offset/scheduling es de D041/D047/D058.)
+
+**Decisión (parche, dos partes).**
+1. **Guard estricto en `get_server_utc_offset`** (`drift/mt5_client.py`): ICMarkets es NY-anchored y solo corre a **GMT+2 (invierno US) o GMT+3 (verano US)** (D041). El offset redondeado debe estar en `{+2, +3}`; cualquier otro valor (incluido el -5 del feed frío y los stale de fin de semana de decenas de horas) se trata como tick rancio y cae al **fallback DST-aware**. Esto supersede la banda ±14h de D047 (más laxa) y caza la causa raíz directamente.
+2. **Reordenar el loop del engine** (`drift/engine.py`): `_refresh_server_offset()` se llama **antes** de computar `now`/`boundary`/`wait_secs`, no después. Así un offset malo en el arranque se corrige en el mismo ciclo **antes** de calcular el sleep, en vez de un ciclo tarde. Defensa en profundidad + mantiene la alineación ante transiciones DST.
+
+**Validación.** `tests/test_timezones.py::TestServerOffsetStaleTickGuard`: el caso D065 (tick -5h dentro de ±14h → fallback, nunca UTC-5), off-by-one (+4 → fallback), +2 invierno y +3 verano OK. Suite 331 passed / 2 skipped.
+
+**Operacional.** El 2026-06-10 se mitigó con un restart manual (feed ya caliente → UTC+3). Con este parche, un arranque frío en el VPS (escenario típico de reboot) ya no envenena el schedule. Relevante antes de Phase 3 (go-live en VPS).
+
+Relacionado: [[D041]], [[D047]], [[D058]], `drift/mt5_client.py`, `drift/engine.py`. Patch directo (no Phase 2.7).

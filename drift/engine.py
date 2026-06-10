@@ -381,6 +381,17 @@ class Engine:
                 # flag and the DB for immediate, same-context consistency.
                 self._refresh_pause_flags()
 
+                # Re-derive the offset BEFORE computing this cycle's wake, so the
+                # boundary and sleep duration always use the freshest offset.
+                # Doing it here (rather than after wait_secs was computed) is what
+                # fixes the cold-start bug (D065): a bad offset derived at startup
+                # from a cold MT5 feed (e.g. UTC-5 instead of UTC+3) is corrected
+                # on this first cycle BEFORE the sleep is computed, instead of one
+                # cycle too late — which previously let the poisoned first sleep
+                # overshoot and skip an entire session.  It also keeps the
+                # scheduler aligned across a DST transition while idle.
+                self._refresh_server_offset()
+
                 now = server_now(self.server_offset)
                 boundary, due = self._due_strategies(now)
 
@@ -397,10 +408,6 @@ class Engine:
                     wait_secs,
                     " (rollover settle)" if delay != CANDLE_CLOSE_DELAY_SECONDS else "",
                 )
-
-                # Re-derive the offset before the (potentially long) sleep so a
-                # DST transition while idle does not leave the scheduler stale.
-                self._refresh_server_offset()
 
                 self._sleep_until(time.monotonic() + wait_secs)
                 if self._stop_requested():
