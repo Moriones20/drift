@@ -19,6 +19,7 @@ from pathlib import Path
 from drift.config import DriftConfig, RiskConfig, load_config
 from drift.db import (
     close_trade_record,
+    evaluate_strategy_drawdown,
     get_connection,
     get_stats,
     get_strategy_state,
@@ -27,7 +28,6 @@ from drift.db import (
     log_event,
     log_peak_balance,
     set_strategy_paused,
-    upsert_strategy_peak,
 )
 from drift.engine import Engine
 from drift.executor import close_trade, get_open_positions
@@ -45,8 +45,6 @@ from drift.mt5_client import (
 from drift.report import generate_weekly_report
 from drift.risk import (
     check_drawdown,
-    check_strategy_drawdown,
-    strategy_equity,
 )
 from drift.telegram_bot import (
     BotState,
@@ -133,41 +131,6 @@ def _seconds_until(target: datetime, server_offset: timedelta) -> float:
     the offset cancels out.
     """
     return max(0.0, (target - server_now(server_offset)).total_seconds())
-
-
-# ---------------------------------------------------------------------------
-# Pip value / position sizing helpers
-# ---------------------------------------------------------------------------
-
-
-def _pip_multiplier(pair: str) -> float:
-    """Return the multiplier to convert price distance to pips."""
-    return 100.0 if "JPY" in pair.upper() else 10000.0
-
-
-def _pip_value(pair: str, info=None) -> float:
-    """Return USD pip value per standard lot using MT5 symbol info.
-
-    Uses `trade_tick_value` (USD per tick on one standard lot) and converts to
-    pips: 1 pip = 10 ticks on both 5-digit (most pairs) and 3-digit (JPY) brokers.
-
-    Falls back to $10 if MT5 has no info for the pair, but this is a safety net,
-    not a default — every configured pair should resolve through MT5 in practice.
-
-    Parameters
-    ----------
-    info:
-        Pre-fetched ``mt5.symbol_info`` result.  When provided the function skips
-        the MT5 call so callers that already hold the object avoid a second IPC round-trip.
-    """
-    if info is None:
-        import MetaTrader5 as mt5
-
-        info = mt5.symbol_info(pair)
-    if info is None or info.trade_tick_value <= 0:
-        logger.warning("No tick_value for %s — falling back to $10/pip/lot", pair)
-        return 10.0
-    return info.trade_tick_value * 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -356,14 +319,22 @@ def _monitoring_tick(
                 log_event(db_conn, "reconnect", detail="MT5 reconnected")
             _fire_and_forget(
                 notify_bot_status(
-                    bot_app.bot, config.telegram.chat_id, "started", "MT5 reconnected"
+                    bot_app.bot,
+                    config.telegram.chat_id,
+                    "reconnected",
+                    "Connection to MT5 restored. Trading resumes normally.",
                 )
             )
         else:
             with get_connection() as db_conn:
                 log_event(db_conn, "error", detail="MT5 reconnect failed")
             _fire_and_forget(
-                notify_error(bot_app.bot, config.telegram.chat_id, "MT5 reconnect failed")
+                notify_error(
+                    bot_app.bot,
+                    config.telegram.chat_id,
+                    "Lost connection to MT5 and could not reconnect. "
+                    "No trades will open while it's down — will keep retrying on the next check.",
+                )
             )
         return
 
@@ -441,8 +412,9 @@ def _check_drawdown_pause(
             notify_bot_status(
                 bot_app.bot,
                 config.telegram.chat_id,
-                "paused",
-                f"Drawdown limit reached: {reason}",
+                "drawdown_global",
+                f"{reason}\nAll strategies paused. Open positions stay open — "
+                "review and use /resume when ready.",
             )
         )
         return False, reason
@@ -456,22 +428,19 @@ def _check_strategy_drawdown_pause(
     config: DriftConfig,
     bot_app,
 ) -> None:
-    """Per-strategy drawdown brake — pauses only this strategy (D053, D056).
+    """Per-strategy drawdown brake — pauses only this strategy (D053, D062).
 
-    Computes the strategy's individual equity curve
-    (``allocated_baseline + realized_pnl + floating_pnl``), keeps its peak in
-    ``strategy_state``, and when drawdown breaches the strategy's own limit sets
-    ``strategy_state.paused`` so the engine stops opening new entries for it on
-    its next dispatch.  Open positions are kept (pause = hold, D053) — they stay
-    protected by their server-side SL/TP.
+    The equity/drawdown computation is the canonical
+    :func:`drift.db.evaluate_strategy_drawdown` (the single implementation shared
+    with the engine — D062); this function only supplies the strategy's floating
+    P&L from its open positions and keeps the pause/notify side-effects.  When
+    drawdown breaches the strategy's own limit it sets ``strategy_state.paused`` so
+    the engine stops opening new entries for it on its next dispatch.  Open
+    positions are kept (pause = hold, D053) — protected by their server-side SL/TP.
 
-    allocated_baseline is computed from the CURRENT account balance
-    (``balance * allocation_pct/100``).  A baseline anchored to the balance at
-    the moment the strategy was enabled would be a more stable denominator, but
-    it is not persisted yet; the current-balance approximation tracks the
-    notional allocation the strategy actually sizes against (D053) and is
-    consistent with the engine's own per-strategy brake in
-    ``Engine._check_strategy_drawdown`` (same formula), so both contexts agree.
+    Equity is built on the persisted notional baseline, not the live balance, so
+    realized P&L is counted once and strategies do not contaminate each other
+    (D062).
 
     Must be called while holding ``_trade_lock`` (the caller does).
     """
@@ -479,20 +448,20 @@ def _check_strategy_drawdown_pause(
     if instance is None:  # pragma: no cover - defensive
         return
 
-    allocated_baseline = balance * instance.allocation_pct / 100.0
     floating = sum(p.get("profit", 0.0) for p in positions)
 
     with get_connection() as db_conn:
-        realized = get_stats(db_conn, strategy=strategy_name).get("total_pnl", 0.0) or 0.0
-        equity = strategy_equity(allocated_baseline, realized, floating)
-
         row = get_strategy_state(db_conn, strategy_name)
-        stored_peak = (row["peak_equity"] if row else 0.0) or 0.0
         already_paused = bool(row["paused"]) if row else False
-        peak = max(stored_peak, equity)
-        upsert_strategy_peak(db_conn, strategy_name, equity)
 
-        ok, reason = check_strategy_drawdown(equity, peak, instance.risk.max_drawdown_percent)
+        ok, reason, equity, _peak = evaluate_strategy_drawdown(
+            db_conn,
+            strategy_name,
+            instance.allocation_pct,
+            balance,
+            floating,
+            instance.risk.max_drawdown_percent,
+        )
         if ok or already_paused:
             return
 
@@ -506,8 +475,9 @@ def _check_strategy_drawdown_pause(
         notify_bot_status(
             bot_app.bot,
             config.telegram.chat_id,
-            "paused",
-            f"Strategy {strategy_name} paused — {reason}",
+            "drawdown_strategy",
+            f"<b>{strategy_name}</b>: {reason}\nThis strategy is paused; the rest keep running. "
+            f"Open positions stay open — use /resume {strategy_name} when ready.",
         )
     )
 
@@ -831,12 +801,15 @@ def main() -> None:
         with get_connection() as db_conn:
             log_event(db_conn, "start", detail="Drift bot started", balance=balance)
 
+        enabled_names = [n for n, s in config.strategies.items() if s.enabled]
+        strat_summary = ", ".join(enabled_names) if enabled_names else "none"
         _fire_and_forget(
             notify_bot_status(
                 bot_app.bot,
                 config.telegram.chat_id,
                 "started",
-                f"Balance: ${balance:.2f}",
+                f"Balance ${balance:.2f}  ·  "
+                f"{len(enabled_names)} strategy(ies) live: {strat_summary}",
             )
         )
 

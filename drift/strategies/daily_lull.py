@@ -71,10 +71,10 @@ _H4_COUNT = 320
 class DailyLullParams:
     """Daily Lull parameters, parsed from the opaque ``params`` config dict.
 
-    Defaults match ``drift.config.StrategyConfig`` exactly so a config that
-    omits a field behaves identically to the legacy single-strategy config.
-    The engine never reads these fields; they are private to the strategy
-    (D054).
+    Each field maps directly to the same-named key in the ``params`` block of
+    the strategy's ``config.yaml`` entry.  Missing keys fall back to the
+    dataclass defaults shown below.  The engine never reads these fields; they
+    are private to the strategy (D054).
     """
 
     rsi_oversold: float = 35.0
@@ -96,7 +96,7 @@ class DailyLullParams:
 
         Only known fields are consumed; unknown keys are ignored so a newer
         config does not crash an older binary.  Missing keys fall back to the
-        dataclass defaults (which mirror ``StrategyConfig``).
+        dataclass defaults listed in :class:`DailyLullParams`.
         """
         known = set(cls.__dataclass_fields__)
         kwargs = {k: v for k, v in (params or {}).items() if k in known}

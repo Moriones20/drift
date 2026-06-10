@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import pytest
 
-from drift.config import RiskConfig, RiskGlobalConfig, StrategyRiskConfig
+from drift.config import RiskGlobalConfig, StrategyRiskConfig
 from drift.risk import (
     COMMISSION_PER_LOT,
     calculate_position_size,
     calculate_position_size_allocated,
-    check_all_risk,
     check_correlation,
     check_drawdown,
     check_max_trades,
     check_strategy_drawdown,
     check_strategy_risk,
+    seed_baseline_capital,
     strategy_drawdown,
     strategy_equity,
 )
@@ -78,12 +78,6 @@ def test_check_drawdown():
     assert check_drawdown(950, 1000, 10.0)[0] is True
     # invalid peak -> permissive
     assert check_drawdown(900, 0, 10.0)[0] is True
-
-
-def test_check_all_risk_passthrough():
-    config = RiskConfig()
-    ok, _ = check_all_risk(10000, 10000, [], "EURUSD", "buy", config)
-    assert ok is True
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +246,37 @@ def test_check_strategy_drawdown_floating_loss_trips_brake():
     equity = strategy_equity(300.0, 0.0, -45.0)  # 255 -> 15% down
     ok, _ = check_strategy_drawdown(equity, 300.0, 10.0)
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# seed_baseline_capital — the double-count fix (D062)
+# ---------------------------------------------------------------------------
+
+
+def test_seed_baseline_removes_double_count_of_realized():
+    # Balance already includes +200 of past realized P&L; allocation 100%.
+    # The naive baseline (balance * alloc) would carry that +200, and
+    # strategy_equity would add it AGAIN.  Seeding subtracts realized so the
+    # equity at seed time equals exactly the allocated slice (no double count).
+    balance, alloc, realized = 1200.0, 100.0, 200.0
+    baseline = seed_baseline_capital(balance, alloc, realized)
+    assert baseline == 1000.0  # 1200 - 200
+
+    equity_at_seed = strategy_equity(baseline, realized, 0.0)
+    assert equity_at_seed == 1200.0  # the slice, NOT slice + realized (1400)
+
+
+def test_seed_baseline_forward_realized_counted_once():
+    # Seed with 200 of past realized, then 50 more is realized forward.
+    baseline = seed_baseline_capital(1200.0, 100.0, 200.0)  # 1000
+    equity_forward = strategy_equity(baseline, 250.0, 0.0)  # realized now 200+50
+    # Equity advanced by exactly the +50 forward realized, not by 2x anything.
+    assert equity_forward == 1250.0
+
+
+def test_seed_baseline_respects_allocation_fraction():
+    # 50% allocation, no prior realized: baseline is half the balance.
+    assert seed_baseline_capital(1000.0, 50.0, 0.0) == 500.0
 
 
 def test_commission_constant_is_used_in_sizing():

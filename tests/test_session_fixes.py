@@ -117,17 +117,19 @@ from drift.db import (  # noqa: E402
 
 
 def _make_minimal_config():
+    import dataclasses
+
     from drift.config import (
         BrokerConfig,
         DriftConfig,
         ReportsConfig,
         RiskGlobalConfig,
-        StrategyConfig,
         StrategyInstanceConfig,
         StrategyRiskConfig,
         SystemConfig,
         TelegramConfig,
     )
+    from drift.strategies.daily_lull import DailyLullParams
 
     return DriftConfig(
         broker=BrokerConfig(server="demo", login=1, password="x"),
@@ -143,10 +145,7 @@ def _make_minimal_config():
                 allocation_pct=100.0,
                 pairs=["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
                 risk=StrategyRiskConfig(),
-                params={
-                    field: getattr(StrategyConfig(), field)
-                    for field in StrategyConfig.__dataclass_fields__
-                },
+                params=dataclasses.asdict(DailyLullParams()),
             )
         },
     )

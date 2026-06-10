@@ -169,13 +169,13 @@ Ademas de los comandos, el bot envia notificaciones de forma automatica en los s
 
 | Evento | Descripcion |
 |---|---|
-| Inicio del bot | Confirma que el bot arranco, con el balance inicial. |
-| Inicio de sesion | Aviso calmo (SESSION STARTED, icono luna) cuando la estrategia entra en su ventana (21:00 hora servidor) y empieza a vigilar setups. Una sola notificacion por estrategia por sesion. |
-| Cierre de sesion | Aviso calmo (SESSION CLOSED, icono dormir) cuando la estrategia cierra la sesion al time-stop (02:00 hora servidor); indica cuantas posiciones cerro y que duerme hasta la proxima sesion. Una sola notificacion por estrategia por cierre (no una por par). NO es un BOT STOPPED: el bot sigue vivo. |
+| Inicio del bot | "BOT ONLINE" (cohete): el proceso arranco. Muestra el balance y que estrategias quedaron activas. Distinto del inicio de sesion. |
+| Inicio de sesion | Aviso calmo ("SESSION OPEN", icono luna) cuando la estrategia entra en su ventana (21:00 hora servidor) y empieza a vigilar setups. Una sola notificacion por estrategia por sesion. NO es un arranque del bot. |
+| Cierre de sesion | Aviso calmo ("SESSION CLOSED", icono dormir) cuando la estrategia cierra la sesion al time-stop (02:00 hora servidor); indica cuantas posiciones cerro y que duerme hasta la proxima sesion. Una sola notificacion por estrategia por cierre (no una por par). NO es un BOT STOPPED: el bot sigue vivo. |
 | Trade abierto | Par, direccion, precio de entrada, SL, TP, tamaño en lotes y riesgo en USD. |
 | Trade cerrado | Par, direccion, precio de entrada y salida, P&L, motivo de cierre y duracion. |
-| Pausa por drawdown | Avisa cuando el drawdown supero el limite configurado y se pauso automaticamente. Indica si fue el kill switch global (toda la cuenta) o el brake de una estrategia concreta (solo esa). |
+| Freno por drawdown | Alarma (icono 🚨), no una pausa calma. "ACCOUNT HALTED — DRAWDOWN" cuando el kill switch global frena toda la cuenta; "STRATEGY HALTED — DRAWDOWN" cuando solo se frena una estrategia (las demas siguen). Indica como reanudar (/resume o /resume <estrategia>). |
 | Error en el loop | Si ocurre un error inesperado en el loop principal, el bot se pausa y notifica para que se investigue. |
-| Reconexion a MT5 | Si se pierde y se recupera la conexion con MT5. |
+| Reconexion a MT5 | "MT5 RECONNECTED" (icono enchufe) cuando se recupera la conexion. Si se pierde y no logra reconectar, llega un ERROR explicando que no se abriran trades y que seguira reintentando. NO se muestra como un arranque del bot. |
 | Cierre del bot | Confirma que el bot se apago correctamente. |
 | Reporte semanal | Enviado automaticamente segun la config (`reports.weekly_report_day` / `weekly_report_hour` / `timezone`). Con los valores por defecto: domingo a las 20:00 UTC-5 (lunes 01:00 UTC). Mismo contenido que `/report`, incluyendo una **seccion por estrategia** ademas del agregado de cuenta. |

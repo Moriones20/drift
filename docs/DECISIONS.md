@@ -840,3 +840,52 @@ Relacionado: [[D059]], [[D046]], [[D055]], `drift/strategies/daily_lull.py`, `te
 **Validación.** `tests/test_engine.py` y `tests/test_daily_lull_strategy.py`: vela rancia hora-2 en boundary 21:00 → no close_all; vela rancia en boundary 02:00 → `stale_session_data` (no cierre); vela fresca en boundary 02:00 → sí close_all; N pares con close_all en un tick → un solo cierre + una sola notificación; inicio de sesión notifica una vez.
 
 Relacionado: [[D051]], [[D058]], [[D057]], [[D046]], `drift/engine.py`, `drift/strategies/daily_lull.py`, `drift/telegram_bot.py`, `tests/test_engine.py`.
+
+---
+
+### D062 — Equity por estrategia: baseline notional fijo y persistido (no balance vivo)
+
+**Contexto.** La auditoría 2026-06-09 (post-Phase 2.6) encontró que el freno de drawdown por estrategia mide sobre una equity mal construida. `Engine._check_strategy_drawdown` y `main._check_strategy_drawdown_pause` calculan `allocated_baseline = balance_vivo × allocation_pct/100` y luego `strategy_equity()` (D053) le **vuelve a sumar** `realized`. Pero el balance de MT5 ya incluye el realized → `equity = inicial + 2·realized + floating`.
+
+**Impacto.** Para la config actual (daily_lull al 100%) el freno de 10% por estrategia salta a ~5% real (≈2× demasiado sensible; conservador, no peligroso, pero no es lo configurado y choca con el freno global de 10%). Para el objetivo real de la Phase 2.6 (N estrategias) es peor: como `balance_vivo` incluye el realized de **todas** las estrategias, el baseline de A se contamina con la P&L de B → A puede aparecer en drawdown por culpa de B. **Rompe el aislamiento de riesgo que justifica D053.**
+
+**Decisión.** La equity por estrategia se calcula sobre un **baseline notional fijo y persistido** en `strategy_state.baseline_capital` (columna nueva), no sobre el balance vivo:
+
+```
+baseline_capital = balance_seed × allocation_pct/100 − realized_lifetime_seed   (sembrado UNA vez)
+equity(t)        = baseline_capital + realized_lifetime(t) + floating(t)
+```
+
+El sembrado resta el `realized_lifetime` al momento de sembrar, de modo que la equity **arranca exactamente en el slice asignado** (la P&L pasada queda como agua bajo el puente) y **hacia adelante el realized se cuenta una sola vez**. Para 1 estrategia al 100% queda `equity = equity de cuenta`, idéntico al freno global. En la primera computación tras el deploy se siembra el baseline y se **resetea el peak inflado existente** a la nueva equity (la curva de drawdown se reinicia limpia desde el deploy — comportamiento intencional, no se intenta reconstruir el drawdown histórico).
+
+**Implementación clave.** Se extrae **UNA función canónica** en `drift/risk.py` que computa equity+drawdown por estrategia; la usan los tres contextos (engine, monitor, telegram) — elimina la triplicación y la divergencia. Misma decisión incluye el fix de `get_stats(strategy=)`: hoy la subconsulta de `peak_balance` events **no filtra** por estrategia y devuelve el peak global (#5 del audit; latente porque solo se lee `total_pnl`, pero es una trampa).
+
+**Alternativa descartada — "fracción del balance vivo"** (`equity = balance_vivo × alloc + floating`, sin sumar realized): cero migración y exacta para 1 estrategia al 100%, pero atribuye una fracción del realized de **toda la cuenta** a cada estrategia → sigue contaminando entre estrategias. No cumple el espíritu de D053; se prefirió el baseline fijo por ser el único que aísla de verdad y es forward-compatible al añadir estrategias.
+
+**Limitación conocida.** Cambiar `allocation_pct` en config después de sembrar deja el baseline obsoleto; el re-seed manual (poner `baseline_capital` a NULL) lo recalcula. Documentar.
+
+Relacionado: [[D053]], `drift/risk.py`, `drift/db.py`, `drift/engine.py`, `main.py`. Implementa: Phase 2.7 Step 37.
+
+---
+
+### D063 — `/resume <estrategia>` resetea el peak (ventana de drawdown nueva)
+
+**Contexto.** `strategy_state.peak_equity` se mantiene con `MAX` (`upsert_strategy_peak`) y **nunca baja**. Una vez que una estrategia toca su freno, solo se libera si la equity vuelve al máximo histórico. Peor: el monitor recalcula cada 30s, así que tras un `/resume <estrategia>` (que solo limpiaba la pausa) el monitor **re-pausa en ≤30s y re-emite la alarma** — `/resume` era efectivamente inútil y ruidoso durante un drawdown (#2 y #3 del audit).
+
+**Decisión.** `/resume <estrategia>` resetea `peak_equity = equity_actual` **y** limpia la pausa, abriendo una ventana de drawdown nueva desde donde está la estrategia. El monitor ya no la re-pausa (drawdown vs el peak nuevo = 0%). Requiere una función `reset_strategy_peak` de **escritura directa** (el `upsert` con `MAX` no puede bajar el valor). Es una palanca manual y consciente para "soltar el freno"; el trade-off (si la estrategia sigue sangrando podría re-pausar más abajo) es aceptable por ser una acción explícita del usuario.
+
+**Alcance.** Solo per-estrategia. El `/resume` global NO resetea el peak global: este se almacena como eventos `peak_balance` con `MAX` en `get_stats`, así que bajarlo limpio necesita su propio diseño (tabla de estado con columna directa o evento `peak_reset` que `get_stats` honre). **Diferido** a follow-up (el freno global conserva su rigidez por ahora; los #2/#3 reportados eran per-estrategia).
+
+Relacionado: [[D062]], [[D053]], `drift/db.py`, `drift/telegram_bot.py`. Implementa: Phase 2.7 Step 38.
+
+---
+
+### D064 — La pausa bloquea solo aperturas (close/close_all se honran)
+
+**Contexto.** Hoy una estrategia pausada se **excluye del scheduler** (`_active_strategies`) y, bajo pausa global (`state.paused`), `_dispatch_strategy` salta `on_bar` para todos los pares. Consecuencia: el **time-stop de las 02:00 no se ejecuta** durante un kill switch global → una posición de sesión queda abierta pasada su hora de cierre, protegida solo por SL/TP server-side (#6 del audit).
+
+**Decisión.** La pausa (global o por estrategia) bloquea **solo `open`**; `close` y `close_all` se ejecutan siempre. Coherente con "pausa = no asumir riesgo nuevo, pero respetar las salidas planeadas" y más seguro (ninguna posición cabalga pasada su hora de cierre). Implica un cambio de modelo: las estrategias pausadas **siguen agendadas** (ya no se excluyen del scheduler) y el bloqueo se mueve al manejo de decisiones (se descarta el `Decision.open` bajo pausa). El log "Bot paused — skipping" pasa a una vez por tick, no por par (#9).
+
+**Alternativa descartada — "congelar todo" (actual):** simple y predecible, pero deja posiciones pasadas su hora de cierre solo bajo SL/TP. Se prefirió honrar las salidas porque un cierre es reducción de riesgo, no riesgo nuevo.
+
+Relacionado: [[D053]], [[D057]], `drift/engine.py`. Implementa: Phase 2.7 Step 40.

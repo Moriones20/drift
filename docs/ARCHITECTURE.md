@@ -378,12 +378,14 @@ CREATE TABLE bot_events (
     balance REAL
 );
 
--- Drawdown por estrategia (D053, D056): peak por estrategia + flag de pausa
+-- Drawdown por estrategia (D053, D056, D062): baseline notional persistido +
+-- peak por estrategia + flag de pausa. baseline_capital NULL = aún no sembrado.
 CREATE TABLE strategy_state (
-    strategy    TEXT PRIMARY KEY,
-    peak_equity REAL NOT NULL,
-    paused      INTEGER NOT NULL DEFAULT 0,
-    updated_at  TEXT NOT NULL
+    strategy         TEXT PRIMARY KEY,
+    peak_equity      REAL NOT NULL,
+    paused           INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL,
+    baseline_capital REAL
 );
 
 CREATE INDEX idx_trades_pair ON trades(pair);
@@ -407,11 +409,13 @@ ALTER TABLE signals  ADD COLUMN strategy TEXT NOT NULL DEFAULT 'daily_lull';
 ALTER TABLE bot_events ADD COLUMN strategy TEXT;   -- NULL por defecto
 
 CREATE TABLE IF NOT EXISTS strategy_state (
-    strategy    TEXT PRIMARY KEY,
-    peak_equity REAL NOT NULL,
-    paused      INTEGER NOT NULL DEFAULT 0,
-    updated_at  TEXT NOT NULL
+    strategy         TEXT PRIMARY KEY,
+    peak_equity      REAL NOT NULL,
+    paused           INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL,
+    baseline_capital REAL
 );
+ALTER TABLE strategy_state ADD COLUMN baseline_capital REAL;   -- D062 (idempotente)
 
 CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
 ```

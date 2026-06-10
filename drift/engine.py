@@ -36,9 +36,9 @@ import pandas as pd
 from drift.config import DriftConfig, StrategyRiskConfig
 from drift.db import (
     close_trade_record,
+    evaluate_strategy_drawdown,
     get_connection,
     get_open_trades,
-    get_stats,
     get_strategy_state,
     get_trade_by_ticket,
     log_event,
@@ -46,7 +46,6 @@ from drift.db import (
     log_signal,
     log_trade,
     set_strategy_paused,
-    upsert_strategy_peak,
 )
 from drift.executor import close_trade, get_open_positions, open_trade
 from drift.mt5_client import (
@@ -59,9 +58,7 @@ from drift.mt5_client import (
 from drift.risk import (
     calculate_position_size_allocated,
     check_drawdown,
-    check_strategy_drawdown,
     check_strategy_risk,
-    strategy_equity,
 )
 from drift.strategies.base import Decision, Signal, StrategyContext
 from drift.strategies.base import get_strategy as _get_strategy
@@ -78,18 +75,6 @@ CANDLE_CLOSE_DELAY_SECONDS = 5
 # session-start notification (D057).  One hour comfortably exceeds any single
 # timeframe step while staying well below the multi-hour idle between sessions.
 _SESSION_GAP = timedelta(hours=1)
-
-
-def closed_bars(df: pd.DataFrame, before: datetime) -> pd.DataFrame:
-    """Return only the bars that have already closed before *before* (D045).
-
-    MT5 returns the still-forming bar as the last row.  Acting on it makes the
-    live bot fire intra-bar on incomplete (and, at the 00:00 server rollover,
-    contaminated) prices, diverging from the backtest which acts on completed-bar
-    closes.  Keeping bars strictly before the current M15 boundary makes iloc[-1]
-    the bar that just closed at *before*.
-    """
-    return df[df.index < before]
 
 
 # Stop-aware sleep slice: the engine never blocks longer than this between
@@ -124,10 +109,9 @@ class EngineMarketData:
     def candles(self, pair: str, timeframe: str, count: int) -> pd.DataFrame:
         """Return the last *count* CLOSED candles for ``(pair, timeframe)``.
 
-        The closed-bar filter (``index < bar_close_time``) mirrors
-        :func:`closed_bars` (D045).  Results are cached by
-        ``(pair, timeframe)`` for this tick; the cached frame is the raw fetch,
-        so the filter is applied on every call cheaply.
+        The closed-bar filter (``index < bar_close_time``) drops the still-forming
+        bar (D045).  Results are cached by ``(pair, timeframe)`` for this tick; the
+        cached frame is the raw fetch, so the filter is applied on every call cheaply.
         """
         key = (pair, timeframe)
         df = self._cache.get(key)
@@ -288,11 +272,16 @@ class Engine:
                 hosted.paused = bool(row["paused"]) if row else False
 
     def _active_strategies(self) -> list[_HostedStrategy]:
-        """Strategies that are not engine-paused (still scheduled for wakes)."""
-        return [h for h in self.strategies if not h.paused]
+        """All hosted strategies, including paused ones.
+
+        Paused strategies remain in the wake schedule so that time-stops
+        (close / close_all decisions) fire even during a kill switch (D064).
+        Only ``open`` decisions are blocked — see ``_handle_decision``.
+        """
+        return self.strategies
 
     def _next_boundary(self, now: datetime) -> datetime | None:
-        """Return the minimum ``next_wake`` across active strategies, or None.
+        """Return the minimum ``next_wake`` across all strategies, or None.
 
         None means no strategy has a scheduled wake right now (all sleeping
         indefinitely); the caller sleeps a slice and re-asks.
@@ -303,8 +292,8 @@ class Engine:
     def _due_strategies(self, now: datetime) -> tuple[datetime | None, list[_HostedStrategy]]:
         """Return the next boundary and the strategies due exactly at it.
 
-        The next boundary is the minimum ``next_wake`` across active strategies;
-        the due list is every active strategy whose ``next_wake`` equals that
+        The next boundary is the minimum ``next_wake`` across all strategies;
+        the due list is every strategy whose ``next_wake`` equals that
         boundary.  Computing the due set HERE — from a ``now`` strictly before the
         boundary — is what makes dispatch robust: after the engine sleeps past the
         boundary, ``next_wake`` would already point at the FOLLOWING boundary, so
@@ -461,8 +450,6 @@ class Engine:
                 log_peak_balance(db_conn, self.peak_balance_ref[0])
 
         for hosted in due:
-            if hosted.paused:
-                continue
             self._dispatch_strategy(hosted, boundary, market, balance, equity)
 
     def _dispatch_strategy(
@@ -507,12 +494,18 @@ class Engine:
             paused=hosted.paused,
         )
 
+        # Log the pause state once per strategy per tick, not once per pair (D064 #9).
+        if self.state.paused or hosted.paused:
+            source = "global" if self.state.paused else hosted.name
+            logger.info(
+                "%s | paused (%s) — open decisions will be dropped, closes will execute",
+                hosted.name,
+                source,
+            )
+
         close_all_done = False
         for timeframe in sorted(instance.timeframes):
             for pair in instance.pairs:
-                if self.state.paused:
-                    logger.info("Bot paused — skipping %s/%s", hosted.name, pair)
-                    continue
                 try:
                     decision = instance.on_bar(pair, timeframe, boundary, market, ctx)
                     if decision.kind == "close_all":
@@ -560,7 +553,19 @@ class Engine:
         if decision.kind == "noop":
             self._handle_noop(hosted, decision)
         elif decision.kind == "open":
-            self._handle_open(hosted, pair, decision, balance, equity)
+            # Pause blocks only opens (D064): close and close_all always execute.
+            if self.state.paused or hosted.paused:
+                signal = decision.signal
+                if signal is not None:
+                    with self._trade_lock, get_connection() as db_conn:
+                        self._reject(db_conn, hosted, signal, "paused")
+                    hosted.instance.on_order_rejected(pair, signal, "paused")
+                else:
+                    logger.info(
+                        "%s/%s | open decision dropped (paused, no signal)", hosted.name, pair
+                    )
+            else:
+                self._handle_open(hosted, pair, decision, balance, equity)
         elif decision.kind == "close_all":
             self._handle_close_all(hosted, decision)
         elif decision.kind == "close":
@@ -596,12 +601,90 @@ class Engine:
         correlation).  On any rejection the signal is logged as rejected and
         ``on_order_rejected`` notifies the strategy.  On success the trade is
         logged, the signal is linked, the open is notified and ``on_fill`` fires.
+
+        The method runs in three phases so the broker round-trip does NOT hold the
+        shared ``_trade_lock`` (D031, audit #8).  ``open_trade`` retries transient
+        rejections with sleeps (up to ~75s during the 00:00 rollover halt, D040);
+        holding the lock across that window stalls the monitoring thread's
+        close-detection, per-strategy drawdown brake and trailing pass for the
+        whole time.  The lock only serializes position/DB access between the engine
+        and the monitor — it does not need to cover the broker call:
+
+          - Phase 1 (gate + size): under ``_trade_lock`` + a DB connection.
+          - Phase 2 (execute): NO lock, NO DB connection held — this is where the
+            retries/sleeps happen.
+          - Phase 3 (record): under ``_trade_lock`` + a fresh DB connection.
+
+        The engine opens trades from a single thread (the dispatch loop) and the
+        only other lock user is the monitor (which never opens), so releasing the
+        lock between gating and recording cannot race a concurrent open.
         """
         signal = decision.signal
         if signal is None:  # pragma: no cover - defensive
             logger.warning("%s | open decision without signal — skipping", hosted.name)
             return
 
+        instance = hosted.instance
+
+        # --- Phase 1: gate + size (under the lock) ---
+        lot_size = self._gate_and_size(hosted, pair, signal, balance, equity)
+        if lot_size is None:
+            return  # rejection already logged/notified inside _gate_and_size
+
+        # --- Phase 2: execute (NO lock, NO DB connection) ---
+        # The retries/sleeps (D040) run here, free of the lock, so the monitoring
+        # thread keeps detecting closes and running the drawdown brake.
+        ticket = open_trade(
+            pair=pair,
+            direction=signal.action,
+            lot_size=lot_size,
+            stop_loss=signal.sl,
+            take_profit=signal.tp,
+            magic=hosted.magic,
+            max_retries=self.config.system.order_retry_attempts,
+            retry_delay_seconds=self.config.system.order_retry_delay_seconds,
+            guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
+            entry_reference=signal.entry_price,
+            min_reward_fraction=self.config.system.min_reward_fraction,
+        )
+
+        # --- Phase 3: record (under the lock, fresh DB connection) ---
+        if ticket is None:
+            # open_trade returned no ticket. This covers both expected skips
+            # (the D046 spread guard / price-reverted guard, which executor
+            # logs at WARNING) and genuine broker failures (which executor
+            # logs at ERROR). The executor already logged the specific cause
+            # at the right level, so this summary stays at WARNING — a spread
+            # guard skip is not an engine error.
+            logger.warning(
+                "%s/%s | open_trade returned no ticket — see executor log", hosted.name, pair
+            )
+            with self._trade_lock, get_connection() as db_conn:
+                self._reject(db_conn, hosted, signal, "open_trade_no_ticket")
+            instance.on_order_rejected(pair, signal, "open_trade_no_ticket")
+            return
+
+        with self._trade_lock, get_connection() as db_conn:
+            self._record_open(db_conn, hosted, pair, signal, lot_size, ticket, balance)
+        instance.on_fill(pair, signal, ticket)
+
+    def _gate_and_size(
+        self,
+        hosted: _HostedStrategy,
+        pair: str,
+        signal: Signal,
+        balance: float,
+        equity: float,
+    ) -> float | None:
+        """Phase 1: run the risk gates and sizing under ``_trade_lock``.
+
+        Returns the resolved, volume-adjusted ``lot_size`` on success (the rest of
+        the order is derived from ``signal``/``hosted`` in phase 2), or ``None`` on
+        any rejection — in which case the signal has already been logged as
+        rejected and ``on_order_rejected`` has fired, matching the pre-refactor
+        behaviour exactly.  The broker call is deliberately NOT made here so the
+        lock is released before it (audit #8).
+        """
         instance = hosted.instance
         with self._trade_lock, get_connection() as db_conn:
             # --- Global drawdown kill switch (pauses everything) ---
@@ -614,15 +697,17 @@ class Engine:
                 self._trip_global_brake(db_conn, reason, equity)
                 self._reject(db_conn, hosted, signal, f"global {reason}")
                 instance.on_order_rejected(pair, signal, f"global {reason}")
-                return
+                return None
 
             # --- Per-strategy drawdown brake (pauses only this strategy) ---
-            ok, reason = self._check_strategy_drawdown(db_conn, hosted, balance)
+            ok, reason, strategy_equity_value, _peak = self._check_strategy_drawdown(
+                db_conn, hosted, balance
+            )
             if not ok:
-                self._pause_strategy(db_conn, hosted, reason, equity)
+                self._pause_strategy(db_conn, hosted, reason, strategy_equity_value)
                 self._reject(db_conn, hosted, signal, reason)
                 instance.on_order_rejected(pair, signal, reason)
-                return
+                return None
 
             # --- Limit gates: per-strategy + global trade caps + correlation ---
             strategy_trades = get_open_positions(hosted.magic, self.server_offset)
@@ -639,51 +724,21 @@ class Engine:
                 logger.info("%s/%s | risk check failed: %s", hosted.name, pair, reason)
                 self._reject(db_conn, hosted, signal, f"risk: {reason}")
                 instance.on_order_rejected(pair, signal, f"risk: {reason}")
-                return
+                return None
 
             # --- Sizing + broker volume constraints ---
             lot_size = self._size_position(pair, signal, balance, hosted)
             if lot_size is None or lot_size <= 0:
                 self._reject(db_conn, hosted, signal, "lot_size_zero")
                 instance.on_order_rejected(pair, signal, "lot_size_zero")
-                return
+                return None
 
             lot_size = self._apply_volume_constraints(pair, lot_size, db_conn, hosted, signal)
             if lot_size is None:
                 instance.on_order_rejected(pair, signal, "lot_below_min")
-                return
+                return None
 
-            # --- Execute ---
-            ticket = open_trade(
-                pair=pair,
-                direction=signal.action,
-                lot_size=lot_size,
-                stop_loss=signal.sl,
-                take_profit=signal.tp,
-                magic=hosted.magic,
-                max_retries=self.config.system.order_retry_attempts,
-                retry_delay_seconds=self.config.system.order_retry_delay_seconds,
-                guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
-                entry_reference=signal.entry_price,
-                min_reward_fraction=self.config.system.min_reward_fraction,
-            )
-
-            if ticket is None:
-                # open_trade returned no ticket. This covers both expected skips
-                # (the D046 spread guard / price-reverted guard, which executor
-                # logs at WARNING) and genuine broker failures (which executor
-                # logs at ERROR). The executor already logged the specific cause
-                # at the right level, so this summary stays at WARNING — a spread
-                # guard skip is not an engine error.
-                logger.warning(
-                    "%s/%s | open_trade returned no ticket — see executor log", hosted.name, pair
-                )
-                self._reject(db_conn, hosted, signal, "open_trade_no_ticket")
-                instance.on_order_rejected(pair, signal, "open_trade_no_ticket")
-                return
-
-            self._record_open(db_conn, hosted, pair, signal, lot_size, ticket, balance)
-            instance.on_fill(pair, signal, ticket)
+            return lot_size
 
     def _size_position(
         self, pair: str, signal: Signal, balance: float, hosted: _HostedStrategy
@@ -691,11 +746,11 @@ class Engine:
         """Compute lot size against the strategy's notional allocation (D053)."""
         import MetaTrader5 as mt5
 
-        from main import _pip_multiplier, _pip_value  # reuse the live helpers
+        from drift.pricing import pip_multiplier, pip_value
 
         sym_info = mt5.symbol_info(pair)
-        pip_mult = _pip_multiplier(pair)
-        pip_val = _pip_value(pair, info=sym_info)
+        pip_mult = pip_multiplier(pair)
+        pip_val = pip_value(pair, info=sym_info)
         sl_pips = abs(signal.entry_price - signal.sl) * pip_mult
 
         lot_size = calculate_position_size_allocated(
@@ -841,34 +896,27 @@ class Engine:
 
     def _check_strategy_drawdown(
         self, db_conn, hosted: _HostedStrategy, balance: float
-    ) -> tuple[bool, str]:
-        """Evaluate the per-strategy drawdown brake (D053).
+    ) -> tuple[bool, str, float, float]:
+        """Evaluate the per-strategy drawdown brake (D062).
 
-        Strategy equity = allocated baseline + realized P&L (this strategy's
-        closed trades in the DB) + floating P&L (its open positions' profit).
-        The peak comes from ``strategy_state`` and is kept up to date here.
+        Thin wrapper over the canonical :func:`drift.db.evaluate_strategy_drawdown`
+        (the single equity/drawdown implementation shared with the monitor) — it
+        only supplies this strategy's floating P&L from its open positions (by its
+        magic).  See D062 for the persisted-baseline equity model.
 
-        Realized P&L is read cheaply from ``get_stats(conn, strategy=name)``.
-        Detailed per-strategy accounting is Step 33; this is the reasonable
-        approximation the plan calls for and is sufficient for the brake.
+        Returns ``(ok, reason, equity, peak)``.
         """
-        allocated_baseline = balance * hosted.allocation_pct / 100.0
-
-        realized = get_stats(db_conn, strategy=hosted.name).get("total_pnl", 0.0) or 0.0
         positions = get_open_positions(hosted.magic, self.server_offset)
         floating = sum(p.get("profit", 0.0) for p in positions)
 
-        equity = strategy_equity(allocated_baseline, realized, floating)
-
-        # Peak = the higher of the stored high-water mark and the current equity.
-        # Read once, then persist; upsert keeps the stored value monotonic (it
-        # uses MAX internally), so this single round-trip is enough.
-        row = get_strategy_state(db_conn, hosted.name)
-        stored_peak = row["peak_equity"] if row else 0.0
-        peak = max(stored_peak, equity)
-        upsert_strategy_peak(db_conn, hosted.name, equity)
-
-        return check_strategy_drawdown(equity, peak, hosted.risk.max_drawdown_percent)
+        return evaluate_strategy_drawdown(
+            db_conn,
+            hosted.name,
+            hosted.allocation_pct,
+            balance,
+            floating,
+            hosted.risk.max_drawdown_percent,
+        )
 
     def _pause_strategy(self, db_conn, hosted: _HostedStrategy, reason: str, equity: float) -> None:
         """Pause one strategy on its own drawdown brake (keeps its positions)."""
@@ -884,8 +932,9 @@ class Engine:
             self._notify_bot_status(
                 self.bot_app.bot,
                 self.config.telegram.chat_id,
-                "paused",
-                f"Strategy {hosted.name} paused — {reason}",
+                "drawdown_strategy",
+                f"<b>{hosted.name}</b>: {reason}\nThis strategy is paused; the rest keep running. "
+                f"Open positions stay open — use /resume {hosted.name} when ready.",
             )
         )
 
@@ -900,8 +949,9 @@ class Engine:
             self._notify_bot_status(
                 self.bot_app.bot,
                 self.config.telegram.chat_id,
-                "paused",
-                f"Drawdown limit reached: {reason}",
+                "drawdown_global",
+                f"{reason}\nAll strategies paused. Open positions stay open — "
+                "review and use /resume when ready.",
             )
         )
 
@@ -943,8 +993,14 @@ class Engine:
         # tick).  The bot is NOT stopping — it closed the session and will sleep
         # until the next one — so use the calm "session_closed" status, never the
         # alarming "BOT STOPPED" (D057).
+        #
+        # For the routine session_close at 02:00, only fire the notification when
+        # at least one position was actually closed — quiet nights with no open
+        # trades should not generate noise (#7).
         closed = len(positions)
         if decision.reason == "session_close":
+            if closed == 0:
+                return
             detail = (
                 f"{hosted.name} — session closed, "
                 f"{closed} position(s) closed, sleeping until next session"

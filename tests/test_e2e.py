@@ -6,6 +6,7 @@ and a mocked MT5 layer. No MT5 installation required.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import sqlite3
 import sys
@@ -107,9 +108,7 @@ from drift.config import (  # noqa: E402
     BrokerConfig,
     DriftConfig,
     ReportsConfig,
-    RiskConfig,
     RiskGlobalConfig,
-    StrategyConfig,
     StrategyInstanceConfig,
     StrategyRiskConfig,
     SystemConfig,
@@ -127,11 +126,11 @@ from drift.db import (  # noqa: E402
 from drift.report import generate_weekly_report  # noqa: E402
 from drift.risk import (  # noqa: E402
     calculate_position_size,
-    check_all_risk,
     check_correlation,
     check_drawdown,
     check_max_trades,
 )
+from drift.strategies.daily_lull import DailyLullParams  # noqa: E402
 from drift.trailing import check_tp, update_trailing  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -157,10 +156,7 @@ def _make_config() -> DriftConfig:
                 allocation_pct=100.0,
                 pairs=["AUDNZD", "EURCHF", "EURJPY", "GBPJPY", "EURGBP"],
                 risk=StrategyRiskConfig(),
-                params={
-                    field: getattr(StrategyConfig(), field)
-                    for field in StrategyConfig.__dataclass_fields__
-                },
+                params=dataclasses.asdict(DailyLullParams()),
             )
         },
     )
@@ -220,18 +216,6 @@ class TestFullSignalToTradeFlow(unittest.TestCase):
     def tearDown(self) -> None:
         self.conn.close()
         Path(self.db_path).unlink(missing_ok=True)
-
-    def test_risk_check_passes_with_clean_state(self) -> None:
-        ok, reason = check_all_risk(
-            balance=10000.0,
-            peak_balance=10000.0,
-            open_trades=[],
-            new_pair="EURUSD",
-            new_direction="buy",
-            config=RiskConfig(),
-        )
-        self.assertTrue(ok)
-        self.assertEqual(reason, "")
 
     def test_position_size_positive(self) -> None:
         lot = calculate_position_size(
@@ -299,29 +283,9 @@ class TestRiskRejectionMaxTrades(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("max trades reached", reason)
 
-    def test_check_all_risk_fails_on_max_trades(self) -> None:
-        open_trades = self._make_4_open_trades()
-        ok, reason = check_all_risk(
-            balance=10000.0,
-            peak_balance=10000.0,
-            open_trades=open_trades,
-            new_pair="EURGBP",
-            new_direction="buy",
-            config=RiskConfig(),
-        )
-        self.assertFalse(ok)
-        self.assertIn("max trades reached", reason)
-
     def test_rejected_signal_stored_with_rejection_reason(self) -> None:
         open_trades = self._make_4_open_trades()
-        ok, reason = check_all_risk(
-            balance=10000.0,
-            peak_balance=10000.0,
-            open_trades=open_trades,
-            new_pair="EURGBP",
-            new_direction="buy",
-            config=RiskConfig(),
-        )
+        ok, reason = check_max_trades(open_trades, max_trades=4)
         self.assertFalse(ok)
 
         signal = _make_signal(pair="EURCHF", action="buy")
@@ -386,18 +350,16 @@ class TestCorrelationRejection(unittest.TestCase):
         # Only 1 trade selling EUR and 0 buying EUR — should pass.
         self.assertTrue(ok)
 
-    def test_two_eur_buy_trades_blocks_third_via_check_all_risk(self) -> None:
+    def test_two_eur_buy_trades_blocks_third_via_correlation(self) -> None:
         open_trades = [
             {"pair": "EURUSD", "direction": "buy"},
             {"pair": "EURGBP", "direction": "buy"},
         ]
-        ok, reason = check_all_risk(
-            balance=10000.0,
-            peak_balance=10000.0,
+        ok, reason = check_correlation(
             open_trades=open_trades,
             new_pair="EURCAD",
             new_direction="buy",
-            config=RiskConfig(),
+            max_same=2,
         )
         self.assertFalse(ok)
         self.assertIn("EUR", reason)
