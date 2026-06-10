@@ -44,8 +44,8 @@ from drift.config import (  # noqa: E402
 from drift.db import (  # noqa: E402
     get_strategy_state,
     log_trade,
+    seed_strategy_baseline,
     set_strategy_paused,
-    upsert_strategy_peak,
 )
 from tests import test_session_fixes as tsf  # noqa: E402
 
@@ -131,10 +131,10 @@ def test_strategy_drawdown_pauses_only_that_strategy():
     conn.close()
     config = _two_strategy_config(a_alloc=50.0, b_alloc=50.0, a_max_dd=10.0)
 
-    # alpha: baseline = 10000 * 50% = 5000.  Seed a peak well above current equity
-    # so the brake trips; beta stays healthy.
+    # alpha: baseline = 10000 * 50% = 5000.  Seed the persisted baseline and peak
+    # at 5000 (D062) so the floating loss below trips the brake; beta stays healthy.
     with _db_ctx(db_path)[0] as seed_conn:
-        upsert_strategy_peak(seed_conn, "alpha", 5000.0)
+        seed_strategy_baseline(seed_conn, "alpha", 5000.0, 5000.0)
 
     bot_app = SimpleNamespace(bot=SimpleNamespace())
     fired: list = []
@@ -174,7 +174,7 @@ def test_strategy_drawdown_does_not_touch_global_state():
     config = _two_strategy_config(a_max_dd=5.0)
 
     with _db_ctx(db_path)[0] as seed_conn:
-        upsert_strategy_peak(seed_conn, "alpha", 5000.0)
+        seed_strategy_baseline(seed_conn, "alpha", 5000.0, 5000.0)
 
     state = SimpleNamespace(paused=False, stop_requested=False)
     bot_app = SimpleNamespace(bot=SimpleNamespace())
@@ -197,7 +197,7 @@ def test_strategy_already_paused_does_not_refire():
     config = _two_strategy_config(a_max_dd=5.0)
 
     with _db_ctx(db_path)[0] as seed_conn:
-        upsert_strategy_peak(seed_conn, "alpha", 5000.0)
+        seed_strategy_baseline(seed_conn, "alpha", 5000.0, 5000.0)
         set_strategy_paused(seed_conn, "alpha", True)
 
     fired: list = []

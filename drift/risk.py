@@ -248,6 +248,34 @@ def check_strategy_risk(
     return True, ""
 
 
+def seed_baseline_capital(
+    balance: float,
+    allocation_pct: float,
+    realized_lifetime: float,
+) -> float:
+    """Compute the persisted notional baseline for a strategy's equity (D062).
+
+    ``baseline_capital = balance * allocation_pct/100 - realized_lifetime``.
+
+    The MT5 ``balance`` already includes realized P&L, so the notional slice
+    ``balance * allocation_pct/100`` already carries the strategy's past realized
+    P&L.  Subtracting ``realized_lifetime`` here removes it from the baseline, so
+    that :func:`strategy_equity` (which adds ``realized`` back in) does NOT count
+    realized P&L twice.  The result is that at seed time the equity starts exactly
+    at the allocated slice and forward realized P&L is counted once.  Seeded once
+    and persisted in ``strategy_state.baseline_capital``.
+
+    Args:
+        balance: Full account balance at seed time (MT5 balance, realized).
+        allocation_pct: Strategy's notional allocation of the account (0-100).
+        realized_lifetime: Strategy's cumulative realized P&L at seed time.
+
+    Returns:
+        The notional baseline capital in account currency.
+    """
+    return balance * allocation_pct / 100.0 - realized_lifetime
+
+
 def strategy_equity(
     allocated_baseline: float,
     realized_pnl: float,

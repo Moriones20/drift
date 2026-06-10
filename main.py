@@ -19,6 +19,7 @@ from pathlib import Path
 from drift.config import DriftConfig, RiskConfig, load_config
 from drift.db import (
     close_trade_record,
+    evaluate_strategy_drawdown,
     get_connection,
     get_stats,
     get_strategy_state,
@@ -27,7 +28,6 @@ from drift.db import (
     log_event,
     log_peak_balance,
     set_strategy_paused,
-    upsert_strategy_peak,
 )
 from drift.engine import Engine
 from drift.executor import close_trade, get_open_positions
@@ -45,8 +45,6 @@ from drift.mt5_client import (
 from drift.report import generate_weekly_report
 from drift.risk import (
     check_drawdown,
-    check_strategy_drawdown,
-    strategy_equity,
 )
 from drift.telegram_bot import (
     BotState,
@@ -465,22 +463,19 @@ def _check_strategy_drawdown_pause(
     config: DriftConfig,
     bot_app,
 ) -> None:
-    """Per-strategy drawdown brake — pauses only this strategy (D053, D056).
+    """Per-strategy drawdown brake — pauses only this strategy (D053, D062).
 
-    Computes the strategy's individual equity curve
-    (``allocated_baseline + realized_pnl + floating_pnl``), keeps its peak in
-    ``strategy_state``, and when drawdown breaches the strategy's own limit sets
-    ``strategy_state.paused`` so the engine stops opening new entries for it on
-    its next dispatch.  Open positions are kept (pause = hold, D053) — they stay
-    protected by their server-side SL/TP.
+    The equity/drawdown computation is the canonical
+    :func:`drift.db.evaluate_strategy_drawdown` (the single implementation shared
+    with the engine — D062); this function only supplies the strategy's floating
+    P&L from its open positions and keeps the pause/notify side-effects.  When
+    drawdown breaches the strategy's own limit it sets ``strategy_state.paused`` so
+    the engine stops opening new entries for it on its next dispatch.  Open
+    positions are kept (pause = hold, D053) — protected by their server-side SL/TP.
 
-    allocated_baseline is computed from the CURRENT account balance
-    (``balance * allocation_pct/100``).  A baseline anchored to the balance at
-    the moment the strategy was enabled would be a more stable denominator, but
-    it is not persisted yet; the current-balance approximation tracks the
-    notional allocation the strategy actually sizes against (D053) and is
-    consistent with the engine's own per-strategy brake in
-    ``Engine._check_strategy_drawdown`` (same formula), so both contexts agree.
+    Equity is built on the persisted notional baseline, not the live balance, so
+    realized P&L is counted once and strategies do not contaminate each other
+    (D062).
 
     Must be called while holding ``_trade_lock`` (the caller does).
     """
@@ -488,20 +483,20 @@ def _check_strategy_drawdown_pause(
     if instance is None:  # pragma: no cover - defensive
         return
 
-    allocated_baseline = balance * instance.allocation_pct / 100.0
     floating = sum(p.get("profit", 0.0) for p in positions)
 
     with get_connection() as db_conn:
-        realized = get_stats(db_conn, strategy=strategy_name).get("total_pnl", 0.0) or 0.0
-        equity = strategy_equity(allocated_baseline, realized, floating)
-
         row = get_strategy_state(db_conn, strategy_name)
-        stored_peak = (row["peak_equity"] if row else 0.0) or 0.0
         already_paused = bool(row["paused"]) if row else False
-        peak = max(stored_peak, equity)
-        upsert_strategy_peak(db_conn, strategy_name, equity)
 
-        ok, reason = check_strategy_drawdown(equity, peak, instance.risk.max_drawdown_percent)
+        ok, reason, equity, _peak = evaluate_strategy_drawdown(
+            db_conn,
+            strategy_name,
+            instance.allocation_pct,
+            balance,
+            floating,
+            instance.risk.max_drawdown_percent,
+        )
         if ok or already_paused:
             return
 

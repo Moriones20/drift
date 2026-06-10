@@ -36,9 +36,9 @@ import pandas as pd
 from drift.config import DriftConfig, StrategyRiskConfig
 from drift.db import (
     close_trade_record,
+    evaluate_strategy_drawdown,
     get_connection,
     get_open_trades,
-    get_stats,
     get_strategy_state,
     get_trade_by_ticket,
     log_event,
@@ -46,7 +46,6 @@ from drift.db import (
     log_signal,
     log_trade,
     set_strategy_paused,
-    upsert_strategy_peak,
 )
 from drift.executor import close_trade, get_open_positions, open_trade
 from drift.mt5_client import (
@@ -59,9 +58,7 @@ from drift.mt5_client import (
 from drift.risk import (
     calculate_position_size_allocated,
     check_drawdown,
-    check_strategy_drawdown,
     check_strategy_risk,
-    strategy_equity,
 )
 from drift.strategies.base import Decision, Signal, StrategyContext
 from drift.strategies.base import get_strategy as _get_strategy
@@ -617,9 +614,11 @@ class Engine:
                 return
 
             # --- Per-strategy drawdown brake (pauses only this strategy) ---
-            ok, reason = self._check_strategy_drawdown(db_conn, hosted, balance)
+            ok, reason, strategy_equity_value, _peak = self._check_strategy_drawdown(
+                db_conn, hosted, balance
+            )
             if not ok:
-                self._pause_strategy(db_conn, hosted, reason, equity)
+                self._pause_strategy(db_conn, hosted, reason, strategy_equity_value)
                 self._reject(db_conn, hosted, signal, reason)
                 instance.on_order_rejected(pair, signal, reason)
                 return
@@ -841,34 +840,27 @@ class Engine:
 
     def _check_strategy_drawdown(
         self, db_conn, hosted: _HostedStrategy, balance: float
-    ) -> tuple[bool, str]:
-        """Evaluate the per-strategy drawdown brake (D053).
+    ) -> tuple[bool, str, float, float]:
+        """Evaluate the per-strategy drawdown brake (D062).
 
-        Strategy equity = allocated baseline + realized P&L (this strategy's
-        closed trades in the DB) + floating P&L (its open positions' profit).
-        The peak comes from ``strategy_state`` and is kept up to date here.
+        Thin wrapper over the canonical :func:`drift.db.evaluate_strategy_drawdown`
+        (the single equity/drawdown implementation shared with the monitor) — it
+        only supplies this strategy's floating P&L from its open positions (by its
+        magic).  See D062 for the persisted-baseline equity model.
 
-        Realized P&L is read cheaply from ``get_stats(conn, strategy=name)``.
-        Detailed per-strategy accounting is Step 33; this is the reasonable
-        approximation the plan calls for and is sufficient for the brake.
+        Returns ``(ok, reason, equity, peak)``.
         """
-        allocated_baseline = balance * hosted.allocation_pct / 100.0
-
-        realized = get_stats(db_conn, strategy=hosted.name).get("total_pnl", 0.0) or 0.0
         positions = get_open_positions(hosted.magic, self.server_offset)
         floating = sum(p.get("profit", 0.0) for p in positions)
 
-        equity = strategy_equity(allocated_baseline, realized, floating)
-
-        # Peak = the higher of the stored high-water mark and the current equity.
-        # Read once, then persist; upsert keeps the stored value monotonic (it
-        # uses MAX internally), so this single round-trip is enough.
-        row = get_strategy_state(db_conn, hosted.name)
-        stored_peak = row["peak_equity"] if row else 0.0
-        peak = max(stored_peak, equity)
-        upsert_strategy_peak(db_conn, hosted.name, equity)
-
-        return check_strategy_drawdown(equity, peak, hosted.risk.max_drawdown_percent)
+        return evaluate_strategy_drawdown(
+            db_conn,
+            hosted.name,
+            hosted.allocation_pct,
+            balance,
+            floating,
+            hosted.risk.max_drawdown_percent,
+        )
 
     def _pause_strategy(self, db_conn, hosted: _HostedStrategy, reason: str, equity: float) -> None:
         """Pause one strategy on its own drawdown brake (keeps its positions)."""

@@ -335,7 +335,7 @@ def test_open_routes_to_open_trade_with_effective_magic():
     with (
         mock.patch.object(engine_mod, "get_connection") as gc,
         mock.patch.object(engine_mod, "check_drawdown", return_value=(True, "")),
-        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "")),
+        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
         mock.patch.object(engine_mod, "check_strategy_risk", return_value=(True, "")),
         mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
         mock.patch.object(engine_mod, "get_open_trades", return_value=[]),
@@ -362,7 +362,7 @@ def test_open_rejected_by_risk_calls_on_order_rejected():
     with (
         mock.patch.object(engine_mod, "get_connection") as gc,
         mock.patch.object(engine_mod, "check_drawdown", return_value=(True, "")),
-        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "")),
+        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
         mock.patch.object(
             engine_mod, "check_strategy_risk", return_value=(False, "max trades reached (4/4)")
         ),

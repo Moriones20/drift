@@ -95,6 +95,29 @@ Estado: implementada vía /orchestrate en rama `feat/multi-strategy-platform` (2
 - **`optimize_lull.py`** ahora es más lento (~55s/par/combo) por correr `on_bar` sobre todo el histórico — inherente a D055.
 - **Portfolio backtest** (varias estrategias en una curva de equity) — diferido hasta la estrategia #2 (D055).
 
+## Phase 2.7 — Hardening del modelo de riesgo (pre-live)
+
+Diseño: D062–D064, `ROADMAP.md` Phase 2.7. Origen: auditoría 2026-06-09 (ver nota abajo). Se ejecuta **antes** de la Phase 3 (el modelo de riesgo por estrategia debe ser correcto antes de capital real). Restricción: el Lull sigue en paper; el sembrado del baseline (Step 37) reinicia la curva de drawdown por estrategia desde el deploy (intencional).
+
+Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 independientes (paralelizables, distintos archivos).
+
+### Batch H-A — Modelo de equity (Step 37) — fundación
+- [x] 37. **Equity canónica + baseline persistido** (D062, arregla #1, #5): columna `baseline_capital` en `strategy_state` (migración idempotente); función canónica equity/drawdown en `risk.py` que reemplaza las 3 implementaciones (engine/monitor/telegram); sembrado `baseline = balance_seed×alloc/100 − realized_lifetime_seed` + reset del peak inflado en la 1ª computación; fix `get_stats(strategy=)` peak. Tests.
+  - Pure `seed_baseline_capital` en `risk.py`; orquestación canónica `evaluate_strategy_drawdown(conn, strategy, allocation_pct, balance, floating, max_dd) -> (ok, reason, equity, peak)` + `seed_strategy_baseline` (escritura directa) en `db.py`; engine y monitor reapuntados al helper único (telegram queda para Step 39). 299 tests verdes.
+
+### Batch H-B — Resume + display (Steps 38-39) — dependen de 37
+- [ ] 38. **`/resume` resetea el peak por estrategia** (D063, arregla #2, #3): `reset_strategy_peak` (escritura directa); `/resume <estrategia>` resetea peak + limpia pausa; global sin tocar (diferido). Tests.
+- [ ] 39. **Telegram usa la equity canónica** (#4): `/balance` y `/strategies` con el helper de 37 + floating real por magic. Tests.
+
+### Batch H-C — Pausa y limpieza (Steps 40-42) — independientes
+- [ ] 40. **Pausa bloquea solo aperturas** (D064, arregla #6, #9): estrategias pausadas siguen agendadas; `open` se descarta bajo pausa, `close`/`close_all` se honran; log de pausa 1×/tick. Tests.
+- [ ] 41. **Limpieza** (#7, #10, #11): mover `_pip_multiplier`/`_pip_value` a módulo compartido; borrar `closed_bars`/`check_all_risk`/`StrategyConfig`; notif "SESSION CLOSED" solo si cerró ≥1. Tests/ruff.
+- [ ] 42. **Reintentos fuera del lock** (#8): sacar los retries de `open_trade` de `_trade_lock` (sizing/gating bajo lock → soltar → ejecutar+retries → re-lock para registrar). Concurrencia delicada, test propio.
+
+#### Follow-ups de la Phase 2.7
+- **Reset del peak global en `/resume` global** — diferido (D063): el peak global se almacena event-based (`peak_balance` + `MAX` en `get_stats`); bajarlo limpio necesita su propio diseño (tabla con columna directa o evento `peak_reset`). El freno global conserva su rigidez hasta entonces.
+- **Re-seed del baseline al cambiar `allocation_pct`** (D062): cambiar la asignación deja el baseline obsoleto; poner `baseline_capital` a NULL fuerza el recálculo. Sin automatizar.
+
 ## Phase 3 — Live
 
 ### Session 8: Go Live (Steps 22-26)
@@ -206,6 +229,13 @@ Estado: implementada vía /orchestrate en rama `feat/multi-strategy-platform` (2
 - Tests: **129 pasan** (nuevo `test_startup_resilience.py`).
 - **DNS:** recuperado; bot reiniciado limpio (Telegram registró 8 comandos, offset UTC+3, durmiendo hasta 09-jun 21:00 servidor). D046+D047+D048+D049 todos live.
 - **Task Scheduler "Drift" reforzada (2ª capa de robustez):** ya tenía restart-on-failure 3×1min — insuficiente (los 3 reintentos cayeron contra el mismo DNS muerto en ~3 min y se agotaron). Ahora **RestartCount=5, RestartInterval=PT2M, StartWhenAvailable=True** (resto intacto: ExecutionTimeLimit ilimitado, MultipleInstances=IgnoreNew). Combinado con la ventana de ~7 min de reintento interno de D049, tolera apagones de red prolongados.
+
+### Auditoría 2026-06-09 — modelo de riesgo por estrategia (→ Phase 2.7, D062–D064)
+- **Disparador:** auditoría del núcleo de la Phase 2.6 (engine/strategy/risk/config/db/telegram/main). Suite 290 passed / 2 skipped, ruff limpio — los hallazgos son de **corrección de lógica de riesgo**, no crashes.
+- **Hallazgo raíz (#1):** la equity por estrategia **cuenta el realized dos veces** (`engine._check_strategy_drawdown` + `main._check_strategy_drawdown_pause`): `baseline = balance_vivo × alloc` ya incluye el realized, y `strategy_equity()` lo re-suma → `equity = inicial + 2·realized + floating`. Freno por estrategia ~2× demasiado sensible al 100%; **contaminación cruzada** entre estrategias en multi-estrategia (rompe el aislamiento de D053).
+- **Consecuencias:** #3 (peak monótono que no resetea), #4 (display de drawdown en Telegram con una 3ª fórmula incoherente: peak inflado vs balance crudo), #2 (`/resume <estrategia>` inútil: el monitor re-pausa en ≤30s).
+- **Otros:** #5 (`get_stats(strategy=)` devuelve peak global), #6 (time-stop 02:00 no corre bajo pausa global), #7 (notif "SESSION CLOSED 0 positions" cada noche), #8 (retries ~75s bajo `_trade_lock` bloquean el monitor), #9 (log spam por par), #10 (`closed_bars` muerto en prod), #11 (engine importa pip helpers desde main), + código muerto (`check_all_risk`, `StrategyConfig`).
+- **Plan (sesión /spec):** Phase 2.7 Steps 37-42, decisiones D062 (baseline persistido), D063 (reset de peak en `/resume`), D064 (pausa bloquea solo aperturas). Reset del peak global diferido. Empezar por Step 37.
 
 ### Diseño 2026-06-08 — Plataforma multi-estrategia (sesión /spec, D050–D057)
 - **Pivote planeado:** Drift pasa de bot mono-estrategia a plataforma multi-estrategia (D050). El framework se construye **antes** del go-live (Phase 2.6), en paper (HC4). Daily Lull = instancia #1.

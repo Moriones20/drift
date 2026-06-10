@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from drift.risk import check_strategy_drawdown, seed_baseline_capital, strategy_equity
+
 if TYPE_CHECKING:
     from drift.strategies.base import Signal
 
@@ -70,10 +72,11 @@ CREATE TABLE IF NOT EXISTS bot_events (
 );
 
 CREATE TABLE IF NOT EXISTS strategy_state (
-    strategy    TEXT PRIMARY KEY,
-    peak_equity REAL NOT NULL,
-    paused      INTEGER NOT NULL DEFAULT 0,
-    updated_at  TEXT NOT NULL
+    strategy         TEXT PRIMARY KEY,
+    peak_equity      REAL NOT NULL,
+    paused           INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL,
+    baseline_capital REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);
@@ -337,13 +340,21 @@ def _migrate_strategy_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             CREATE TABLE strategy_state (
-                strategy    TEXT PRIMARY KEY,
-                peak_equity REAL NOT NULL,
-                paused      INTEGER NOT NULL DEFAULT 0,
-                updated_at  TEXT NOT NULL
+                strategy         TEXT PRIMARY KEY,
+                peak_equity      REAL NOT NULL,
+                paused           INTEGER NOT NULL DEFAULT 0,
+                updated_at       TEXT NOT NULL,
+                baseline_capital REAL
             )
             """
         )
+        changed = True
+
+    # --- strategy_state.baseline_capital (D062) ---
+    # NULL = not seeded yet; seeded once by the canonical equity helper.
+    if "baseline_capital" not in _table_columns(conn, "strategy_state"):
+        logger.info("Migration D062: adding baseline_capital column to strategy_state")
+        conn.execute("ALTER TABLE strategy_state ADD COLUMN baseline_capital REAL")
         changed = True
 
     # --- idx_trades_strategy ---
@@ -688,9 +699,12 @@ def get_stats(conn: sqlite3.Connection, strategy: str | None = None) -> dict:
     ).fetchone()
 
     # Also consider recorded peak_balance events (captures peaks between trades).
+    # When a strategy is given, filter to its own events (mirrors the trades
+    # query above); a NULL strategy aggregates across all (D062).
     event_row = conn.execute(
         "SELECT MAX(balance) AS peak_balance_events FROM bot_events"
-        " WHERE event_type = 'peak_balance'"
+        " WHERE event_type = 'peak_balance' AND (? IS NULL OR strategy = ?)",
+        (strategy, strategy),
     ).fetchone()
 
     total = row["total_trades"] or 0
@@ -744,6 +758,105 @@ def upsert_strategy_peak(conn: sqlite3.Connection, strategy: str, peak_equity: f
     )
     conn.commit()
     logger.debug("Upserted peak_equity=%.2f for strategy=%s", peak_equity, strategy)
+
+
+def seed_strategy_baseline(
+    conn: sqlite3.Connection,
+    strategy: str,
+    baseline_capital: float,
+    equity: float,
+) -> None:
+    """Seed the persisted notional baseline and reset the peak for a strategy (D062).
+
+    Direct write (NOT MAX): unlike :func:`upsert_strategy_peak`, this sets
+    ``peak_equity = equity`` unconditionally, overwriting any previous (inflated)
+    peak so the per-strategy drawdown curve restarts clean from the deploy.  Called
+    once when ``baseline_capital`` is still NULL.
+
+    Args:
+        conn: Open SQLite connection.
+        strategy: Strategy name (primary key of strategy_state).
+        baseline_capital: The notional baseline to persist (see
+            :func:`drift.risk.seed_baseline_capital`).
+        equity: The freshly computed equity to set as the new peak.
+    """
+    updated_at = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO strategy_state (strategy, peak_equity, paused, updated_at, baseline_capital)
+        VALUES (?, ?, 0, ?, ?)
+        ON CONFLICT(strategy) DO UPDATE SET
+            peak_equity      = excluded.peak_equity,
+            updated_at       = excluded.updated_at,
+            baseline_capital = excluded.baseline_capital
+        """,
+        (strategy, equity, updated_at, baseline_capital),
+    )
+    conn.commit()
+    logger.info(
+        "Seeded baseline_capital=%.2f, reset peak_equity=%.2f for strategy=%s",
+        baseline_capital,
+        equity,
+        strategy,
+    )
+
+
+def evaluate_strategy_drawdown(
+    conn: sqlite3.Connection,
+    strategy: str,
+    allocation_pct: float,
+    balance: float,
+    floating: float,
+    max_drawdown_percent: float,
+) -> tuple[bool, str, float, float]:
+    """Canonical per-strategy equity + drawdown brake (D062).
+
+    The single implementation of the per-strategy equity curve, shared by the
+    engine and the monitor (it replaces the divergent formulas that double-counted
+    realized P&L — D062).  Equity is built on a persisted notional baseline, not
+    the live balance:
+
+        baseline_capital = balance * allocation_pct/100 - realized_lifetime_seed
+        equity(t)        = baseline_capital + realized_lifetime(t) + floating(t)
+
+    On the first call (``baseline_capital`` still NULL) the baseline is seeded once
+    via :func:`drift.risk.seed_baseline_capital` and the existing (inflated) peak is
+    reset to the freshly computed equity — the drawdown curve restarts clean from
+    the deploy.  On every call the monotonic peak is updated via
+    :func:`upsert_strategy_peak`.
+
+    Args:
+        conn: Open SQLite connection.
+        strategy: Strategy name.
+        allocation_pct: Strategy's notional allocation of the account (0-100).
+        balance: Full account balance (MT5 balance, realized).
+        floating: Unrealized P&L of the strategy's open positions.
+        max_drawdown_percent: Per-strategy drawdown limit, in percent.
+
+    Returns:
+        ``(ok, reason, equity, peak)`` — ``ok`` is False once drawdown reaches the
+        limit; ``reason`` is empty when ``ok`` is True.
+    """
+    realized_lifetime = get_stats(conn, strategy=strategy).get("total_pnl", 0.0) or 0.0
+
+    row = get_strategy_state(conn, strategy)
+    baseline = row["baseline_capital"] if row else None
+
+    if baseline is None:
+        # First call: seed the baseline once and restart the peak from the
+        # freshly computed equity (overwriting any old inflated peak — D062).
+        baseline = seed_baseline_capital(balance, allocation_pct, realized_lifetime)
+        equity = strategy_equity(baseline, realized_lifetime, floating)
+        seed_strategy_baseline(conn, strategy, baseline, equity)
+        peak = equity
+    else:
+        # Already seeded: keep the monotonic high-water mark (upsert uses MAX).
+        equity = strategy_equity(baseline, realized_lifetime, floating)
+        peak = max((row["peak_equity"] or 0.0), equity)
+        upsert_strategy_peak(conn, strategy, equity)
+
+    ok, reason = check_strategy_drawdown(equity, peak, max_drawdown_percent)
+    return ok, reason, equity, peak
 
 
 def set_strategy_paused(conn: sqlite3.Connection, strategy: str, paused: bool) -> None:

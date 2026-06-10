@@ -394,6 +394,17 @@ class TestStrategyState:
             state = db.get_strategy_state(conn, "daily_lull")
         assert state["peak_equity"] == pytest.approx(1200.0)
 
+    def test_seed_baseline_overwrites_peak_directly(self, tmp_path: Path) -> None:
+        # seed_strategy_baseline is a DIRECT write (not MAX): it can LOWER the
+        # stored peak, unlike upsert_strategy_peak (D062).
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.upsert_strategy_peak(conn, "daily_lull", 5000.0)
+            db.seed_strategy_baseline(conn, "daily_lull", 800.0, 1000.0)
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert state["peak_equity"] == pytest.approx(1000.0)  # lowered from 5000
+        assert state["baseline_capital"] == pytest.approx(800.0)
+
     def test_get_all_strategy_states_empty(self, tmp_path: Path) -> None:
         p = _make_db(tmp_path)
         with db.get_connection(p) as conn:
@@ -460,3 +471,97 @@ class TestGetStatsStrategyFilter:
             stats = db.get_stats(conn, strategy="daily_lull")
         assert stats["total_trades"] == 1
         assert stats["total_pnl"] == pytest.approx(10.0)
+
+    def test_peak_balance_events_filtered_by_strategy(self, tmp_path: Path) -> None:
+        # peak_balance events for two strategies; the higher one belongs to the
+        # OTHER strategy.  get_stats(strategy=) must NOT leak it (D062 #5).
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.log_peak_balance(conn, 1100.0, strategy="daily_lull")
+            db.log_peak_balance(conn, 5000.0, strategy="london_breakout")
+            daily = db.get_stats(conn, strategy="daily_lull")
+            london = db.get_stats(conn, strategy="london_breakout")
+            all_stats = db.get_stats(conn)
+        assert daily["peak_balance"] == pytest.approx(1100.0)  # not 5000
+        assert london["peak_balance"] == pytest.approx(5000.0)
+        assert all_stats["peak_balance"] == pytest.approx(5000.0)  # None aggregates
+
+
+# ---------------------------------------------------------------------------
+# Canonical per-strategy equity / drawdown (D062)
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateStrategyDrawdown:
+    def _insert_closed_trade(
+        self, conn: sqlite3.Connection, strategy: str, profit_loss: float
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO trades (strategy, pair, direction, entry_price, stop_loss, take_profit,
+                                position_size, balance_at_open, opened_at, closed_at,
+                                exit_price, profit_loss, close_reason, duration_minutes)
+            VALUES (?, 'EURCHF', 'buy', 0.915, 0.910, 0.920, 0.01, 1000.0,
+                    '2026-01-01T22:00:00+00:00', '2026-01-01T22:30:00+00:00',
+                    0.919, ?, 'take_profit', 30)
+            """,
+            (strategy, profit_loss),
+        )
+        conn.commit()
+
+    def test_seed_removes_double_count_at_100pct(self, tmp_path: Path) -> None:
+        # Balance 1200 includes +200 of past realized; allocation 100%.  On the
+        # first evaluation the baseline is seeded and equity must equal the
+        # allocated slice (1200), NOT slice + realized (1400) — the old bug.
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            self._insert_closed_trade(conn, "daily_lull", 200.0)
+            ok, _reason, equity, peak = db.evaluate_strategy_drawdown(
+                conn, "daily_lull", 100.0, 1200.0, 0.0, 10.0
+            )
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert equity == pytest.approx(1200.0)
+        assert peak == pytest.approx(1200.0)
+        assert ok is True
+        assert state["baseline_capital"] == pytest.approx(1000.0)  # 1200 - 200
+
+    def test_forward_realized_counted_once(self, tmp_path: Path) -> None:
+        # Seed with 200 realized, then 50 more realized forward; equity advances
+        # by exactly +50 from the seed slice (1200 -> 1250), counted once.
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            self._insert_closed_trade(conn, "daily_lull", 200.0)
+            db.evaluate_strategy_drawdown(conn, "daily_lull", 100.0, 1200.0, 0.0, 10.0)
+            self._insert_closed_trade(conn, "daily_lull", 50.0)  # forward realized
+            _ok, _reason, equity, _peak = db.evaluate_strategy_drawdown(
+                conn, "daily_lull", 100.0, 1250.0, 0.0, 10.0
+            )
+        assert equity == pytest.approx(1250.0)
+
+    def test_inflated_peak_is_reset_on_first_seed(self, tmp_path: Path) -> None:
+        # A pre-existing inflated peak (e.g. from the old double-counting code)
+        # must be reset to the freshly computed equity on the first seed (D062).
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.upsert_strategy_peak(conn, "daily_lull", 9999.0)  # inflated, baseline NULL
+            ok, _reason, equity, peak = db.evaluate_strategy_drawdown(
+                conn, "daily_lull", 100.0, 1000.0, 0.0, 10.0
+            )
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert equity == pytest.approx(1000.0)
+        assert peak == pytest.approx(1000.0)  # NOT 9999
+        assert state["peak_equity"] == pytest.approx(1000.0)
+        assert ok is True  # drawdown restarts clean from the deploy
+
+    def test_seeded_baseline_persists_and_brake_trips(self, tmp_path: Path) -> None:
+        # After seeding, a later floating loss trips the brake against the
+        # established baseline/peak (baseline no longer reseeded).
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.evaluate_strategy_drawdown(conn, "daily_lull", 100.0, 1000.0, 0.0, 10.0)
+            ok, reason, equity, _peak = db.evaluate_strategy_drawdown(
+                conn, "daily_lull", 100.0, 1000.0, -150.0, 10.0
+            )
+        assert equity == pytest.approx(850.0)  # 1000 baseline + 0 realized - 150 floating
+        assert ok is False
+        assert "strategy drawdown" in reason
