@@ -109,10 +109,9 @@ class EngineMarketData:
     def candles(self, pair: str, timeframe: str, count: int) -> pd.DataFrame:
         """Return the last *count* CLOSED candles for ``(pair, timeframe)``.
 
-        The closed-bar filter (``index < bar_close_time``) mirrors
-        :func:`closed_bars` (D045).  Results are cached by
-        ``(pair, timeframe)`` for this tick; the cached frame is the raw fetch,
-        so the filter is applied on every call cheaply.
+        The closed-bar filter (``index < bar_close_time``) drops the still-forming
+        bar (D045).  Results are cached by ``(pair, timeframe)`` for this tick; the
+        cached frame is the raw fetch, so the filter is applied on every call cheaply.
         """
         key = (pair, timeframe)
         df = self._cache.get(key)
