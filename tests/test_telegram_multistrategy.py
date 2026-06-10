@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import drift.db as db
 from drift.config import (
     BrokerConfig,
@@ -465,3 +467,135 @@ class TestWeeklyReportStrategySection:
 
         assert "daily_lull" in report
         assert "scalper" in report
+
+
+# ---------------------------------------------------------------------------
+# /resume <strategy> resets peak (D063)
+# ---------------------------------------------------------------------------
+
+
+class TestResumeResetsStrategyPeak:
+    """After /resume <strategy>, the stored peak_equity equals the current equity
+    so the per-strategy drawdown is ~0 and the monitor will not immediately re-pause."""
+
+    def test_peak_is_reset_to_current_equity_on_resume(self, tmp_path: Path) -> None:
+        # Arrange: strategy is paused with an old high peak.
+        # baseline_capital seeded so that equity = 850 (drawdown from peak 1000).
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            # Seed baseline = 1000, set peak = 1000 (high-water before drawdown)
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.set_strategy_paused(conn, "daily_lull", True)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update(args=["daily_lull"])
+
+        # No open MT5 positions → floating = 0.  get_open_positions returns []
+        # when MT5 is not connected (returns None → []).
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["resume"](update, context))
+
+        with db.get_connection(db_path) as conn:
+            row = db.get_strategy_state(conn, "daily_lull")
+
+        # Equity = baseline(1000) + realized(0) + floating(0) = 1000
+        assert row is not None
+        assert row["peak_equity"] == pytest.approx(1000.0)
+        assert bool(row["paused"]) is False
+
+    def test_drawdown_is_zero_after_resume(self, tmp_path: Path) -> None:
+        # After resume with no positions, peak == equity == 1000 → drawdown 0%.
+        from drift.risk import check_strategy_drawdown
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.set_strategy_paused(conn, "daily_lull", True)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update(args=["daily_lull"])
+
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["resume"](update, context))
+
+        with db.get_connection(db_path) as conn:
+            row = db.get_strategy_state(conn, "daily_lull")
+
+        ok, reason = check_strategy_drawdown(1000.0, row["peak_equity"], 10.0)
+        assert ok is True  # monitor would NOT re-pause immediately
+        assert reason == ""
+
+    def test_resume_without_baseline_skips_peak_reset(self, tmp_path: Path) -> None:
+        # If baseline_capital is NULL (strategy never evaluated), resume just
+        # clears the pause without touching the peak.
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            # Only set the pause flag; leave baseline_capital NULL.
+            db.set_strategy_paused(conn, "daily_lull", True)
+            # Also give it an arbitrary peak (upsert_strategy_peak updates only
+            # peak_equity on conflict — the paused flag is left untouched).
+            db.upsert_strategy_peak(conn, "daily_lull", 777.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update(args=["daily_lull"])
+
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["resume"](update, context))
+
+        with db.get_connection(db_path) as conn:
+            row = db.get_strategy_state(conn, "daily_lull")
+
+        # Pause cleared, peak unchanged (baseline was None)
+        assert bool(row["paused"]) is False
+        assert row["peak_equity"] == pytest.approx(777.0)
+
+    def test_reply_mentions_drawdown_window_reset(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.set_strategy_paused(conn, "daily_lull", True)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update(args=["daily_lull"])
+
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["resume"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "drawdown" in reply_text.lower()
+
+    def test_global_resume_does_not_reset_peak(self, tmp_path: Path) -> None:
+        # The global /resume (no argument) must NOT touch strategy peak_equity
+        # (D063 defers global-peak reset).
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+        state.paused = True
+
+        with db.get_connection(db_path) as conn:
+            db.upsert_strategy_peak(conn, "daily_lull", 1234.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()  # no args
+
+        _run(handlers["resume"](update, context))
+
+        with db.get_connection(db_path) as conn:
+            row = db.get_strategy_state(conn, "daily_lull")
+
+        # Global resume cleared global state
+        assert state.paused is False
+        # Strategy peak must be untouched
+        assert row["peak_equity"] == pytest.approx(1234.0)

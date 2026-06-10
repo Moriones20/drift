@@ -106,7 +106,7 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
   - Pure `seed_baseline_capital` en `risk.py`; orquestación canónica `evaluate_strategy_drawdown(conn, strategy, allocation_pct, balance, floating, max_dd) -> (ok, reason, equity, peak)` + `seed_strategy_baseline` (escritura directa) en `db.py`; engine y monitor reapuntados al helper único (telegram queda para Step 39). 299 tests verdes.
 
 ### Batch H-B — Resume + display (Steps 38-39) — dependen de 37
-- [ ] 38. **`/resume` resetea el peak por estrategia** (D063, arregla #2, #3): `reset_strategy_peak` (escritura directa); `/resume <estrategia>` resetea peak + limpia pausa; global sin tocar (diferido). Tests.
+- [x] 38. **`/resume` resetea el peak por estrategia** (D063, arregla #2, #3): `reset_strategy_peak` (escritura directa); `/resume <estrategia>` resetea peak + limpia pausa; global sin tocar (diferido). Tests. (309 passed)
 - [ ] 39. **Telegram usa la equity canónica** (#4): `/balance` y `/strategies` con el helper de 37 + floating real por magic. Tests.
 
 ### Batch H-C — Pausa y limpieza (Steps 40-42) — independientes

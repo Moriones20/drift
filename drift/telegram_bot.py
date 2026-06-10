@@ -14,10 +14,13 @@ from drift.db import (
     get_recent_trades,
     get_stats,
     get_strategy_state,
+    reset_strategy_peak,
     set_strategy_paused,
 )
+from drift.executor import get_open_positions
 from drift.formatting import format_duration, format_time, pnl_str
 from drift.mt5_client import get_balance, health_check
+from drift.risk import strategy_equity
 
 logger = logging.getLogger(__name__)
 
@@ -550,13 +553,29 @@ def _make_handlers(
                             parse_mode="HTML",
                         )
                         return
+
+                    baseline = current.get("baseline_capital")
+                    if baseline is not None:
+                        # Compute current equity without bumping the stored peak
+                        # (evaluate_strategy_drawdown would raise it via MAX — D063).
+                        realized = get_stats(conn, strategy=strategy_name).get("total_pnl") or 0.0
+                        magic = _effective_magic(config, strategy_name)
+                        try:
+                            positions = get_open_positions(magic)
+                            floating = sum(p["profit"] for p in positions)
+                        except Exception:
+                            floating = 0.0
+                        equity = strategy_equity(baseline, realized, floating)
+                        reset_strategy_peak(conn, strategy_name, equity)
+
                     set_strategy_paused(conn, strategy_name, False)
             except Exception as e:
                 await update.message.reply_text(f"⚠️ DB error: {e}")
                 return
             logger.info("Strategy %s resumed via Telegram command", strategy_name)
             await update.message.reply_text(
-                f"▶️ <b>{strategy_name}</b> resumed.  Watching pairs for new signals.",
+                f"▶️ <b>{strategy_name}</b> resumed.  "
+                f"Drawdown window reset — watching pairs for new signals.",
                 parse_mode="HTML",
             )
         else:

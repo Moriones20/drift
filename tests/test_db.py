@@ -565,3 +565,62 @@ class TestEvaluateStrategyDrawdown:
         assert equity == pytest.approx(850.0)  # 1000 baseline + 0 realized - 150 floating
         assert ok is False
         assert "strategy drawdown" in reason
+
+
+# ---------------------------------------------------------------------------
+# reset_strategy_peak (D063)
+# ---------------------------------------------------------------------------
+
+
+class TestResetStrategyPeak:
+    def test_lowers_stored_peak(self, tmp_path: Path) -> None:
+        # reset_strategy_peak is a DIRECT write (not MAX): it can lower the peak
+        # (unlike upsert_strategy_peak which enforces MAX — D063).
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.upsert_strategy_peak(conn, "daily_lull", 1500.0)
+            db.reset_strategy_peak(conn, "daily_lull", 900.0)
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert state["peak_equity"] == pytest.approx(900.0)  # lowered from 1500
+
+    def test_raises_peak_when_new_is_higher(self, tmp_path: Path) -> None:
+        # Also works as a normal write when the new value is higher.
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.upsert_strategy_peak(conn, "daily_lull", 800.0)
+            db.reset_strategy_peak(conn, "daily_lull", 1200.0)
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert state["peak_equity"] == pytest.approx(1200.0)
+
+    def test_creates_row_when_absent(self, tmp_path: Path) -> None:
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.reset_strategy_peak(conn, "daily_lull", 750.0)
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert state is not None
+        assert state["peak_equity"] == pytest.approx(750.0)
+
+    def test_does_not_touch_paused_flag(self, tmp_path: Path) -> None:
+        # reset_strategy_peak must not flip the paused flag.
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            db.set_strategy_paused(conn, "daily_lull", True)
+            db.reset_strategy_peak(conn, "daily_lull", 800.0)
+            state = db.get_strategy_state(conn, "daily_lull")
+        assert bool(state["paused"]) is True  # unchanged
+
+    def test_drawdown_is_zero_after_reset(self, tmp_path: Path) -> None:
+        # After reset_strategy_peak(equity), computed drawdown vs new peak == 0.
+        from drift.risk import check_strategy_drawdown
+
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            # Simulate a strategy that was at 1000, lost to 850 (15% drawdown)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+            current_equity = 850.0
+            db.reset_strategy_peak(conn, "daily_lull", current_equity)
+            state = db.get_strategy_state(conn, "daily_lull")
+
+        ok, reason = check_strategy_drawdown(current_equity, state["peak_equity"], 10.0)
+        assert ok is True  # drawdown is 0%, brake would not re-trip
+        assert reason == ""

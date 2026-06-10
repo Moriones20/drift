@@ -859,6 +859,36 @@ def evaluate_strategy_drawdown(
     return ok, reason, equity, peak
 
 
+def reset_strategy_peak(conn: sqlite3.Connection, strategy: str, new_peak: float) -> None:
+    """Reset peak_equity to new_peak for a strategy — a direct write, NOT MAX (D063).
+
+    Unlike :func:`upsert_strategy_peak`, this sets ``peak_equity = new_peak``
+    unconditionally, allowing the peak to be *lowered*.  Called by ``/resume
+    <strategy>`` so the drawdown window restarts from the current equity and the
+    monitor does not immediately re-pause the strategy.
+
+    If no row exists yet, creates one with the given peak and paused=0.
+
+    Args:
+        conn: Open SQLite connection.
+        strategy: Strategy name (primary key of strategy_state).
+        new_peak: The new peak_equity value to set directly.
+    """
+    updated_at = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO strategy_state (strategy, peak_equity, paused, updated_at)
+        VALUES (?, ?, 0, ?)
+        ON CONFLICT(strategy) DO UPDATE SET
+            peak_equity = excluded.peak_equity,
+            updated_at  = excluded.updated_at
+        """,
+        (strategy, new_peak, updated_at),
+    )
+    conn.commit()
+    logger.info("Reset peak_equity=%.2f for strategy=%s", new_peak, strategy)
+
+
 def set_strategy_paused(conn: sqlite3.Connection, strategy: str, paused: bool) -> None:
     """Set the paused flag for a strategy.
 
