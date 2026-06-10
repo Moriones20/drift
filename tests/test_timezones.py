@@ -115,7 +115,12 @@ class TestParseAndFormat(unittest.TestCase):
 
 
 class TestServerOffsetStaleTickGuard(unittest.TestCase):
-    """D047: a stale (weekend/holiday) tick must not produce a garbage offset."""
+    """D047/D065: a stale tick must not produce a garbage offset.
+
+    The derived offset must be a known ICMarkets value (+2/+3, D041); anything
+    else means the tick is stale and is rejected in favour of the DST-aware
+    fallback.
+    """
 
     def test_stale_tick_falls_back_to_dst_guess(self) -> None:
         # Tick stamped ~45h ago (market closed all weekend) -> raw offset is
@@ -124,6 +129,31 @@ class TestServerOffsetStaleTickGuard(unittest.TestCase):
         stale = SimpleNamespace(time=(now - timedelta(hours=45)).timestamp())
         fake = mock.MagicMock()
         fake.symbol_info_tick.return_value = stale
+        with mock.patch.object(mt5_client, "mt5", fake):
+            offset = mt5_client.get_server_utc_offset("EURUSD")
+        self.assertIn(offset, (timedelta(hours=2), timedelta(hours=3)))
+
+    def test_cold_feed_within_14h_but_invalid_falls_back(self) -> None:
+        # D065: the cold-start bug observed live 2026-06-10. A cold MT5 feed
+        # after a terminal restart returned an ~8h-old tick whose apparent offset
+        # was UTC-5 (raw≈-19500s) — WITHIN the old ±14h guard, so it slipped
+        # through and poisoned the scheduler. It must now fall back to +2/+3,
+        # never UTC-5.
+        now = datetime.now(timezone.utc)
+        cold = SimpleNamespace(time=(now - timedelta(hours=5)).timestamp())
+        fake = mock.MagicMock()
+        fake.symbol_info_tick.return_value = cold
+        with mock.patch.object(mt5_client, "mt5", fake):
+            offset = mt5_client.get_server_utc_offset("EURUSD")
+        self.assertIn(offset, (timedelta(hours=2), timedelta(hours=3)))
+        self.assertNotEqual(offset, timedelta(hours=-5))
+
+    def test_off_by_one_offset_falls_back(self) -> None:
+        # An apparent +4 (also impossible for ICMarkets) is rejected too.
+        now = datetime.now(timezone.utc)
+        bad = SimpleNamespace(time=(now + timedelta(hours=4)).timestamp())
+        fake = mock.MagicMock()
+        fake.symbol_info_tick.return_value = bad
         with mock.patch.object(mt5_client, "mt5", fake):
             offset = mt5_client.get_server_utc_offset("EURUSD")
         self.assertIn(offset, (timedelta(hours=2), timedelta(hours=3)))
@@ -137,6 +167,16 @@ class TestServerOffsetStaleTickGuard(unittest.TestCase):
         with mock.patch.object(mt5_client, "mt5", fake):
             offset = mt5_client.get_server_utc_offset("EURUSD")
         self.assertEqual(offset, timedelta(hours=3))
+
+    def test_winter_plus2_tick_is_used(self) -> None:
+        # A fresh tick ~2h ahead of UTC (US winter) -> derive UTC+2 normally.
+        now = datetime.now(timezone.utc)
+        fresh = SimpleNamespace(time=(now + timedelta(hours=2)).timestamp())
+        fake = mock.MagicMock()
+        fake.symbol_info_tick.return_value = fresh
+        with mock.patch.object(mt5_client, "mt5", fake):
+            offset = mt5_client.get_server_utc_offset("EURUSD")
+        self.assertEqual(offset, timedelta(hours=2))
 
     def test_none_tick_falls_back(self) -> None:
         fake = mock.MagicMock()

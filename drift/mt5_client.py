@@ -165,23 +165,32 @@ def get_server_utc_offset(symbol: str = "EURUSD") -> timedelta:
 
     raw_offset_seconds = (server_epoch_as_utc - real_utc).total_seconds()
 
-    # A stale tick (e.g. over a weekend or holiday, when the market is closed)
-    # carries an old epoch; comparing it to real UTC yields an implausible
-    # offset of tens of hours.  Real broker offsets sit within ±14h, so anything
-    # beyond that means the tick is stale — fall back to the DST-aware
-    # whole-hour guess rather than trusting garbage.  See D047.
-    if abs(raw_offset_seconds) > 14 * 3600:
+    # Round to nearest hour to eliminate sub-second jitter and clock skew.
+    rounded_hours = round(raw_offset_seconds / 3600)
+
+    # ICMarkets' server is NY-anchored and only ever runs at GMT+2 (US winter)
+    # or GMT+3 (US summer) — see D041.  A derived offset outside that set means
+    # the tick is stale and the derivation is garbage:
+    #   - A cold MT5 feed right after a terminal restart can return an ~8h-old
+    #     tick whose apparent offset (e.g. UTC-5, raw≈-19500s) is WRONG yet sits
+    #     within ±14h, so it slipped past the original stale-tick guard (D047)
+    #     and poisoned the scheduler's first sleep — skipping a whole session
+    #     (the D065 cold-start bug observed live 2026-06-10).
+    #   - A weekend/closed-market stale tick (tens of hours off) is also caught.
+    # Reject anything that is not a known broker offset and fall back to the
+    # DST-aware default rather than trusting a bad derivation.  See D065 (which
+    # supersedes the looser ±14h plausibility band of D047).
+    if rounded_hours not in (2, 3):
         fallback = timedelta(hours=3 if _us_dst_active(real_utc) else 2)
         logger.warning(
-            "get_server_utc_offset: implausible offset raw=%.1fs (stale tick, "
-            "market likely closed) — falling back to UTC%+d",
+            "get_server_utc_offset: derived UTC%+d (raw=%.1fs) is not a valid "
+            "ICMarkets offset (+2/+3, D041) — stale tick? falling back to UTC%+d",
+            rounded_hours,
             raw_offset_seconds,
             int(fallback.total_seconds() // 3600),
         )
         return fallback
 
-    # Round to nearest hour to eliminate sub-second jitter and clock skew.
-    rounded_hours = round(raw_offset_seconds / 3600)
     offset = timedelta(hours=rounded_hours)
 
     logger.info(

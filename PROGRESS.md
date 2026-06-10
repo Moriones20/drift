@@ -86,10 +86,10 @@ Estado: implementada vía /orchestrate en rama `feat/multi-strategy-platform` (2
 ### Batch MS-E — Backtest y validación (Steps 35-36)
 - [x] 35. Backtest unificado (`backtest/engine.py`): loop propio que consume el mismo `on_bar`, equivalencia **bit-exact** vs lull_engine; repuntados run_lull/optimize. Alcance núcleo: lull_engine.py se conserva (analyze_*/validate_oos siguen usándolo). (D055/D059) — `6e36730`
 - [x] (cleanup C10) Quitado shim transitorio + `drift/strategy.py`; golden tests; `Signal` repuntado a base; `closed_bars` a engine. — `8973aca`
-- [ ] 36. **Validación end-to-end en paper** (manual, PENDIENTE): migrar `config.yaml` al esquema nuevo, correr el framework con el Lull, verificar paridad y proceder a Phase 3.
+- [x] 36. **Validación end-to-end en paper** (2026-06-10): config.yaml ya en esquema `strategies[]`; framework nuevo (Phase 2.6+2.7) desplegado en demo; paridad backtest **bit-exact** (4/4 slow tests: sintético + EURCHF/GBPJPY) + **sesión en vivo validada**: wake del sleep → def-rango → lock 5/5 (filtro ATR) → filtro ADX (bloqueó EURGBP 52.9 / AUDNZD 35.3) → 2 fills (EURJPY/GBPJPY) + 5 rechazos D046 (spread guard) → on_fill/traded → **D064 close_all en el time-stop 02:00** → reset + sleep. D062 seeding en vivo OK (baseline 1989.93, dd 1.33%, sin doble conteo). P&L sesión −25.24 (ambos por time-stop, ruido de 1 sesión). **Step 36 completo → Phase 3 desbloqueada** (diferida: acumular trades 1-2 meses antes de go-live).
 
 #### Pendientes / follow-ups de la Phase 2.6
-- **Migrar `config.yaml` real** al esquema `strategies[]` (no versionado; `load_config` ahora lo exige). Ver `config.example.yaml`.
+- ~~**Migrar `config.yaml` real** al esquema `strategies[]`~~ ✅ hecho (confirmado en la sesión en vivo 2026-06-10).
 - **Fidelidad ADX live vs backtest (D059):** la `on_bar` viva pide 50 barras H4 → ADX no converge (≈39 vs ≈27 de serie completa) y rechaza ~60 entradas de la hora rollover que el backtest acepta. Decisión "cabeza fría" pendiente: alinear el warm-up H4 live con el backtest (subir el `count`) tras analizar el impacto.
 - **Migración del tooling de research** (analyze_entry_hours/analyze_exclude_rollover/analyze_spread_cost/validate_oos) al nuevo `backtest/engine.py` y eliminación de `lull_engine.py` — diferido (re-validar D045/D046/OOS).
 - **`optimize_lull.py`** ahora es más lento (~55s/par/combo) por correr `on_bar` sobre todo el histórico — inherente a D055.
@@ -229,6 +229,11 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
 - Tests: **129 pasan** (nuevo `test_startup_resilience.py`).
 - **DNS:** recuperado; bot reiniciado limpio (Telegram registró 8 comandos, offset UTC+3, durmiendo hasta 09-jun 21:00 servidor). D046+D047+D048+D049 todos live.
 - **Task Scheduler "Drift" reforzada (2ª capa de robustez):** ya tenía restart-on-failure 3×1min — insuficiente (los 3 reintentos cayeron contra el mismo DNS muerto en ~3 min y se agotaron). Ahora **RestartCount=5, RestartInterval=PT2M, StartWhenAvailable=True** (resto intacto: ExecutionTimeLimit ilimitado, MultipleInstances=IgnoreNew). Combinado con la ventana de ~7 min de reintento interno de D049, tolera apagones de red prolongados.
+
+### Mantenimiento 2026-06-10 — Step 36 validado en vivo + fix de offset frío (D065)
+- **Step 36 completo:** desplegado Phase 2.6+2.7 en demo (restart limpio, `baseline_capital` migrado, seeding D062 OK). Paridad backtest bit-exact (4/4) + sesión en vivo: 5/5 rangos lockeados, filtro ADX, 2 fills (EURJPY/GBPJPY), 5 rechazos D046, close_all en el time-stop (D064), reset + sleep. P&L −25.24 (ruido de 1 sesión).
+- **Bug cazado y parcheado en vivo (D065):** arranque frío de MT5 → `get_server_utc_offset` derivó UTC-5 (tick ~8h rancio, dentro del ±14h de D047) → envenenó el primer sleep → se habría saltado la sesión. **Fix:** guard estricto `{+2,+3}` (D041) en `get_server_utc_offset` + `_refresh_server_offset` antes de computar el wake. Tests en `test_timezones.py`. Rama `fix/offset-cold-start`. Pre-existente, no regresión de 2.7.
+- **Phase 3 (go-live)** diferida deliberadamente: acumular trades 1-2 meses antes del VPS/live.
 
 ### Auditoría 2026-06-09 — modelo de riesgo por estrategia (→ Phase 2.7, D062–D064)
 - **Disparador:** auditoría del núcleo de la Phase 2.6 (engine/strategy/risk/config/db/telegram/main). Suite 290 passed / 2 skipped, ruff limpio — los hallazgos son de **corrección de lógica de riesgo**, no crashes.
