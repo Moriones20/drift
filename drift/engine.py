@@ -601,12 +601,90 @@ class Engine:
         correlation).  On any rejection the signal is logged as rejected and
         ``on_order_rejected`` notifies the strategy.  On success the trade is
         logged, the signal is linked, the open is notified and ``on_fill`` fires.
+
+        The method runs in three phases so the broker round-trip does NOT hold the
+        shared ``_trade_lock`` (D031, audit #8).  ``open_trade`` retries transient
+        rejections with sleeps (up to ~75s during the 00:00 rollover halt, D040);
+        holding the lock across that window stalls the monitoring thread's
+        close-detection, per-strategy drawdown brake and trailing pass for the
+        whole time.  The lock only serializes position/DB access between the engine
+        and the monitor — it does not need to cover the broker call:
+
+          - Phase 1 (gate + size): under ``_trade_lock`` + a DB connection.
+          - Phase 2 (execute): NO lock, NO DB connection held — this is where the
+            retries/sleeps happen.
+          - Phase 3 (record): under ``_trade_lock`` + a fresh DB connection.
+
+        The engine opens trades from a single thread (the dispatch loop) and the
+        only other lock user is the monitor (which never opens), so releasing the
+        lock between gating and recording cannot race a concurrent open.
         """
         signal = decision.signal
         if signal is None:  # pragma: no cover - defensive
             logger.warning("%s | open decision without signal — skipping", hosted.name)
             return
 
+        instance = hosted.instance
+
+        # --- Phase 1: gate + size (under the lock) ---
+        lot_size = self._gate_and_size(hosted, pair, signal, balance, equity)
+        if lot_size is None:
+            return  # rejection already logged/notified inside _gate_and_size
+
+        # --- Phase 2: execute (NO lock, NO DB connection) ---
+        # The retries/sleeps (D040) run here, free of the lock, so the monitoring
+        # thread keeps detecting closes and running the drawdown brake.
+        ticket = open_trade(
+            pair=pair,
+            direction=signal.action,
+            lot_size=lot_size,
+            stop_loss=signal.sl,
+            take_profit=signal.tp,
+            magic=hosted.magic,
+            max_retries=self.config.system.order_retry_attempts,
+            retry_delay_seconds=self.config.system.order_retry_delay_seconds,
+            guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
+            entry_reference=signal.entry_price,
+            min_reward_fraction=self.config.system.min_reward_fraction,
+        )
+
+        # --- Phase 3: record (under the lock, fresh DB connection) ---
+        if ticket is None:
+            # open_trade returned no ticket. This covers both expected skips
+            # (the D046 spread guard / price-reverted guard, which executor
+            # logs at WARNING) and genuine broker failures (which executor
+            # logs at ERROR). The executor already logged the specific cause
+            # at the right level, so this summary stays at WARNING — a spread
+            # guard skip is not an engine error.
+            logger.warning(
+                "%s/%s | open_trade returned no ticket — see executor log", hosted.name, pair
+            )
+            with self._trade_lock, get_connection() as db_conn:
+                self._reject(db_conn, hosted, signal, "open_trade_no_ticket")
+            instance.on_order_rejected(pair, signal, "open_trade_no_ticket")
+            return
+
+        with self._trade_lock, get_connection() as db_conn:
+            self._record_open(db_conn, hosted, pair, signal, lot_size, ticket, balance)
+        instance.on_fill(pair, signal, ticket)
+
+    def _gate_and_size(
+        self,
+        hosted: _HostedStrategy,
+        pair: str,
+        signal: Signal,
+        balance: float,
+        equity: float,
+    ) -> float | None:
+        """Phase 1: run the risk gates and sizing under ``_trade_lock``.
+
+        Returns the resolved, volume-adjusted ``lot_size`` on success (the rest of
+        the order is derived from ``signal``/``hosted`` in phase 2), or ``None`` on
+        any rejection — in which case the signal has already been logged as
+        rejected and ``on_order_rejected`` has fired, matching the pre-refactor
+        behaviour exactly.  The broker call is deliberately NOT made here so the
+        lock is released before it (audit #8).
+        """
         instance = hosted.instance
         with self._trade_lock, get_connection() as db_conn:
             # --- Global drawdown kill switch (pauses everything) ---
@@ -619,7 +697,7 @@ class Engine:
                 self._trip_global_brake(db_conn, reason, equity)
                 self._reject(db_conn, hosted, signal, f"global {reason}")
                 instance.on_order_rejected(pair, signal, f"global {reason}")
-                return
+                return None
 
             # --- Per-strategy drawdown brake (pauses only this strategy) ---
             ok, reason, strategy_equity_value, _peak = self._check_strategy_drawdown(
@@ -629,7 +707,7 @@ class Engine:
                 self._pause_strategy(db_conn, hosted, reason, strategy_equity_value)
                 self._reject(db_conn, hosted, signal, reason)
                 instance.on_order_rejected(pair, signal, reason)
-                return
+                return None
 
             # --- Limit gates: per-strategy + global trade caps + correlation ---
             strategy_trades = get_open_positions(hosted.magic, self.server_offset)
@@ -646,51 +724,21 @@ class Engine:
                 logger.info("%s/%s | risk check failed: %s", hosted.name, pair, reason)
                 self._reject(db_conn, hosted, signal, f"risk: {reason}")
                 instance.on_order_rejected(pair, signal, f"risk: {reason}")
-                return
+                return None
 
             # --- Sizing + broker volume constraints ---
             lot_size = self._size_position(pair, signal, balance, hosted)
             if lot_size is None or lot_size <= 0:
                 self._reject(db_conn, hosted, signal, "lot_size_zero")
                 instance.on_order_rejected(pair, signal, "lot_size_zero")
-                return
+                return None
 
             lot_size = self._apply_volume_constraints(pair, lot_size, db_conn, hosted, signal)
             if lot_size is None:
                 instance.on_order_rejected(pair, signal, "lot_below_min")
-                return
+                return None
 
-            # --- Execute ---
-            ticket = open_trade(
-                pair=pair,
-                direction=signal.action,
-                lot_size=lot_size,
-                stop_loss=signal.sl,
-                take_profit=signal.tp,
-                magic=hosted.magic,
-                max_retries=self.config.system.order_retry_attempts,
-                retry_delay_seconds=self.config.system.order_retry_delay_seconds,
-                guard_boundary=(signal.range_low if signal.action == "buy" else signal.range_high),
-                entry_reference=signal.entry_price,
-                min_reward_fraction=self.config.system.min_reward_fraction,
-            )
-
-            if ticket is None:
-                # open_trade returned no ticket. This covers both expected skips
-                # (the D046 spread guard / price-reverted guard, which executor
-                # logs at WARNING) and genuine broker failures (which executor
-                # logs at ERROR). The executor already logged the specific cause
-                # at the right level, so this summary stays at WARNING — a spread
-                # guard skip is not an engine error.
-                logger.warning(
-                    "%s/%s | open_trade returned no ticket — see executor log", hosted.name, pair
-                )
-                self._reject(db_conn, hosted, signal, "open_trade_no_ticket")
-                instance.on_order_rejected(pair, signal, "open_trade_no_ticket")
-                return
-
-            self._record_open(db_conn, hosted, pair, signal, lot_size, ticket, balance)
-            instance.on_fill(pair, signal, ticket)
+            return lot_size
 
     def _size_position(
         self, pair: str, signal: Signal, balance: float, hosted: _HostedStrategy

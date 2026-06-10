@@ -355,6 +355,57 @@ def test_open_routes_to_open_trade_with_effective_magic():
     assert strat.filled and strat.filled[0][2] == 999  # on_fill with ticket
 
 
+def test_open_releases_trade_lock_during_broker_call():
+    """The broker round-trip (open_trade + its retries) must NOT hold _trade_lock.
+
+    open_trade can sleep ~75s retrying the 00:00 rollover halt (D040); holding the
+    lock across that window stalls the monitoring thread (D031, audit #8).  Here a
+    fake open_trade asserts the lock is acquirable while it runs, then the trade is
+    still recorded afterwards (phase 3 ran under a re-acquired lock).
+    """
+    sig = _signal(action="buy")
+    strat = FakeStrategy(name="lull", decision=Decision.open(sig))
+    eng = _make_engine([strat], magics={"lull": 234000})
+    hosted = eng.strategies[0]
+
+    fake_mt5 = mock.MagicMock()
+    fake_mt5.symbol_info.return_value = SimpleNamespace(
+        digits=5, volume_step=0.01, volume_min=0.01, volume_max=100.0, trade_tick_value=1.0
+    )
+    fake_mt5.positions_get.return_value = [SimpleNamespace(price_open=1.0)]
+
+    lock_free_during_call = {"ok": False}
+
+    def fake_open_trade(*args, **kwargs):
+        # The engine thread itself holds nothing here: a non-blocking acquire must
+        # succeed, proving the lock is released during the broker round-trip.
+        acquired = eng._trade_lock.acquire(blocking=False)
+        lock_free_during_call["ok"] = acquired
+        if acquired:
+            eng._trade_lock.release()
+        return 999
+
+    with (
+        mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(engine_mod, "check_drawdown", return_value=(True, "")),
+        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
+        mock.patch.object(engine_mod, "check_strategy_risk", return_value=(True, "")),
+        mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
+        mock.patch.object(engine_mod, "get_open_trades", return_value=[]),
+        mock.patch.object(engine_mod, "calculate_position_size_allocated", return_value=0.05),
+        mock.patch.object(engine_mod, "open_trade", side_effect=fake_open_trade),
+        mock.patch.object(engine_mod, "log_trade", return_value=1) as log_trade,
+        mock.patch.object(engine_mod, "log_signal"),
+        mock.patch.dict(sys.modules, {"MetaTrader5": fake_mt5}),
+    ):
+        gc.return_value.__enter__.return_value = mock.MagicMock()
+        eng._handle_open(hosted, "EURCHF", Decision.open(sig), balance=1000.0, equity=1000.0)
+
+    assert lock_free_during_call["ok"]  # lock was free during the broker call
+    assert log_trade.called  # phase 3 still recorded the open
+    assert strat.filled and strat.filled[0][2] == 999  # on_fill fired with the ticket
+
+
 def test_open_rejected_by_risk_calls_on_order_rejected():
     sig = _signal(action="buy")
     strat = FakeStrategy(name="lull", decision=Decision.open(sig))
