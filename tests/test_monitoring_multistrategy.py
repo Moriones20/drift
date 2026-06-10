@@ -17,6 +17,7 @@ mocked.  The DB is a real temporary SQLite file so strategy_state CRUD is exerci
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 import sys
 import threading
@@ -35,7 +36,6 @@ from drift.config import (  # noqa: E402
     DriftConfig,
     ReportsConfig,
     RiskGlobalConfig,
-    StrategyConfig,
     StrategyInstanceConfig,
     StrategyRiskConfig,
     SystemConfig,
@@ -47,6 +47,7 @@ from drift.db import (  # noqa: E402
     seed_strategy_baseline,
     set_strategy_paused,
 )
+from drift.strategies.daily_lull import DailyLullParams  # noqa: E402
 from tests import test_session_fixes as tsf  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -63,9 +64,7 @@ def _two_strategy_config(
     global_max_dd: float = 10.0,
 ) -> DriftConfig:
     """Config with two enabled strategies on distinct magic offsets."""
-    params = {
-        field: getattr(StrategyConfig(), field) for field in StrategyConfig.__dataclass_fields__
-    }
+    params = dataclasses.asdict(DailyLullParams())
     return DriftConfig(
         broker=BrokerConfig(server="demo", login=1, password="x"),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123"),

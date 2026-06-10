@@ -111,7 +111,7 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
 
 ### Batch H-C — Pausa y limpieza (Steps 40-42) — independientes
 - [x] 40. **Pausa bloquea solo aperturas** (D064, arregla #6, #9): `_active_strategies` agenda todas (incl. pausadas); `_dispatch` ya no salta pausadas; `on_bar` siempre corre; `open` bajo pausa va al path de rechazo (`_reject` + `on_order_rejected("paused")`), `close`/`close_all` siempre ejecutan (time-stop 02:00 cierra en kill switch); log de pausa 1×/estrategia/tick. Tests. (329 passed)
-- [ ] 41. **Limpieza** (#7, #10, #11): mover `_pip_multiplier`/`_pip_value` a módulo compartido; borrar `closed_bars`/`check_all_risk`/`StrategyConfig`; notif "SESSION CLOSED" solo si cerró ≥1. Tests/ruff.
+- [x] 41. **Limpieza** (#7, #10, #11): `drift/pricing.py` nuevo con pip helpers; `closed_bars` eliminado de engine (tests → EngineMarketData); `check_all_risk`/`StrategyConfig` eliminados (tests migrados a DailyLullParams + helpers directos); notif SESSION CLOSED silenciada si 0 posiciones. (327 passed)
 - [ ] 42. **Reintentos fuera del lock** (#8): sacar los retries de `open_trade` de `_trade_lock` (sizing/gating bajo lock → soltar → ejecutar+retries → re-lock para registrar). Concurrencia delicada, test propio.
 
 #### Follow-ups de la Phase 2.7

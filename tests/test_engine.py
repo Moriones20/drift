@@ -529,7 +529,36 @@ def test_close_all_notifies_once_for_n_pairs_in_one_tick():
 
 
 def test_close_all_session_close_uses_calm_status():
-    """The session-close notification is 'session_closed', never the alarming 'stopped'."""
+    """The session-close notification is 'session_closed', never the alarming 'stopped'.
+
+    The notification fires only when at least one position was actually closed (#7).
+    Quiet nights (zero open positions) must not generate noise.
+    """
+    strat = FakeStrategy(name="lull", decision=Decision.close_all("session_close"))
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+
+    notifies: list[tuple] = []
+    eng._notify_bot_status = lambda bot, chat, status, detail="": notifies.append((status, detail))
+
+    fake_pos = {"ticket": 1, "pair": "EURCHF"}
+
+    with (
+        mock.patch.object(engine_mod, "get_open_positions", return_value=[fake_pos]),
+        mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(engine_mod, "log_signal"),
+        mock.patch.object(eng, "_close_one"),  # skip real close machinery
+    ):
+        gc.return_value.__enter__.return_value = mock.MagicMock()
+        eng._handle_close_all(hosted, Decision.close_all("session_close"))
+
+    assert len(notifies) == 1
+    status, _detail = notifies[0]
+    assert status == "session_closed"  # not "stopped"
+
+
+def test_close_all_session_close_silent_when_no_positions():
+    """session_close with zero open positions must NOT fire a notification (#7)."""
     strat = FakeStrategy(name="lull", decision=Decision.close_all("session_close"))
     eng = _make_engine([strat])
     hosted = eng.strategies[0]
@@ -545,9 +574,7 @@ def test_close_all_session_close_uses_calm_status():
         gc.return_value.__enter__.return_value = mock.MagicMock()
         eng._handle_close_all(hosted, Decision.close_all("session_close"))
 
-    assert len(notifies) == 1
-    status, _detail = notifies[0]
-    assert status == "session_closed"  # not "stopped"
+    assert len(notifies) == 0  # quiet night — no noise
 
 
 def test_session_start_notification_on_first_wake_after_gap():

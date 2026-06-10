@@ -109,7 +109,6 @@ if not HAS_PANDAS_TA and "pandas_ta" not in sys.modules:
 # Lazy imports (after stub injection)
 # ---------------------------------------------------------------------------
 
-from drift.config import StrategyConfig  # noqa: E402
 from drift.strategies.base import STRATEGY_REGISTRY, Decision, MarketData, Signal  # noqa: E402
 from drift.strategies.daily_lull import (  # noqa: E402
     DailyLullParams,
@@ -158,26 +157,9 @@ def _fake_ctx() -> object:
 # ---------------------------------------------------------------------------
 
 
-def _default_config() -> StrategyConfig:
-    return StrategyConfig(
-        session_start_hour=21,
-        session_end_hour=2,
-        range_atr_min=1.0,
-        range_atr_max=4.0,
-        sl_atr_mult=2.5,
-        rsi_oversold=35.0,
-        rsi_overbought=65.0,
-        adx_max_threshold=35.0,
-        m15_rsi_period=14,
-        m15_atr_period=14,
-        h4_adx_period=14,
-    )
-
-
 def _default_params() -> DailyLullParams:
-    """DailyLullParams matching _default_config (so both paths use same params)."""
-    cfg = _default_config()
-    return DailyLullParams(**{f: getattr(cfg, f) for f in DailyLullParams.__dataclass_fields__})
+    """DailyLullParams with default values matching the config.yaml params block."""
+    return DailyLullParams()
 
 
 def _make_m15_df(
@@ -571,11 +553,11 @@ class TestParamsAndRegistry:
         assert params.sl_atr_mult == 3.0
         assert params.rsi_overbought == 65.0  # default preserved
 
-    def test_from_dict_defaults_match_strategy_config(self) -> None:
-        cfg = StrategyConfig()
+    def test_from_dict_empty_dict_uses_dataclass_defaults(self) -> None:
         params = DailyLullParams.from_dict({})
+        defaults = DailyLullParams()
         for field in DailyLullParams.__dataclass_fields__:
-            assert getattr(params, field) == getattr(cfg, field), field
+            assert getattr(params, field) == getattr(defaults, field), field
 
     def test_registered_under_name(self) -> None:
         assert STRATEGY_REGISTRY.get("daily_lull") is DailyLullStrategy

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 
-from drift.config import RiskConfig, RiskGlobalConfig, StrategyRiskConfig
+from drift.config import RiskGlobalConfig, StrategyRiskConfig
 
 logger = logging.getLogger(__name__)
 
@@ -116,31 +116,6 @@ def check_drawdown(
 
     if drawdown >= max_drawdown_percent:
         return False, f"drawdown {drawdown:.1f}% exceeds limit {max_drawdown_percent:.0f}%"
-
-    return True, ""
-
-
-def check_all_risk(
-    balance: float,
-    peak_balance: float,
-    open_trades: list[dict],
-    new_pair: str,
-    new_direction: str,
-    config: RiskConfig,
-) -> tuple[bool, str]:
-    ok, reason = check_drawdown(balance, peak_balance, config.max_drawdown_percent)
-    if not ok:
-        return False, reason
-
-    ok, reason = check_max_trades(open_trades, config.max_open_trades)
-    if not ok:
-        return False, reason
-
-    ok, reason = check_correlation(
-        open_trades, new_pair, new_direction, config.max_same_currency_direction
-    )
-    if not ok:
-        return False, reason
 
     return True, ""
 

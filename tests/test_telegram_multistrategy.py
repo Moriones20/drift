@@ -14,6 +14,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,7 +27,6 @@ from drift.config import (
     DriftConfig,
     ReportsConfig,
     RiskGlobalConfig,
-    StrategyConfig,
     StrategyInstanceConfig,
     StrategyRiskConfig,
     SystemConfig,
@@ -34,6 +34,7 @@ from drift.config import (
 )
 from drift.db import get_strategy_state, set_strategy_paused
 from drift.report import generate_weekly_report
+from drift.strategies.daily_lull import DailyLullParams
 from drift.telegram_bot import BotState, _make_handlers
 
 # ---------------------------------------------------------------------------
@@ -49,7 +50,7 @@ def _make_db(tmp_path: Path) -> Path:
 
 def _single_strategy_config(magic_offset: int = 0) -> DriftConfig:
     """Config with one enabled strategy (daily_lull)."""
-    params = {f: getattr(StrategyConfig(), f) for f in StrategyConfig.__dataclass_fields__}
+    params = dataclasses.asdict(DailyLullParams())
     return DriftConfig(
         broker=BrokerConfig(server="demo", login=1, password="x"),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123"),
@@ -71,7 +72,7 @@ def _single_strategy_config(magic_offset: int = 0) -> DriftConfig:
 
 
 def _two_strategy_config() -> DriftConfig:
-    params = {f: getattr(StrategyConfig(), f) for f in StrategyConfig.__dataclass_fields__}
+    params = dataclasses.asdict(DailyLullParams())
     return DriftConfig(
         broker=BrokerConfig(server="demo", login=1, password="x"),
         telegram=TelegramConfig(bot_token="fake:TOKEN", chat_id="123"),

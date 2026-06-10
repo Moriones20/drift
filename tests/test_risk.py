@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from drift.config import RiskConfig, RiskGlobalConfig, StrategyRiskConfig
+from drift.config import RiskGlobalConfig, StrategyRiskConfig
 from drift.risk import (
     COMMISSION_PER_LOT,
     calculate_position_size,
     calculate_position_size_allocated,
-    check_all_risk,
     check_correlation,
     check_drawdown,
     check_max_trades,
@@ -79,12 +78,6 @@ def test_check_drawdown():
     assert check_drawdown(950, 1000, 10.0)[0] is True
     # invalid peak -> permissive
     assert check_drawdown(900, 0, 10.0)[0] is True
-
-
-def test_check_all_risk_passthrough():
-    config = RiskConfig()
-    ok, _ = check_all_risk(10000, 10000, [], "EURUSD", "buy", config)
-    assert ok is True
 
 
 # ---------------------------------------------------------------------------

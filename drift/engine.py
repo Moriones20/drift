@@ -77,18 +77,6 @@ CANDLE_CLOSE_DELAY_SECONDS = 5
 _SESSION_GAP = timedelta(hours=1)
 
 
-def closed_bars(df: pd.DataFrame, before: datetime) -> pd.DataFrame:
-    """Return only the bars that have already closed before *before* (D045).
-
-    MT5 returns the still-forming bar as the last row.  Acting on it makes the
-    live bot fire intra-bar on incomplete (and, at the 00:00 server rollover,
-    contaminated) prices, diverging from the backtest which acts on completed-bar
-    closes.  Keeping bars strictly before the current M15 boundary makes iloc[-1]
-    the bar that just closed at *before*.
-    """
-    return df[df.index < before]
-
-
 # Stop-aware sleep slice: the engine never blocks longer than this between
 # checks of state.stop_requested / the shutdown event.
 _SLEEP_SLICE_SECONDS = 10.0
@@ -711,11 +699,11 @@ class Engine:
         """Compute lot size against the strategy's notional allocation (D053)."""
         import MetaTrader5 as mt5
 
-        from main import _pip_multiplier, _pip_value  # reuse the live helpers
+        from drift.pricing import pip_multiplier, pip_value
 
         sym_info = mt5.symbol_info(pair)
-        pip_mult = _pip_multiplier(pair)
-        pip_val = _pip_value(pair, info=sym_info)
+        pip_mult = pip_multiplier(pair)
+        pip_val = pip_value(pair, info=sym_info)
         sl_pips = abs(signal.entry_price - signal.sl) * pip_mult
 
         lot_size = calculate_position_size_allocated(
@@ -958,8 +946,14 @@ class Engine:
         # tick).  The bot is NOT stopping — it closed the session and will sleep
         # until the next one — so use the calm "session_closed" status, never the
         # alarming "BOT STOPPED" (D057).
+        #
+        # For the routine session_close at 02:00, only fire the notification when
+        # at least one position was actually closed — quiet nights with no open
+        # trades should not generate noise (#7).
         closed = len(positions)
         if decision.reason == "session_close":
+            if closed == 0:
+                return
             detail = (
                 f"{hosted.name} — session closed, "
                 f"{closed} position(s) closed, sleeping until next session"
