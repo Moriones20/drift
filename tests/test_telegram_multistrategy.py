@@ -599,3 +599,366 @@ class TestResumeResetsStrategyPeak:
         assert state.paused is False
         # Strategy peak must be untouched
         assert row["peak_equity"] == pytest.approx(1234.0)
+
+
+# ---------------------------------------------------------------------------
+# Step 39 — canonical equity display (D062 / audit #4)
+# ---------------------------------------------------------------------------
+
+
+class TestStrategyEquityInfo:
+    """_strategy_equity_info returns the canonical (equity, peak, dd_pct) triple."""
+
+    def test_returns_none_triple_when_no_state_row(self, tmp_path: Path) -> None:
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        with db.get_connection(db_path) as conn:
+            equity, peak, dd_pct = _strategy_equity_info(conn, config, "daily_lull", None)
+        assert equity is None
+        assert peak is None
+        assert dd_pct is None
+
+    def test_returns_none_triple_when_baseline_is_null(self, tmp_path: Path) -> None:
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        with db.get_connection(db_path) as conn:
+            # Create a row without baseline_capital (just a peak via upsert)
+            db.upsert_strategy_peak(conn, "daily_lull", 999.0)
+            row = db.get_strategy_state(conn, "daily_lull")
+            equity, peak, dd_pct = _strategy_equity_info(conn, config, "daily_lull", row)
+        assert equity is None
+        assert peak is None
+        assert dd_pct is None
+
+    def test_canonical_drawdown_formula(self, tmp_path: Path) -> None:
+        """equity = baseline + realized + floating; dd = (peak - equity)/peak * 100."""
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+
+        # Seed: baseline_capital=800, peak_equity=1000
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            # Override peak to 1000 to simulate drawdown from there
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+            row = db.get_strategy_state(conn, "daily_lull")
+
+            # No closed trades → realized=0; mock no open positions → floating=0
+            with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+                equity, peak, dd_pct = _strategy_equity_info(conn, config, "daily_lull", row)
+
+        # baseline=1000 (seeded with balance=1000, realized=0 at seed),
+        # equity = 1000 + 0 + 0 = 1000, peak = 1000 → dd = 0
+        assert equity == pytest.approx(1000.0)
+        assert peak == pytest.approx(1000.0)
+        assert dd_pct == pytest.approx(0.0)
+
+    def test_drawdown_with_floating_loss(self, tmp_path: Path) -> None:
+        """Floating loss is reflected in equity and drawdown."""
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+
+        with db.get_connection(db_path) as conn:
+            # baseline=1000, peak=1000
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+            row = db.get_strategy_state(conn, "daily_lull")
+
+            # Simulate $50 floating loss (open position with profit=-50)
+            fake_positions = [{"profit": -50.0}]
+            with patch("drift.telegram_bot.get_open_positions", return_value=fake_positions):
+                equity, peak, dd_pct = _strategy_equity_info(conn, config, "daily_lull", row)
+
+        # equity = 1000 + 0 + (-50) = 950, peak=1000 → dd=5%
+        assert equity == pytest.approx(950.0)
+        assert peak == pytest.approx(1000.0)
+        assert dd_pct == pytest.approx(5.0)
+
+    def test_drawdown_equals_canonical_formula(self, tmp_path: Path) -> None:
+        """dd_pct must equal (peak - equity)/peak*100, NOT (peak - account_balance)/peak."""
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+
+        with db.get_connection(db_path) as conn:
+            # baseline=1000, peak=1100 (strategy was up at some point)
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1100.0)
+            row = db.get_strategy_state(conn, "daily_lull")
+
+            # Realized +20, floating -30 → equity = 1000 + 20 - 30 = 990
+            with db.get_connection(db_path) as conn2:
+                now = datetime.now(timezone.utc)
+                conn2.execute(
+                    "INSERT INTO trades (strategy, pair, direction, entry_price,"
+                    " stop_loss, take_profit, position_size, balance_at_open,"
+                    " opened_at, closed_at, exit_price, profit_loss,"
+                    " balance_at_close, close_reason, duration_minutes)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "daily_lull",
+                        "AUDNZD",
+                        "buy",
+                        1.07,
+                        1.065,
+                        1.08,
+                        0.01,
+                        1000.0,
+                        now.isoformat(),
+                        now.isoformat(),
+                        1.08,
+                        20.0,
+                        1020.0,
+                        "take_profit",
+                        30,
+                    ),
+                )
+                conn2.commit()
+
+                fake_positions = [{"profit": -30.0}]
+                with patch("drift.telegram_bot.get_open_positions", return_value=fake_positions):
+                    equity, peak, dd_pct = _strategy_equity_info(conn2, config, "daily_lull", row)
+
+        expected_equity = 1000.0 + 20.0 + (-30.0)  # = 990
+        expected_dd = (1100.0 - expected_equity) / 1100.0 * 100  # = 10/1100 * 100 ≈ 9.09%
+        assert equity == pytest.approx(expected_equity)
+        assert dd_pct == pytest.approx(expected_dd, rel=1e-4)
+
+    def test_at_peak_dd_is_zero(self, tmp_path: Path) -> None:
+        """When equity equals or exceeds peak, drawdown is 0.0 (clamped)."""
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 900.0)  # peak below current equity
+            row = db.get_strategy_state(conn, "daily_lull")
+
+            with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+                equity, peak, dd_pct = _strategy_equity_info(conn, config, "daily_lull", row)
+
+        # equity=1000 > peak=900 → strategy_drawdown returns 0.0
+        assert equity == pytest.approx(1000.0)
+        assert dd_pct == pytest.approx(0.0)
+
+    def test_mt5_failure_uses_zero_floating(self, tmp_path: Path) -> None:
+        """A failure fetching positions degrades gracefully (floating=0)."""
+        from drift.telegram_bot import _strategy_equity_info
+
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+            row = db.get_strategy_state(conn, "daily_lull")
+
+            with patch(
+                "drift.telegram_bot.get_open_positions", side_effect=RuntimeError("MT5 down")
+            ):
+                equity, peak, dd_pct = _strategy_equity_info(conn, config, "daily_lull", row)
+
+        # floating defaults to 0 on failure → equity = 1000
+        assert equity == pytest.approx(1000.0)
+        assert dd_pct == pytest.approx(0.0)
+
+
+class TestBalanceCommandEquityDisplay:
+    """/balance per-strategy section uses canonical drawdown (D062)."""
+
+    def test_balance_shows_no_data_when_baseline_null(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        with (
+            patch("drift.telegram_bot.get_balance", return_value=1000.0),
+            patch("drift.telegram_bot.get_open_positions", return_value=[]),
+        ):
+            _run(handlers["balance"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        # No baseline seeded → "no data"
+        assert "no data" in reply_text
+
+    def test_balance_shows_at_peak_when_dd_zero(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        with (
+            patch("drift.telegram_bot.get_balance", return_value=1000.0),
+            patch("drift.telegram_bot.get_open_positions", return_value=[]),
+        ):
+            _run(handlers["balance"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "At peak" in reply_text
+
+    def test_balance_shows_drawdown_pct(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        # floating loss of $100 → equity=900, peak=1000, dd=10%
+        with (
+            patch("drift.telegram_bot.get_balance", return_value=900.0),
+            patch("drift.telegram_bot.get_open_positions", return_value=[{"profit": -100.0}]),
+        ):
+            _run(handlers["balance"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "-10.0%" in reply_text
+
+    def test_balance_drawdown_not_based_on_raw_balance(self, tmp_path: Path) -> None:
+        """Verify that the displayed drawdown is NOT the old (peak-balance)/peak formula."""
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        # baseline=800 (strategy was already in drawdown at seed time), peak=1000
+        with db.get_connection(db_path) as conn:
+            # seed: balance=1000, realized=200 → baseline = 1000 - 200 = 800
+            conn.execute(
+                "INSERT INTO trades (strategy, pair, direction, entry_price,"
+                " stop_loss, take_profit, position_size, balance_at_open,"
+                " opened_at, closed_at, exit_price, profit_loss,"
+                " balance_at_close, close_reason, duration_minutes)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "daily_lull",
+                    "AUDNZD",
+                    "buy",
+                    1.07,
+                    1.065,
+                    1.08,
+                    0.01,
+                    1000.0,
+                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
+                    1.08,
+                    200.0,
+                    1200.0,
+                    "take_profit",
+                    30,
+                ),
+            )
+            conn.commit()
+            db.seed_strategy_baseline(conn, "daily_lull", 1200.0, 1200.0)
+            # Peak was recorded at 1000 notional (baseline=800, realized=200 → equity=1000)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        # Account balance is $1200 (the raw MT5 balance), floating=0
+        # OLD formula: (1000 - 1200)/1000 → negative → 0% (wrong, coherent with nothing)
+        # NEW formula: equity = 800 + 200 + 0 = 1000 = peak → dd=0%
+        with (
+            patch("drift.telegram_bot.get_balance", return_value=1200.0),
+            patch("drift.telegram_bot.get_open_positions", return_value=[]),
+        ):
+            _run(handlers["balance"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        # The canonical answer is "At peak" (equity == peak == 1000)
+        assert "At peak" in reply_text
+
+
+class TestStrategiesCommandEquityDisplay:
+    """/strategies per-strategy section uses canonical drawdown (D062)."""
+
+    def test_strategies_shows_no_data_when_baseline_null(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["strategies"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "no data" in reply_text
+
+    def test_strategies_shows_at_peak_when_dd_zero(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["strategies"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "At peak" in reply_text
+
+    def test_strategies_shows_drawdown_pct(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        # floating loss of $50 → equity=950, peak=1000 → dd=5%
+        with patch("drift.telegram_bot.get_open_positions", return_value=[{"profit": -50.0}]):
+            _run(handlers["strategies"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "-5.0% DD" in reply_text
+
+    def test_strategies_shows_live_equity(self, tmp_path: Path) -> None:
+        db_path = _make_db(tmp_path)
+        config = _single_strategy_config()
+        state = BotState()
+
+        with db.get_connection(db_path) as conn:
+            db.seed_strategy_baseline(conn, "daily_lull", 1000.0, 1000.0)
+            db.upsert_strategy_peak(conn, "daily_lull", 1000.0)
+
+        handlers = _make_handlers("123", state, db_path, config)
+        update, context = _make_update()
+
+        with patch("drift.telegram_bot.get_open_positions", return_value=[]):
+            _run(handlers["strategies"](update, context))
+
+        reply_text = update.message.reply_text.call_args[0][0]
+        # The live equity ($1000.00) should appear in the output
+        assert "1000.00" in reply_text

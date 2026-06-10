@@ -20,7 +20,7 @@ from drift.db import (
 from drift.executor import get_open_positions
 from drift.formatting import format_duration, format_time, pnl_str
 from drift.mt5_client import get_balance, health_check
-from drift.risk import strategy_equity
+from drift.risk import strategy_drawdown, strategy_equity
 
 logger = logging.getLogger(__name__)
 
@@ -93,20 +93,48 @@ def _effective_magic(config: DriftConfig, strategy_name: str) -> int:
     return config.system.magic_number + strat.magic_offset
 
 
-def _strategy_drawdown(
-    strategy_state_row: dict | None,
-    balance: float | None,
-) -> float:
-    """Compute strategy drawdown % from strategy_state peak_equity.
+def _strategy_equity_info(
+    conn,
+    config: DriftConfig,
+    name: str,
+    state_row: dict | None,
+    realized: float | None = None,
+) -> tuple[float | None, float | None, float | None]:
+    """Compute canonical per-strategy equity, peak and drawdown % (D062).
 
-    Returns 0.0 when there is no state row or no balance.
+    Uses the persisted baseline model: equity = baseline_capital + realized + floating.
+    This matches the brake in the engine so what the user sees equals what trips the
+    halt — fixing the incoherent display (audit #4).
+
+    Returns ``(equity, peak, drawdown_pct)`` where all three are None when
+    ``baseline_capital`` has not been seeded yet (strategy never evaluated).
+    ``drawdown_pct`` is 0.0 when at or above peak (clamped via strategy_drawdown).
+
+    Pass ``realized`` when the caller already has it from ``get_stats`` to avoid a
+    redundant DB query.  Omit (or pass None) to let the helper fetch it.
+
+    This is READ-ONLY: it never calls evaluate_strategy_drawdown (which mutates
+    baseline / peak).
     """
-    if strategy_state_row is None or balance is None:
-        return 0.0
-    peak = strategy_state_row.get("peak_equity") or 0.0
-    if peak <= 0:
-        return 0.0
-    return max(0.0, (peak - balance) / peak * 100)
+    if state_row is None:
+        return None, None, None
+    baseline = state_row.get("baseline_capital")
+    if baseline is None:
+        return None, None, None
+    peak = state_row.get("peak_equity") or 0.0
+
+    if realized is None:
+        realized = get_stats(conn, strategy=name).get("total_pnl") or 0.0
+    magic = _effective_magic(config, name)
+    try:
+        positions = get_open_positions(magic)
+        floating = sum(p["profit"] for p in positions)
+    except Exception:
+        floating = 0.0
+
+    equity = strategy_equity(baseline, realized, floating)
+    drawdown_pct = strategy_drawdown(equity, peak) * 100
+    return equity, peak, drawdown_pct
 
 
 def _strategy_paused_flag(strategy_state_row: dict | None) -> bool:
@@ -145,7 +173,6 @@ def _build_strategy_breakdown_lines(
 def _build_balance_strategy_lines(
     config: DriftConfig,
     conn,
-    balance: float | None,
 ) -> list[str]:
     """Return HTML lines for the per-strategy breakdown used in /balance."""
     lines: list[str] = []
@@ -156,10 +183,13 @@ def _build_balance_strategy_lines(
         strat_stats = get_stats(conn, strategy=name)
         allocation = strat.allocation_pct
         strat_pnl = strat_stats.get("total_pnl") or 0.0
-        # Drawdown for strategy uses strategy_state peak_equity vs current balance
-        # (approximation: no per-strategy live equity without MT5 call per strategy)
-        dd_pct = _strategy_drawdown(state_row, balance)
-        dd_label = f"-{dd_pct:.1f}% below peak" if dd_pct > 0.05 else "At peak"
+        _equity, _peak, dd_pct = _strategy_equity_info(
+            conn, config, name, state_row, realized=strat_pnl
+        )
+        if dd_pct is None:
+            dd_label = "no data"
+        else:
+            dd_label = f"-{dd_pct:.1f}% below peak" if dd_pct > 0.05 else "At peak"
         lines.append(
             f"  <b>{name}</b>  {allocation:.0f}%  ·  P&amp;L {pnl_str(strat_pnl)}  ·  DD {dd_label}"
         )
@@ -459,9 +489,7 @@ def _make_handlers(
             with get_connection(db_path) as conn:
                 stats = get_stats(conn)
                 strategy_lines = (
-                    _build_balance_strategy_lines(config, conn, balance)
-                    if config is not None
-                    else []
+                    _build_balance_strategy_lines(config, conn) if config is not None else []
                 )
         except Exception:
             stats = {}
@@ -554,18 +582,10 @@ def _make_handlers(
                         )
                         return
 
-                    baseline = current.get("baseline_capital")
-                    if baseline is not None:
-                        # Compute current equity without bumping the stored peak
-                        # (evaluate_strategy_drawdown would raise it via MAX — D063).
-                        realized = get_stats(conn, strategy=strategy_name).get("total_pnl") or 0.0
-                        magic = _effective_magic(config, strategy_name)
-                        try:
-                            positions = get_open_positions(magic)
-                            floating = sum(p["profit"] for p in positions)
-                        except Exception:
-                            floating = 0.0
-                        equity = strategy_equity(baseline, realized, floating)
+                    # Compute current equity without bumping the stored peak
+                    # (evaluate_strategy_drawdown would raise it via MAX — D063).
+                    equity, _peak, _dd = _strategy_equity_info(conn, config, strategy_name, current)
+                    if equity is not None:
                         reset_strategy_peak(conn, strategy_name, equity)
 
                     set_strategy_paused(conn, strategy_name, False)
@@ -669,10 +689,13 @@ def _make_handlers(
                     paused_label = "⏸️ paused" if is_paused else "▶️ running"
                     magic = _effective_magic(config, name)
                     strat_trades = [t for t in open_trades if t.get("strategy") == name]
-                    peak_eq = (state_row.get("peak_equity") or 0.0) if state_row else 0.0
-                    # Drawdown is relative to peak equity stored in strategy_state
-                    # (live balance not available here without per-strategy equity call)
-                    dd_label = f"peak equity ${peak_eq:.2f}" if peak_eq > 0 else "no peak recorded"
+                    equity, peak_eq, dd_pct = _strategy_equity_info(conn, config, name, state_row)
+                    if dd_pct is None:
+                        dd_label = "no data"
+                    elif dd_pct > 0.05:
+                        dd_label = f"-{dd_pct:.1f}% DD  equity ${equity:.2f}"
+                    else:
+                        dd_label = f"At peak  equity ${equity:.2f}"
                     lines.append(
                         f"\n<b>{name}</b>  [{enabled_label}]  {paused_label}\n"
                         f"  Allocation  {strat.allocation_pct:.0f}%"

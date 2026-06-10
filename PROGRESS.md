@@ -107,7 +107,7 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
 
 ### Batch H-B — Resume + display (Steps 38-39) — dependen de 37
 - [x] 38. **`/resume` resetea el peak por estrategia** (D063, arregla #2, #3): `reset_strategy_peak` (escritura directa); `/resume <estrategia>` resetea peak + limpia pausa; global sin tocar (diferido). Tests. (309 passed)
-- [ ] 39. **Telegram usa la equity canónica** (#4): `/balance` y `/strategies` con el helper de 37 + floating real por magic. Tests.
+- [x] 39. **Telegram usa la equity canónica** (#4): nuevo `_strategy_equity_info` read-only (equity = baseline + realized + floating, sin mutar peak); `/balance` y `/strategies` muestran el drawdown canónico + equity viva; `cmd_resume` reusa el helper. Tests. (324 passed)
 
 ### Batch H-C — Pausa y limpieza (Steps 40-42) — independientes
 - [ ] 40. **Pausa bloquea solo aperturas** (D064, arregla #6, #9): estrategias pausadas siguen agendadas; `open` se descarta bajo pausa, `close`/`close_all` se honran; log de pausa 1×/tick. Tests.
