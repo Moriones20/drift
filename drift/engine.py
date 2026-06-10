@@ -285,11 +285,16 @@ class Engine:
                 hosted.paused = bool(row["paused"]) if row else False
 
     def _active_strategies(self) -> list[_HostedStrategy]:
-        """Strategies that are not engine-paused (still scheduled for wakes)."""
-        return [h for h in self.strategies if not h.paused]
+        """All hosted strategies, including paused ones.
+
+        Paused strategies remain in the wake schedule so that time-stops
+        (close / close_all decisions) fire even during a kill switch (D064).
+        Only ``open`` decisions are blocked — see ``_handle_decision``.
+        """
+        return self.strategies
 
     def _next_boundary(self, now: datetime) -> datetime | None:
-        """Return the minimum ``next_wake`` across active strategies, or None.
+        """Return the minimum ``next_wake`` across all strategies, or None.
 
         None means no strategy has a scheduled wake right now (all sleeping
         indefinitely); the caller sleeps a slice and re-asks.
@@ -300,8 +305,8 @@ class Engine:
     def _due_strategies(self, now: datetime) -> tuple[datetime | None, list[_HostedStrategy]]:
         """Return the next boundary and the strategies due exactly at it.
 
-        The next boundary is the minimum ``next_wake`` across active strategies;
-        the due list is every active strategy whose ``next_wake`` equals that
+        The next boundary is the minimum ``next_wake`` across all strategies;
+        the due list is every strategy whose ``next_wake`` equals that
         boundary.  Computing the due set HERE — from a ``now`` strictly before the
         boundary — is what makes dispatch robust: after the engine sleeps past the
         boundary, ``next_wake`` would already point at the FOLLOWING boundary, so
@@ -458,8 +463,6 @@ class Engine:
                 log_peak_balance(db_conn, self.peak_balance_ref[0])
 
         for hosted in due:
-            if hosted.paused:
-                continue
             self._dispatch_strategy(hosted, boundary, market, balance, equity)
 
     def _dispatch_strategy(
@@ -504,12 +507,18 @@ class Engine:
             paused=hosted.paused,
         )
 
+        # Log the pause state once per strategy per tick, not once per pair (D064 #9).
+        if self.state.paused or hosted.paused:
+            source = "global" if self.state.paused else hosted.name
+            logger.info(
+                "%s | paused (%s) — open decisions will be dropped, closes will execute",
+                hosted.name,
+                source,
+            )
+
         close_all_done = False
         for timeframe in sorted(instance.timeframes):
             for pair in instance.pairs:
-                if self.state.paused:
-                    logger.info("Bot paused — skipping %s/%s", hosted.name, pair)
-                    continue
                 try:
                     decision = instance.on_bar(pair, timeframe, boundary, market, ctx)
                     if decision.kind == "close_all":
@@ -557,7 +566,19 @@ class Engine:
         if decision.kind == "noop":
             self._handle_noop(hosted, decision)
         elif decision.kind == "open":
-            self._handle_open(hosted, pair, decision, balance, equity)
+            # Pause blocks only opens (D064): close and close_all always execute.
+            if self.state.paused or hosted.paused:
+                signal = decision.signal
+                if signal is not None:
+                    with self._trade_lock, get_connection() as db_conn:
+                        self._reject(db_conn, hosted, signal, "paused")
+                    hosted.instance.on_order_rejected(pair, signal, "paused")
+                else:
+                    logger.info(
+                        "%s/%s | open decision dropped (paused, no signal)", hosted.name, pair
+                    )
+            else:
+                self._handle_open(hosted, pair, decision, balance, equity)
         elif decision.kind == "close_all":
             self._handle_close_all(hosted, decision)
         elif decision.kind == "close":

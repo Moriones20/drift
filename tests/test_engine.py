@@ -235,13 +235,15 @@ def test_post_close_delay_normal_vs_rollover():
     assert eng._post_close_delay_seconds(normal) == engine_mod.CANDLE_CLOSE_DELAY_SECONDS
 
 
-def test_paused_strategy_excluded_from_scheduling():
+def test_paused_strategy_stays_scheduled(caplog):
+    """A paused strategy is still scheduled so closes can fire (D064)."""
     wake = datetime(2026, 6, 1, 23, 0, tzinfo=_SERVER_TZ)
     a = FakeStrategy(name="a", wake=wake)
     eng = _make_engine([a])
     eng.strategies[0].paused = True
     now = datetime(2026, 6, 1, 22, 50, tzinfo=_SERVER_TZ)
-    assert eng._next_boundary(now) is None
+    # Paused strategy must still return a boundary — not None.
+    assert eng._next_boundary(now) == wake
 
 
 # ---------------------------------------------------------------------------
@@ -570,6 +572,148 @@ def test_session_start_notification_on_first_wake_after_gap():
 
     starts = [n for n in notifies if n[0] == "session_started"]
     assert len(starts) == 1
+
+
+# ---------------------------------------------------------------------------
+# Pause semantics (D064): open blocked, close/close_all always execute
+# ---------------------------------------------------------------------------
+
+
+def test_paused_strategy_close_all_executes(monkeypatch):
+    """A paused strategy dispatches on_bar and its close_all fires (D064)."""
+    close_all_decision = Decision.close_all("session_close")
+    strat = FakeStrategy(name="lull", pairs=["EURCHF"], decision=close_all_decision)
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+    hosted.paused = True  # strategy-level pause
+
+    closed: list = []
+    eng._handle_close_all = lambda h, d: closed.append(d)
+    eng._notify_bot_status = lambda *a, **kw: None
+
+    market = mock.MagicMock()
+    with mock.patch.object(engine_mod, "get_open_positions", return_value=[]):
+        eng._dispatch_strategy(
+            hosted, datetime(2026, 6, 2, 2, 0, tzinfo=_SERVER_TZ), market, 1000.0, 1000.0
+        )
+
+    assert len(strat.on_bar_calls) == 1  # on_bar ran
+    assert len(closed) == 1  # close_all executed
+
+
+def test_open_dropped_under_strategy_pause():
+    """An open decision is dropped (not opened) when the strategy is paused (D064)."""
+    sig = _signal(action="buy")
+    strat = FakeStrategy(name="lull", decision=Decision.open(sig))
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+    hosted.paused = True  # strategy-level pause
+
+    with (
+        mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(engine_mod, "log_signal") as log_sig,
+        mock.patch.object(engine_mod, "open_trade") as open_t,
+    ):
+        gc.return_value.__enter__.return_value = mock.MagicMock()
+        eng._handle_decision(hosted, "EURCHF", Decision.open(sig), 1000.0, 1000.0)
+
+    assert not open_t.called  # no trade opened
+    assert strat.rejected  # on_order_rejected fired
+    assert strat.rejected[0][2] == "paused"  # reason is "paused"
+    assert log_sig.call_args.kwargs.get("rejection_reason") == "paused"  # logged as rejected
+
+
+def test_open_dropped_under_global_pause():
+    """An open decision is dropped when the bot is globally paused (D064)."""
+    sig = _signal(action="buy")
+    strat = FakeStrategy(name="lull", decision=Decision.open(sig))
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+    eng.state.paused = True  # global kill switch
+
+    with (
+        mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(engine_mod, "log_signal") as log_sig,
+        mock.patch.object(engine_mod, "open_trade") as open_t,
+    ):
+        gc.return_value.__enter__.return_value = mock.MagicMock()
+        eng._handle_decision(hosted, "EURCHF", Decision.open(sig), 1000.0, 1000.0)
+
+    assert not open_t.called
+    assert strat.rejected
+    assert strat.rejected[0][2] == "paused"
+    assert log_sig.call_args.kwargs.get("rejection_reason") == "paused"
+
+
+def test_close_all_executes_under_global_pause():
+    """A close_all decision executes even when the bot is globally paused (D064)."""
+    strat = FakeStrategy(name="lull", decision=Decision.close_all("session_close"))
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+    eng.state.paused = True
+
+    closed: list = []
+    eng._handle_close_all = lambda h, d: closed.append(d)
+
+    eng._handle_decision(hosted, "EURCHF", Decision.close_all("session_close"), 1000.0, 1000.0)
+
+    assert len(closed) == 1
+
+
+def test_pause_log_fires_once_per_tick_not_per_pair():
+    """Pause log message fires at most once per dispatch, not once per pair (D064 #9).
+
+    The old code logged inside the per-pair loop (once per pair); the new code
+    logs a single guard before the loop.  We verify this structurally: with 3
+    pairs all returning noop, on_bar is called 3 times (per-pair), but the
+    pause guard code path executes once (we check this by temporarily restoring
+    logging and capturing records).
+    """
+    import logging as _logging
+
+    strat = FakeStrategy(
+        name="lull",
+        pairs=["EURCHF", "EURJPY", "GBPJPY"],
+        decision=Decision.noop(),
+    )
+    eng = _make_engine([strat])
+    hosted = eng.strategies[0]
+    hosted.paused = True
+
+    eng._notify_bot_status = lambda *a, **kw: None
+
+    log_records: list[str] = []
+
+    class _Capture(_logging.Handler):
+        def emit(self, record):
+            log_records.append(record.getMessage())
+
+    handler = _Capture()
+    handler.setLevel(_logging.DEBUG)
+
+    # Override logging.disable so we can capture records regardless of
+    # what test_backtest_engine.py did (logging.disable is a global).
+    saved_disable = _logging.root.manager.disable
+    _logging.disable(_logging.NOTSET)
+    engine_mod.logger.addHandler(handler)
+    original_level = engine_mod.logger.level
+    engine_mod.logger.setLevel(_logging.DEBUG)
+    try:
+        market = mock.MagicMock()
+        with mock.patch.object(engine_mod, "get_open_positions", return_value=[]):
+            eng._dispatch_strategy(
+                hosted, datetime(2026, 6, 2, 23, 0, tzinfo=_SERVER_TZ), market, 1000.0, 1000.0
+            )
+    finally:
+        engine_mod.logger.removeHandler(handler)
+        engine_mod.logger.setLevel(original_level)
+        _logging.disable(saved_disable)
+
+    # on_bar was called once per pair (3 times)
+    assert len(strat.on_bar_calls) == 3
+    # but the pause-notice log fired exactly once (before the loop, not inside)
+    pause_logs = [r for r in log_records if "open decisions" in r]
+    assert len(pause_logs) == 1
 
 
 if __name__ == "__main__":

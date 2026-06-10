@@ -410,8 +410,8 @@ def test_engine_refreshes_pause_from_strategy_state():
 
     assert eng.strategies[0].paused is True  # alpha picked up the DB pause
     assert eng.strategies[1].paused is False  # beta untouched
-    # alpha is now excluded from scheduling.
-    assert [h.name for h in eng._active_strategies()] == ["beta"]
+    # alpha stays in the schedule so its closes can fire (D064).
+    assert [h.name for h in eng._active_strategies()] == ["alpha", "beta"]
 
 
 def test_engine_refresh_resumes_strategy_cleared_in_db():

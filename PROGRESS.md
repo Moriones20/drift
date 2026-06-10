@@ -110,7 +110,7 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
 - [x] 39. **Telegram usa la equity canónica** (#4): nuevo `_strategy_equity_info` read-only (equity = baseline + realized + floating, sin mutar peak); `/balance` y `/strategies` muestran el drawdown canónico + equity viva; `cmd_resume` reusa el helper. Tests. (324 passed)
 
 ### Batch H-C — Pausa y limpieza (Steps 40-42) — independientes
-- [ ] 40. **Pausa bloquea solo aperturas** (D064, arregla #6, #9): estrategias pausadas siguen agendadas; `open` se descarta bajo pausa, `close`/`close_all` se honran; log de pausa 1×/tick. Tests.
+- [x] 40. **Pausa bloquea solo aperturas** (D064, arregla #6, #9): `_active_strategies` agenda todas (incl. pausadas); `_dispatch` ya no salta pausadas; `on_bar` siempre corre; `open` bajo pausa va al path de rechazo (`_reject` + `on_order_rejected("paused")`), `close`/`close_all` siempre ejecutan (time-stop 02:00 cierra en kill switch); log de pausa 1×/estrategia/tick. Tests. (329 passed)
 - [ ] 41. **Limpieza** (#7, #10, #11): mover `_pip_multiplier`/`_pip_value` a módulo compartido; borrar `closed_bars`/`check_all_risk`/`StrategyConfig`; notif "SESSION CLOSED" solo si cerró ≥1. Tests/ruff.
 - [ ] 42. **Reintentos fuera del lock** (#8): sacar los retries de `open_trade` de `_trade_lock` (sizing/gating bajo lock → soltar → ejecutar+retries → re-lock para registrar). Concurrencia delicada, test propio.
 
