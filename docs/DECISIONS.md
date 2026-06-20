@@ -1013,3 +1013,29 @@ Relacionado: [[D067]], [[D068]], [[D069]], [[D043]], [[D046]], [[D055]], `drift/
 **Revisión ~2026-07-06** (≈2 semanas de sesiones): decidir por estrategia — Lull (archivar vs rediseñar R:R), ORB (archivar vs filtro de tendencia H1/H4). Criterio: fidelidad de ejecución y comportamiento estructural observado, **no** el P&L de 2 semanas (ruido — el "1W/6L" del Lull ya enseñó que el conteo corto engaña).
 
 Relacionado: [[D070]], [[D069]], [[D053]], [[D066]], [[D046]], `config.yaml`. Cambio solo de config (gitignored); sin código.
+
+---
+
+### D072 — Riesgo 100% por estrategia: sin kill switch global ni cap global de trades; topes de P&L diario/semanal por estrategia
+
+**Decisión (2026-06-20).** Para correr varias estrategias en paper de forma independiente (y "ganar tiempo" probando un lote sin que un freno global corte el experimento), **todo el riesgo pasa a ser por estrategia**. Supersede el modelo de dos niveles de [[D053]] en su parte global:
+
+- **Se elimina el kill switch global** (el freno de `risk_global.max_drawdown_percent` que pausaba TODAS las estrategias) — tanto del gate del motor (`engine._gate_and_size`) como del thread de monitoreo (`main._check_drawdown_pause`, borrado). El peak de equity de cuenta se sigue trackeando solo para el reporte semanal. Un `/pause` global manual (Telegram) sigue existiendo.
+- **Se elimina el cap global de trades** (`risk_global.max_open_trades` ya no se enforce; `check_strategy_risk` deja de chequearlo). Cada estrategia se limita por su propio `max_open_trades`.
+- **Se mantiene la correlación global** (`max_same_currency_direction`) — es exposición real de la cuenta única (dos GBP-long a la vez es riesgo aunque sean estrategias distintas). Único freno global que queda.
+- Los campos `risk_global.max_open_trades` y `max_drawdown_percent` quedan en config por compatibilidad pero **sin uso** (comentados como UNUSED).
+
+**Nuevos topes por estrategia (se suman al `max_drawdown_percent` por estrategia, que es ahora EL kill switch, y a su `max_open_trades`):**
+- `max_daily_loss_pct` (def **5**) / `max_daily_profit_pct` (def **6**): la estrategia deja de abrir por el resto del **día** si su P&L del día cruza el tope.
+- `max_weekly_loss_pct` (def **10**) / `max_weekly_profit_pct` (def **12**): ídem por **semana**. Valores "amplios" elegidos por el usuario; `0` desactiva ese lado.
+- Todos sobre el **capital asignado** (`balance × allocation_pct/100`), medidos como **P&L realizado-en-ventana (trades cerrados) + flotante actual** atribuido por magic.
+
+**Diseño clave — gate ventaneado, NO pausa persistente.** Los topes diario/semanal se **recalculan en cada intento de apertura**; al cruzarse, rechazan el `open` (con `on_order_rejected` + log) pero **no setean ningún flag de pausa**. Así **se auto-resetean** al cambiar de día/semana sin necesitar `/resume` (un tope diario se limpia solo al día siguiente). Distinto del drawdown brake por estrategia, que sí persiste hasta `/resume` ([[D063]]).
+
+**Fronteras de ventana (cuidado de zona horaria, [[D039]]).** Día = 00:00 **hora server**; semana = domingo 00:00 server (ancla forex). Se convierten a **UTC** para la query a la DB (`utc = server − server_offset`), porque la DB guarda en UTC real. Una conversión mal hecha es bug silencioso → testeado con un caso de rollover de día.
+
+**Reversible.** "Nada global por el momento" — si más adelante se quiere un freno de cuenta (p.ej. al ir a real con varias estrategias), se re-habilita el kill switch global. Por ahora la independencia total acelera la experimentación en paper.
+
+**Implementación.** `config.py` (4 campos + parse + validación 0–50, `0`=off; se quita la validación `per-strategy max_open ≤ global`), `risk.py` (`check_period_pnl`; `check_strategy_risk` sin el cap global), `db.py` (`get_realized_pnl_since`), `engine.py` (`_check_period_caps`, gate reordenado), `main.py` (borra el kill switch del monitor). Tests: 382 passed / 2 skipped. Commits `133b346` + `a717370`.
+
+Relacionado: [[D053]], [[D062]], [[D063]], [[D064]], [[D039]], [[D071]], `drift/risk.py`, `drift/engine.py`, `drift/db.py`, `main.py`, `config.yaml`.
