@@ -19,7 +19,7 @@ Required test cases (spec):
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -665,6 +665,129 @@ class TestNextWake:
         wake = strat.next_wake(now)
         assert wake is not None
         assert wake == datetime(2026, 1, 12, 10, 0, tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Regression test — live boundary convention (candle_hour, not boundary_hour)
+# ---------------------------------------------------------------------------
+
+
+class TestLiveBoundaryParityRegression:
+    """Regression for the live/backtest divergence fixed in this commit.
+
+    Before the fix, _evaluate keyed the range/lock/trading windows on
+    ``bar_close_time.hour`` (the engine boundary).  In live mode the boundary
+    is bar_open_time + 15 min, so:
+      - The 10:45-open candle (closes 11:00) had boundary_hour==11 → wrongly
+        excluded from the range and treated as the lock bar with an EMPTY range.
+      - The 09:45-open candle (closes 10:00) had boundary_hour==10 → wrongly
+        accumulated into the range.
+
+    After the fix, the range windows key on ``candle_hour = bar_time.hour``:
+      - 10:45-open candle has candle_hour==10 → IS accumulated into the range.
+      - 09:45-open candle has candle_hour==9 → NOT accumulated.
+
+    This test builds a range from the four true London-hour candles (10:00,
+    10:15, 10:30, 10:45) with live-style bar_close_time (open + 15 min), then
+    asserts that the locked range reflects all four candles and that the 09:45
+    pre-open candle was excluded.
+    """
+
+    def test_range_built_from_candle_open_hour_not_boundary_hour(self) -> None:
+        """The 10:45-open candle must be IN the range; the 09:45-open candle must NOT be.
+
+        This test uses live-style bar_close_time = bar_open_time + 15 min, so
+        bar_close_time.hour != bar_time.hour at the 10:45→11:00 boundary.  Under
+        the old boundary-keyed code, the 10:45 candle would be treated as the lock
+        bar (boundary_hour==11) and its high/low would be excluded from the range.
+        Under the fixed candle-hour-keyed code, candle_hour==10, so it IS
+        accumulated before locking happens at the 11:00-open candle.
+        """
+        pair = "GBPUSD"
+        params = LondonOrbParams(
+            range_start_hour=10,
+            range_end_hour=11,
+            time_stop_hour=18,
+            range_atr_min=0.1,  # very loose so the range always passes ATR filter
+            range_atr_max=20.0,  # very loose upper bound so the range always passes
+            range_pip_floor={},  # no pip floor
+            tp_mult=1.0,
+            atr_period=14,
+        )
+        strat = LondonOrbStrategy(pairs=[pair], params=params)
+
+        # --- Step 1: send the 09:45-open pre-London candle (live boundary=10:00) ---
+        # Expected: excluded from range (candle_hour==9 → outside_window).
+        pre_open_high = 1.3000  # distinctive value — must NOT appear in the locked range
+        pre_open_df = _make_m15_df(
+            end_hour=9, end_minute=45, last_high=pre_open_high, last_low=1.2990, last_close=1.2995
+        )
+        pre_open_boundary = datetime(2026, 1, 5, 10, 0, tzinfo=UTC)  # live: open + 15min
+        market = _FakeMarket({(pair, "M15"): pre_open_df})
+        d_pre = strat.on_bar(pair, "M15", pre_open_boundary, market, _fake_ctx())
+        assert d_pre.kind == "noop"
+        sig_pre = _signal_from_decision(d_pre)
+        assert sig_pre.reason == "outside_window", (
+            f"09:45-open candle should be outside_window, got {sig_pre.reason!r}"
+        )
+
+        # --- Step 2: accumulate the four true range candles (10:00-10:45 open) ---
+        # Use distinct high/low values so we can verify each one contributed.
+        range_bars = [
+            (10, 0, 1.2860, 1.2790, 1.2820),  # high 1.2860
+            (10, 15, 1.2870, 1.2800, 1.2835),  # high 1.2870
+            (10, 30, 1.2855, 1.2795, 1.2825),
+            (10, 45, 1.2880, 1.2785, 1.2830),  # highest high; MUST be in locked range
+        ]
+        expected_range_high = max(h for _, _, h, _, _ in range_bars)  # 1.2880
+        expected_range_low = min(lo for _, _, _, lo, _ in range_bars)  # 1.2785
+
+        for open_h, open_m, hi, lo, c in range_bars:
+            df = _make_m15_df(
+                end_hour=open_h, end_minute=open_m, last_high=hi, last_low=lo, last_close=c
+            )
+            # Live-style boundary: open + 15 min (handles :45 → next hour correctly)
+            boundary = datetime(2026, 1, 5, open_h, open_m, tzinfo=UTC) + timedelta(minutes=15)
+            market = _FakeMarket({(pair, "M15"): df})
+            d = strat.on_bar(pair, "M15", boundary, market, _fake_ctx())
+            sig = _signal_from_decision(d)
+            assert d.kind == "noop", (
+                f"Range candle {open_h}:{open_m:02d} should be noop, got {d.kind!r}"
+            )
+            assert sig.reason == "define_range", (
+                f"Range candle {open_h}:{open_m:02d} should be define_range, got {sig.reason!r}"
+            )
+
+        # At this point the 10:45-open candle has been accumulated.
+        # The state must NOT be locked yet (lock fires on the 11:00-open candle).
+        assert not strat._states[pair].locked, "Range must not lock before the 11:00-open candle"
+        assert strat._states[pair].high == pytest.approx(expected_range_high, abs=1e-7), (
+            "10:45 candle high must be in the accumulated range (was excluded by old boundary code)"
+        )
+        assert strat._states[pair].low == pytest.approx(expected_range_low, abs=1e-7), (
+            "10:45 candle low must be in the accumulated range"
+        )
+        # The 09:45 pre-London candle's high must NOT have been included
+        assert strat._states[pair].high < pre_open_high, (
+            "09:45-open pre-London candle high must NOT be in the accumulated range"
+        )
+
+        # --- Step 3: lock bar — first candle opening at 11:00 (live boundary 11:15) ---
+        lock_df = _make_m15_df(
+            end_hour=11, end_minute=0, last_high=1.2820, last_low=1.2810, last_close=1.2815
+        )
+        lock_boundary = datetime(2026, 1, 5, 11, 15, tzinfo=UTC)  # live: open + 15min
+        market = _FakeMarket({(pair, "M15"): lock_df})
+        strat.on_bar(pair, "M15", lock_boundary, market, _fake_ctx())
+
+        assert strat._states[pair].locked, "Range must be locked after the 11:00-open candle"
+        assert strat._states[pair].tradeable, "Range must be tradeable (loose ATR filter)"
+        assert strat._states[pair].range_high == pytest.approx(expected_range_high, abs=1e-7), (
+            "Locked range_high must equal the max of the four 10:xx candles"
+        )
+        assert strat._states[pair].range_low == pytest.approx(expected_range_low, abs=1e-7), (
+            "Locked range_low must equal the min of the four 10:xx candles"
+        )
 
 
 if __name__ == "__main__":

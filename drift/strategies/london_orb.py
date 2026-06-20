@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import pandas as pd
@@ -203,9 +203,11 @@ class LondonOrbStrategy:
     ) -> Decision:
         """Evaluate one closed M15 candle and return a :class:`Decision`.
 
-        ``bar_close_time`` is the engine's authoritative boundary (D058).  All
-        session window reasoning keys off this clock, not the served candle's own
-        hour (same pattern as the Daily Lull's stale-frame guard, D059).
+        ``bar_close_time`` is the engine's authoritative boundary (D058), used
+        exclusively for the 18:00 time-stop check (with a freshness guard, D059).
+        All range-definition, lock, and trading-window logic keys on the served
+        candle's own open-time hour (``bar_time.hour``), matching the Daily Lull
+        convention and ensuring live/backtest parity (D055).
 
         Every evaluation carries a :class:`Signal` (accepted, rejected or time-stop)
         so the engine logs all signals for full transparency (D046).
@@ -214,8 +216,6 @@ class LondonOrbStrategy:
         m15_df = market.candles(pair, "M15", _M15_COUNT)
 
         if len(m15_df) < 2:
-            from datetime import timezone
-
             _now = datetime.now(tz=timezone.utc)
             _t = m15_df.index[-1].to_pydatetime() if len(m15_df) >= 1 else _now
             return Decision.noop(
@@ -254,7 +254,10 @@ class LondonOrbStrategy:
     ) -> Signal:
         """Pure evaluation: update state, compute indicators, build a Signal.
 
-        ``bar_close_time`` is the engine boundary used for the time-stop check.
+        ``bar_close_time`` drives only the 18:00 time-stop (with a freshness
+        guard, D058/D059).  All range-definition, lock, and trading-window logic
+        keys on ``bar_time.hour`` — the served candle's own open-time hour — so
+        live and backtest classify each candle identically (D055).
         """
         params = self.params
 
@@ -271,11 +274,9 @@ class LondonOrbStrategy:
         curr_high = float(m15_high.iloc[-1])
         curr_low = float(m15_low.iloc[-1])
 
-        # Use bar_close_time (engine boundary) as the authoritative hour for
-        # session-window and time-stop logic.  This mirrors the Lull's D058/D059
-        # pattern: the engine boundary is the clock, not the served candle's hour.
-        boundary_hour = bar_close_time.hour
-        boundary_weekday = bar_close_time.weekday()
+        # Candle hour / weekday: authoritative clock for range/lock/trading windows.
+        candle_hour = bar_time.hour
+        candle_weekday = bar_time.weekday()
 
         def _base_signal(
             action: Literal["buy", "sell", "none"],
@@ -298,36 +299,40 @@ class LondonOrbStrategy:
             )
 
         # --- Weekend: skip ---
-        if boundary_weekday in (5, 6):
+        if candle_weekday in (5, 6):
             return _base_signal("none", "outside_window")
 
         # --- 18:00 time stop ---
+        # Key off the engine boundary (bar_close_time), not the candle hour.
         # Freshness guard mirrors the Lull: only fire when the served candle is
-        # within one M15 interval of the boundary, so a stale frame after a
-        # long idle cannot trigger a spurious close.
-        bar_age = bar_close_time - bar_time
-        bar_is_fresh = timedelta(0) <= bar_age <= _M15_INTERVAL
-        if boundary_hour == params.time_stop_hour:
-            if bar_is_fresh:
+        # within one M15 interval of the boundary, so a stale frame after a long
+        # idle cannot trigger a spurious close.
+        if bar_close_time.hour == params.time_stop_hour:
+            if timedelta(0) <= (bar_close_time - bar_time) <= _M15_INTERVAL:
                 self._reset_state(state)
                 return _base_signal("none", "session_end_time_stop")
             return _base_signal("none", "stale_session_data", "stale_session_data")
 
         # --- Outside the active window ---
-        if not (params.range_start_hour <= boundary_hour < params.time_stop_hour):
+        if not (params.range_start_hour <= candle_hour < params.time_stop_hour):
             return _base_signal("none", "outside_window")
 
-        # --- Range-definition phase: 10:00-10:59 ---
-        if boundary_hour == params.range_start_hour:
+        # --- Range-definition phase: candle_hour == range_start_hour (10) ---
+        # Accumulates candles opening at 10:00, 10:15, 10:30, and 10:45.
+        if candle_hour == params.range_start_hour:
             self._accumulate_range(state, bar_time, curr_high, curr_low)
             return _base_signal("none", "define_range")
 
-        # --- Lock phase: 11:00 (range_end_hour) ---
-        if boundary_hour == params.range_end_hour and not state.locked:
+        # --- Lock phase: first candle opening at range_end_hour (11) ---
+        # Lock the range using the already-accumulated 10:xx high/low, then fall
+        # through to breakout evaluation on this same bar (mirrors the Lull: the
+        # lock candle is also a valid breakout candidate).
+        if candle_hour == params.range_end_hour and not state.locked:
             self._lock_range(state, pair, atr_val, params)
-            return _base_signal("none", "range_locked" if state.tradeable else "range_rejected")
+            if not state.tradeable:
+                return _base_signal("none", "range_rejected")
 
-        # --- Trading phase: 11:00-17:59 with a locked, tradeable range ---
+        # --- Trading phase: candle_hour in [range_end_hour, time_stop_hour) ---
         if not state.locked:
             return _base_signal("none", "range_not_locked", "range_not_locked")
 
