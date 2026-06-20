@@ -905,3 +905,17 @@ Relacionado: [[D053]], [[D057]], `drift/engine.py`. Implementa: Phase 2.7 Step 4
 **Operacional.** El 2026-06-10 se mitigó con un restart manual (feed ya caliente → UTC+3). Con este parche, un arranque frío en el VPS (escenario típico de reboot) ya no envenena el schedule. Relevante antes de Phase 3 (go-live en VPS).
 
 Relacionado: [[D041]], [[D047]], [[D058]], `drift/mt5_client.py`, `drift/engine.py`. Patch directo (no Phase 2.7).
+
+---
+
+### D066 — El cierre de sesión a las 02:00 siempre notifica (heartbeat), incluso sin trades
+
+**Contexto.** Bug de observabilidad detectado en vivo al auditar ~2 semanas de operación (2026-06-19). El usuario reportó que "hace días no aparece SESSION CLOSED" y "no hay trades". Los logs confirmaron que el bot estaba sano (sesiones abrían cada día, `SESSION OPEN` disparaba), pero el guard `if closed == 0: return` en `_handle_close_all` (#7) **silenciaba** la notificación de cierre cuando no había posiciones abiertas a las 02:00. Como el spread guard [[D046]] venía rechazando todas las aperturas (el fill llegaba en/pasado el TP-midpoint del Daily Lull), no había posiciones que cerrar → cero `SESSION CLOSED` por días. El silencio hizo **indistinguible** "bot sano sin setups" de "bot colgado/muerto", ocultando que la estrategia llevaba días sin operar.
+
+**Decisión.** `_handle_close_all` **siempre** emite la notificación `session_closed` en el time-stop de las 02:00, incluso con `closed == 0`. El wording de la noche sin trades es calmo ("session closed, no trades this session, sleeping until next session") para que se lea como un ping de vida, no como ruido. Supersede la regla "quiet nights no noise" de #7: la visibilidad operacional pesa más que el ruido de un mensaje calmo por sesión por estrategia.
+
+**Validación.** `tests/test_engine.py::test_close_all_session_close_heartbeat_when_no_positions` (renombrado desde `..._silent_when_no_positions`): con cero posiciones, dispara exactamente una notificación `session_closed` cuyo detalle contiene "no trades".
+
+**No es la causa raíz de los síntomas.** Los negativos y la ausencia de trades del Daily Lull son estructurales (TP=midpoint < spread de la franja ilíquida; [[D043]]/[[D046]] ya medían el edge en +3-5% anual). D066 solo restaura la señal de vida; la decisión de pausar el Daily Lull y pivotar a una estrategia nueva se toma por separado.
+
+Relacionado: [[D046]], [[D043]], [[D057]], [[D061]], `drift/engine.py`, `tests/test_engine.py`, `docs/user/commands.md`.
