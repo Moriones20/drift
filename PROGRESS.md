@@ -118,6 +118,27 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
 - **Reset del peak global en `/resume` global** — diferido (D063): el peak global se almacena event-based (`peak_balance` + `MAX` en `get_stats`); bajarlo limpio necesita su propio diseño (tabla con columna directa o evento `peak_reset`). El freno global conserva su rigidez hasta entonces.
 - **Re-seed del baseline al cambiar `allocation_pct`** (D062): cambiar la asignación deja el baseline obsoleto; poner `baseline_capital` a NULL fuerza el recálculo. Sin automatizar.
 
+## Phase 2.8 — Estrategia #2: London Opening-Range Breakout (`london_orb`)
+
+Diseño: **D067–D069**, `ROADMAP.md` Phase 2.8, `docs/knowledge/london-orb.md`, `docs/knowledge/strategy-framework.md` §7/§9. Primera estrategia nueva sobre el framework (la #2). Pivota el capital fuera del Daily Lull (pausado/desactivado, D069). Origen: post-mortem del Lull en vivo (auditoría 2026-06-19, memoria `daily-lull-live-lessons`).
+
+> **En cada sesión: leer PROGRESS.md primero.** El framework ya existe (Phase 2.6/2.7) — esto es añadir una estrategia siguiendo el checklist de `strategy-framework.md` §7. Restricciones no negociables (§9): R:R ≥ 1:1 que sobreviva al spread real · backtest con costos de ejecución · time-stop que respete la duración del trade ganador · heartbeat en todo camino silencioso · riesgo aislado (magic_offset 1, allocation ≤100%).
+
+### Batch ORB-A — Estrategia (Steps 43-45)
+- [ ] 43. `LondonOrbParams` + parsing en `drift/strategies/london_orb.py` (dataclass, defaults, params opaco). (D054/D067)
+- [ ] 44. `LondonOrbStrategy.on_bar`: estado per-par, define-range 10:00–11:00, lock + filtro ancho (ATR + piso pips), ruptura por cierre M15 ambos sentidos, `Open` (SL=extremo opuesto / TP=1×), `CloseAll` time-stop 18:00, 1 trade/par/día; registrar en registry; sin tocar MT5/DB/reloj. (D051/D067/D068)
+- [ ] 44b. Heartbeat de cierre 18:00 incl. sin ruptura (verificar/ajustar el path del engine, análogo a D066). (Restricción #4)
+- [ ] 45. Unit tests `tests/test_london_orb_strategy.py` (señales aceptadas/rechazadas con reason; long/short; rango fuera de rango y bajo piso; ruptura en ventana de definición; 2ª señal del día; time-stop; heartbeat). (§7.7)
+
+### Batch ORB-B — Validación con costos reales (Steps 46-47) — 46 puede arrancar tras 44
+- [ ] 46. Datos M15 ≥2a (GBPJPY/GBPUSD/EURJPY/EURUSD) + backtest unificado (`backtest/engine.py`, mismo `on_bar`); **rankear y podar pares**; **calibrar** `range_atr_min/max` y `range_pip_floor` por par (walk-forward IS/OOS, sin overfit). (D055)
+- [ ] 47. Revalidación de costos: modelar spread de Londres inflado sobre los fills (extender `analyze_spread_cost.py`); confirmar edge con R:R ≥ 1:1 **antes** de demo. Si reward realista ~ spread → volver a 46. (Restricción #2 / L2)
+
+### Batch ORB-C — Config, docs, deploy (Steps 48-50) — 48/49 independientes
+- [ ] 48. Config: bloque `london_orb` en `config.yaml` + `config.example.yaml` (magic_offset 1, alloc 100, risk estándar, params calibrados); `daily_lull` → `enabled: false`; validar (magic único, allocations ≤100%). (D069)
+- [ ] 49. Docs de usuario: `configuration.md` (bloque + params), `commands.md` (`/pause london_orb` etc. genéricos), `getting-started.md` (ventana operativa ahora 05:00–13:00 UTC-5).
+- [ ] 50. Validación e2e en paper: wake 10:00 → define-range → lock 11:00 → ruptura → fill (D046 holgado) → time-stop 18:00 + heartbeat → reset. Acumular trades antes de Phase 3.
+
 ## Phase 3 — Live
 
 ### Session 8: Go Live (Steps 22-26)

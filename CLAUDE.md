@@ -1,8 +1,12 @@
-# Drift — Daily Lull Scalper
+# Drift — Plataforma de estrategias de forex (MT5/ICMarkets)
 
-Bot de forex autónomo. Estrategia: Daily Lull Scalper en M15, mean reversion durante la ventana 21:00-02:00 hora servidor MT5 (GMT+2 invierno/+3 verano) sobre un rango definido en las primeras 2 horas. (La ventana es el *daily lull*: cierre de NY → antes de Tokio, la franja más tranquila del día; en Bogotá es una franja de tarde, 13:00-18:00. Antes se llamaba "Asian Session Scalper" — ver D041/D042.) Opera en MetaTrader 5 con ICMarkets sobre 5 pares (AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP). Gestión de riesgo: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
+Bot de forex autónomo, **plataforma multi-estrategia** sobre una cuenta MT5 con ICMarkets. El motor es genérico ("reloj por suscripción", D051): no conoce ventanas, solo cierres de vela; cada estrategia implementa el contrato `Strategy.on_bar`. Riesgo aislado por estrategia (presupuesto notional + drawdown propio), magic base+offset, brake global. Gestión de riesgo base: 1% por trade, 10% max drawdown, sin trailing stop. Notificaciones y control vía Telegram.
 
-> **Evolución a plataforma multi-estrategia (D050, Phase 2.6):** Drift está pasando de bot mono-estrategia a **plataforma que hospeda N estrategias** sobre una cuenta MT5, con riesgo aislado por estrategia (presupuesto notional + drawdown propio) y brake global. El motor es genérico ("reloj por suscripción", D051): no conoce ventanas, solo cierres de vela; cada estrategia implementa el contrato `Strategy.on_bar`. El Daily Lull es la instancia #1. Diseño en D050–D057 y `docs/knowledge/strategy-framework.md`. **En implementación** — ver `PROGRESS.md` Phase 2.6 (Steps 27-36).
+**Estrategias:**
+- **`london_orb` (#2, ACTIVA) — Phase 2.8, en implementación.** London Opening-Range Breakout: momentum direccional en la apertura de Londres (rango 10:00-11:00 server → ruptura por cierre M15, R:R 1:1, flat 18:00) sobre GBPJPY/GBPUSD/EURJPY/EURUSD. Diseñada para invertir cada modo de falla del Lull. Diseño: D067-D069, `docs/knowledge/london-orb.md`. **Empezar en `PROGRESS.md` Phase 2.8 (Steps 43-50).**
+- **`daily_lull` (#1, PAUSADO/disabled — D069).** Daily Lull Scalper M15, mean reversion en la franja ilíquida 21:00-02:00 server sobre 5 pares. Falló en vivo (~2 semanas demo, PF 0.01): TP=midpoint < spread de la franja ⇒ sin edge. Config preservada para A/B. Lecciones: `docs/knowledge/strategy-framework.md` §9, memoria `daily-lull-live-lessons`, D043/D046/D066. Reglas: `docs/knowledge/daily-lull-scalper.md`.
+
+> **Framework multi-estrategia (D050, Phases 2.6/2.7 — completas).** El refactor de bot mono-estrategia a plataforma ya está hecho y validado e2e en paper (2026-06-10). Contrato `Strategy.on_bar`, motor reloj-por-suscripción, riesgo de dos niveles, backtest unificado y Telegram por estrategia: D050–D066, `docs/knowledge/strategy-framework.md`. **Añadir una estrategia nueva = seguir el checklist §7 de ese doc.**
 
 ## Key Documents
 
@@ -12,7 +16,9 @@ Bot de forex autónomo. Estrategia: Daily Lull Scalper en M15, mean reversion du
 | `PROGRESS.md` | Checklist de implementación — leer primero en cada sesión |
 | `docs/DECISIONS.md` | Decisiones de diseño con rationale — no re-litigar |
 | `docs/ARCHITECTURE.md` | Diagramas, data flow, schema SQL, file structure |
-| `docs/knowledge/strategy-framework.md` | Contrato `Strategy.on_bar`, motor reloj-por-suscripción, cómo añadir una estrategia (Phase 2.6) |
+| `docs/knowledge/strategy-framework.md` | Contrato `Strategy.on_bar`, motor reloj-por-suscripción, cómo añadir una estrategia (§7 checklist, §9 lecciones del Lull en vivo) |
+| `docs/knowledge/london-orb.md` | **Estrategia activa #2 (`london_orb`):** reglas, params, tiempos, diferencias con el Lull (Phase 2.8) |
+| `docs/knowledge/daily-lull-scalper.md` | Estrategia #1 (`daily_lull`, pausada): reglas y params — contraste histórico |
 | `docs/knowledge/mt5-python-api.md` | Referencia de la API de MT5 con Python |
 | `docs/knowledge/telegram-bot-setup.md` | Setup del bot de Telegram y formato de mensajes |
 | `docs/knowledge/trend-following-indicators.md` | Fórmulas e implementación de EMA, MACD, ATR (**estrategia histórica — ver encabezado del archivo**) |
@@ -48,10 +54,11 @@ main.py (M15 loop dentro de ventana 21:00-02:00 hora servidor MT5)
 ## Design Priorities
 
 1. **Supervivencia** — riesgo 1% por trade, max 4 simultáneos, 10% drawdown = pausa
-2. **Simplicidad** — 3 indicadores (RSI, ATR, ADX) sobre M15 + H4, nada más
-3. **Transparencia** — logging completo de TODAS las señales (aceptadas y rechazadas)
-4. **Autonomía** — 24/5 sin intervención, Telegram para monitoreo
-5. **Cabeza fría** — cambios solo con datos y análisis, nunca por emoción
+2. **Simplicidad** — pocos indicadores por estrategia (el Lull usa RSI/ATR/ADX; `london_orb` solo ATR), nada de más
+3. **El reward debe dominar al spread** — toda estrategia: R:R ≥ 1:1 que sobreviva al spread+slippage reales del par/hora, no al fill sin costo del backtest (lección L1 del Lull; ver `strategy-framework.md` §9)
+4. **Transparencia** — logging completo de TODAS las señales (aceptadas y rechazadas)
+5. **Autonomía** — 24/5 sin intervención, Telegram para monitoreo
+6. **Cabeza fría** — cambios solo con datos y análisis, nunca por emoción
 
 ## Conventions
 
@@ -64,7 +71,7 @@ main.py (M15 loop dentro de ventana 21:00-02:00 hora servidor MT5)
 
 ## Implementation Order
 
-Follow `ROADMAP.md` Phase 1, steps 1-16. Check `PROGRESS.md` to know where to pick up.
+Check `PROGRESS.md` first to know where to pick up. **Estado actual:** Phases 1, 2, 2.5, 2.6, 2.7 completas; **próximo trabajo = Phase 2.8 (London ORB, Steps 43-50)**. Phase 3 (go-live) viene después. Para añadir/implementar una estrategia, seguir el checklist §7 de `docs/knowledge/strategy-framework.md`.
 
 Commit after each completed step. After each step, update `PROGRESS.md` — check off the step and note anything relevant.
 
@@ -86,7 +93,10 @@ If something is ambiguous, make a decision, document it in `docs/DECISIONS.md`, 
 | MS-C | 32 | Multi-estrategia: motor genérico (reescritura del loop) |
 | MS-D | 33-34 | Multi-estrategia: monitoreo por estrategia + Telegram por estrategia |
 | MS-E | 35-36 | Multi-estrategia: backtest unificado + validación e2e en paper |
-| 8 | 22-26 | Go live: VPS, live account, monitoring (DESPUÉS de Phase 2.6, D050) |
+| ORB-A | 43-45 | London ORB (Phase 2.8): `LondonOrbParams` + `on_bar` + heartbeat + unit tests |
+| ORB-B | 46-47 | London ORB: backtest unificado + calibración de params + revalidación de costos de ejecución |
+| ORB-C | 48-50 | London ORB: config (pivote D069) + docs de usuario + validación e2e en paper |
+| 8 | 22-26 | Go live: VPS, live account, monitoring (DESPUÉS de Phase 2.8) |
 
 ### Parallelism
 
@@ -95,6 +105,7 @@ Steps that can run concurrently via subagents:
 - Steps 9 + 10: executor and trailing stop are independent modules
 - Steps 12 + 15: Telegram commands and weekly report logic are independent
 - Steps 29 + 30 + 31 (Phase 2.6): port del Lull, migración DB y riesgo de dos niveles son módulos independientes una vez existen el contrato (27) y la config (28). Step 35 (backtest) puede arrancar en paralelo en cuanto exista el port (29).
+- Steps 46 + 45 (Phase 2.8): el backtest/calibración (46) puede correr en paralelo con los unit tests (45) en cuanto exista `on_bar` (44). Steps 48 (config) y 49 (docs de usuario) son independientes una vez calibrados los params (47).
 
 ## Context Management
 

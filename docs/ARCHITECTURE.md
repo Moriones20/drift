@@ -75,7 +75,8 @@
 │   • MarketData  (acceso a velas por par/TF)   │
 │   • StrategyContext (balance, posiciones,     │
 │                      config de la instancia)  │
-│   • REGISTRY = {"daily_lull": DailyLull...}   │
+│   • REGISTRY = {"daily_lull": DailyLull...,   │
+│                "london_orb": LondonOrb...}    │
 │                                               │
 │  daily_lull.py — instancia #1:                │
 │   • timeframes = {"M15"}  (usa H4 vía market) │
@@ -263,7 +264,8 @@ Thread Telegram (daemon):
 | MT5 Client | `drift/mt5_client.py` | Conexión, datos de mercado, estado de cuenta |
 | Indicators | `drift/indicators.py` | Cálculo de RSI(14) y ATR(14) en M15, ADX(14) en H4 (lo usan las estrategias) |
 | Strategy contract | `drift/strategies/base.py` | Contrato `Strategy` (`name`, `timeframes`, `on_bar() -> Decision`); tipos `Decision` (`Open`/`Close`/`CloseAll`/`NoOp`), `MarketData`, `StrategyContext`; `REGISTRY` nombre→clase (D051, D054) |
-| Daily Lull | `drift/strategies/daily_lull.py` | Instancia #1: SessionState privado per par, máquina de ventana INTERNA (21:00-22:59 rango, 23:00-01:59 trading, 02:00 time-stop → CloseAll), reglas internas (skip-Friday, espera de rollover), parseo de `params` a `DailyLullParams` (D051, D055). *Reemplaza al antiguo `strategy.py`.* |
+| Daily Lull | `drift/strategies/daily_lull.py` | Instancia #1 (pausada/disabled tras el post-mortem en vivo, D069): SessionState privado per par, máquina de ventana INTERNA (21:00-22:59 rango, 23:00-01:59 trading, 02:00 time-stop → CloseAll), reglas internas (skip-Friday, espera de rollover), parseo de `params` a `DailyLullParams` (D051, D055). *Reemplaza al antiguo `strategy.py`.* |
+| London ORB | `drift/strategies/london_orb.py` | Instancia #2 (activa): estado privado per par (range high/low, locked, traded), ventana INTERNA (10:00-11:00 define rango, lock + filtro ancho ATR/pips, 11:00-18:00 breakout por cierre M15 ambos sentidos → Open con SL=extremo opuesto/TP=1×, 18:00 time-stop → CloseAll + heartbeat), parseo de `params` a `LondonOrbParams` (D067-D069). Solo usa ATR. |
 | Risk Manager | `drift/risk.py` | Riesgo en DOS niveles (D053): sizing notional por estrategia (`balance·allocation_pct·percent_per_trade`); límites globales (`max_open_trades`, `max_drawdown`=kill switch, correlación) y por estrategia (`max_open_trades`, `max_drawdown`=pausa esa) |
 | Executor | `drift/executor.py` | Abrir/cerrar trades con magic = base+offset; `get_open_positions(magic)` para atribución por broker (D052) |
 | Trailing Stop | `drift/trailing.py` | Monitorear y actualizar stops de trades abiertos (desactivado — `use_trailing_stop: false`) |
@@ -288,7 +290,8 @@ drift/
 │   ├── strategies/
 │   │   ├── __init__.py      # REGISTRY {nombre: clase}
 │   │   ├── base.py          # Contrato Strategy, Decision, MarketData, StrategyContext
-│   │   └── daily_lull.py    # Daily Lull (SessionState + ventana interna) — reemplaza strategy.py
+│   │   ├── daily_lull.py    # Daily Lull (#1, pausado/disabled D069) — reemplaza strategy.py
+│   │   └── london_orb.py    # London ORB (#2, activa): range 10:00-11:00, breakout, R:R 1:1 (D067)
 │   ├── risk.py              # Riesgo en dos niveles (global + por estrategia)
 │   ├── executor.py          # Ejecución de trades en MT5 (magic = base+offset)
 │   ├── trailing.py          # Trailing stop manager (desactivado en estrategia actual)
