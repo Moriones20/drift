@@ -4,9 +4,11 @@ Referencia técnica de la estrategia #2 de Drift (`name: london_orb`). Diseño y
 
 > 📍 **Por qué existe.** El Daily Lull (#1) falló en vivo por una sola causa: TP en el midpoint del rango ⇒ reward ≤ spread de la franja ilíquida 23:00–02:00 server (ver `daily-lull-scalper.md` y la memoria `daily-lull-live-lessons`). `london_orb` es la **inversión punto-por-punto** de ese fallo: mean reversion → momentum direccional; franja ilíquida → apertura de Londres (líquida); TP chico → TP = múltiplo del spread (R:R 1:1). El diseño nace de que **el reward debe dominar al spread**.
 
+> ⚠️ **Estado (2026-06-20, D070): SIN edge en backtest; en paper como validación de fidelidad, no de edge.** El backtest unificado (2a de M15 real, 4 pares) dio **portfolio PF 0.82, ningún par con OOS PF ≥ 1.2**. La geometría se re-ancló al precio de ruptura (ver §4) porque la original daba un payoff realizado ~0.55 (entrada pasada del nivel); con la geometría honesta el win rate cayó de 61% (espejismo) a ~50% → la señal cruda es ≈ moneda al aire. Está desplegada en demo para validar el **sistema end-to-end** y la **fidelidad live-vs-backtest** (¿coinciden los fills en hora líquida?), NO como apuesta de edge. Tras ~1 semana se decide archivar vs un filtro de tendencia H1/H4. Detalle: [[D070]].
+
 ## Idea base
 
-Durante la primera hora de la apertura de Londres el mercado define un rango. La tesis: cuando el precio **rompe** ese rango por cierre de vela, suele continuar en esa dirección (momentum direccional impulsado por el volumen de la apertura). Se entra en la ruptura, con SL al lado opuesto del rango y TP a 1× el ancho del rango.
+Durante la primera hora de la apertura de Londres el mercado define un rango. La tesis: cuando el precio **rompe** ese rango por cierre de vela, suele continuar en esa dirección (momentum direccional impulsado por el volumen de la apertura). Se entra en la ruptura, con SL y TP anclados al precio de ruptura (`curr_close ± range_width`, R:R 1:1 — ver §4 y D070).
 
 Es **momentum/breakout**, no mean reversion: el trade quiere que el precio **siga**, no que vuelva. Por eso un time-stop generoso (18:00) no mata la tesis como el cierre a las 02:00 mataba la reversión del Lull (lección L3).
 
@@ -29,9 +31,12 @@ Es **momentum/breakout**, no mean reversion: el trade quiere que el precio **sig
 - **Ambos sentidos**, sin filtro de tendencia (simplicidad; revisable en optimización — ver D067).
 - **Máximo 1 trade por par por día** — si la primera ruptura falla (toca SL), no se reingresa.
 
-### 4. Salir del trade
-- **Take Profit**: `tp_mult` (=1.0) × ancho del rango, más allá del nivel de ruptura. R:R 1:1.
-- **Stop Loss**: el **extremo opuesto** del rango (riesgo = ancho del rango). El SL lejos evita los stop-outs por el re-test clásico de la ruptura.
+### 4. Salir del trade (geometría re-anclada al precio de ruptura — D070)
+Con `range_width = range_high − range_low` y `curr_close` = cierre de la vela de ruptura:
+- **BUY**: `SL = curr_close − range_width`; `TP = curr_close + tp_mult × range_width`.
+- **SELL**: `SL = curr_close + range_width`; `TP = curr_close − tp_mult × range_width`.
+- Riesgo = `range_width`, reward = `tp_mult × range_width`, **ambos medidos desde el precio de señal** → R:R = `tp_mult`:1 exacto sin importar cuánto sobre-corrió la ruptura.
+- **Por qué así (D070):** la geometría original (SL=extremo opuesto, TP=`range_high+ancho`) daba un payoff realizado ~0.55 porque la entrada llena pasada `range_high`. Re-anclar al `curr_close` lo arregla (payoff ~0.8), aunque el backtest reveló que la señal sigue sin edge.
 - **Time stop**: si a las **18:00 server** el trade sigue abierto, se cierra (fin de la sesión de Londres). Sin holds overnight.
 
 ### 5. Heartbeat (restricción #4 / lección L4)

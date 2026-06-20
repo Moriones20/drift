@@ -972,3 +972,26 @@ Relacionado: [[D041]], [[D067]], [[D058]], `drift/strategies/london_orb.py`. Imp
 **Nota de re-seed.** Al cambiar de estrategia activa, `london_orb` siembra su `baseline_capital` en la primera computación post-deploy ([[D062]]); su curva de drawdown arranca limpia desde el deploy (intencional). Si en el futuro se reactiva el Lull, habrá que re-balancear allocations a ≤100% y re-seedear (poner `baseline_capital` a NULL fuerza el recálculo, [[D062]]).
 
 Relacionado: [[D052]], [[D053]], [[D054]], [[D062]], [[D067]], `config.yaml`, `config.example.yaml`. Implementa: Phase 2.8 Step 48.
+
+---
+
+### D070 — London ORB: geometría re-anclada al precio de ruptura; sin edge en backtest; a paper como validación de fidelidad (no de edge)
+
+**Contexto (sesión de implementación 2026-06-19/20, `/orchestrate`).** Al backtestear `london_orb` (motor unificado, mismo `on_bar`, datos M15 reales 2a de los 4 pares) con la geometría original de [[D067]] (SL=extremo opuesto, TP=`range_high + ancho`), el resultado fue **sin edge**: portfolio PF 0.88, win rate ~61%, ningún par con OOS PF ≥ 1.2. Diagnóstico verificado: la entrada llena en el *open de la vela siguiente* (ya pasada `range_high`) mientras el TP está anclado al extremo del rango → el **payoff realizado era ~0.55, no el 1:1 diseñado** (la lección [[D043]]/L1 resurgiendo). El win rate alto era un espejismo: SL lejano + TP minúsculo = ganar seguido y poco, perder raro y mucho.
+
+**Decisión 1 — re-anclar la geometría al precio de ruptura.** SL/TP se miden desde `curr_close` (el cierre de la vela de ruptura) con `range_width` como unidad, no desde los extremos del rango:
+- BUY: `sl = curr_close - range_width`; `tp = curr_close + tp_mult * range_width`.
+- SELL: `sl = curr_close + range_width`; `tp = curr_close - tp_mult * range_width`.
+
+Esto da R:R = `tp_mult`:1 exacto desde el precio de señal, sin importar cuánto sobre-corrió la ruptura. Re-backtest: el payoff realizado subió a **0.77–0.85** (geometría honesta), **pero el win rate cayó a ~50% y el portfolio PF a 0.82** — al quitar el sesgo de la geometría vieja se ve que **la señal cruda de ruptura del opening-range M15 en estos 4 pares es ≈ una moneda al aire con payoff < 1: no hay edge**. (Hallazgo lateral: `range_atr_min` es **inerte** — el `range_pip_floor` por par es siempre el filtro que ata.)
+
+**Decisión 2 — desplegar a paper como validación de SISTEMA + FIDELIDAD, no como apuesta de edge.** El usuario optó por verlo ~1 semana en demo antes de archivar. Marco explícito acordado para no auto-engañarse:
+- **Una semana NO juzga el edge** (~10-20 trades vs 358 del backtest en 2a; es ruido — el propio "1W/6L" del Lull era demasiado chico, el veredicto real fue estructural).
+- **Lo que paper SÍ valida:** (a) el sistema end-to-end bajo la estrategia #2 (era el Step 50 igual): motor, contrato, fills, heartbeat 18:00, atribución por magic; (b) **fidelidad live-vs-backtest**: si los fills de ORB en horas líquidas de Londres coinciden con el backtest (a diferencia del Lull, que divergió feo), aprendemos que **el backtest es confiable para estrategias de hora líquida** — meta-conocimiento para la estrategia #3. El demo **es** el test de spread real → reemplaza el Step 47 (modelar spread en backtest).
+- **Asimetría a tener presente:** la lección del Lull es que el backtest fue *optimista* (live salió peor). Un backtest honesto que ya da PF 0.82 sugiere live ≤ 0.82, no mejor. Por eso el criterio es fidelidad de ejecución, no P&L: una semana buena sería suerte-ruido, una mala confirma.
+
+**Config (Step 48):** `daily_lull` → `enabled: false` ([[D069]]); `london_orb` `enabled: true`, `magic_offset: 1` (magic 234001), `allocation_pct: 100`, 4 pares (se conservan los 4 para más muestras de fills), `range_atr_max: 2.0`, pip floors GBPJPY=18/GBPUSD=10/EURJPY=12/EURUSD=8, `tp_mult: 1.0`. Validado (magic único, allocations ≤100%). Step 47 (spread en backtest) **superseded** por el demo como test de spread real.
+
+**Pendiente tras la semana:** decidir archivar (cabeza fría — sin edge) vs un último intento principista (filtro de tendencia H1/H4, la única palanca que no viola R:R ni es overfitting). NO bajar `tp_mult` < 1 (violaría R:R ≥ 1:1) ni añadir filtros sobre señal floja (overfitting, prioridad #6).
+
+Relacionado: [[D067]], [[D068]], [[D069]], [[D043]], [[D046]], [[D055]], `drift/strategies/london_orb.py`, `backtest/run_orb.py`, `config.yaml`. Commits: `ad9424e` (geometría), `e84eec2` (broker TP en motor), `472f8c2` (runner). Implementa: Phase 2.8 Steps 46/48; Step 50 en curso (paper).

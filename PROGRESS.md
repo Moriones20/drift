@@ -124,20 +124,22 @@ Diseño: **D067–D069**, `ROADMAP.md` Phase 2.8, `docs/knowledge/london-orb.md`
 
 > **En cada sesión: leer PROGRESS.md primero.** El framework ya existe (Phase 2.6/2.7) — esto es añadir una estrategia siguiendo el checklist de `strategy-framework.md` §7. Restricciones no negociables (§9): R:R ≥ 1:1 que sobreviva al spread real · backtest con costos de ejecución · time-stop que respete la duración del trade ganador · heartbeat en todo camino silencioso · riesgo aislado (magic_offset 1, allocation ≤100%).
 
+> **Estado tras la orquestación (2026-06-19/20, `/orchestrate` en rama `feat/london-orb`):** estrategia implementada y backtesteada. **HALLAZGO: sin edge en backtest** (portfolio PF 0.82, ningún par OOS PF ≥ 1.2; la señal cruda es ≈ moneda al aire una vez la geometría es honesta). Re-anclada la geometría al precio de ruptura (D070). Desplegada en **paper como validación de sistema + fidelidad live-vs-backtest, NO de edge** (decisión del usuario; ver D070). Tras ~1 semana: archivar vs filtro de tendencia H1/H4. Status detallado: `docs/plans/london-orb.status.md`.
+
 ### Batch ORB-A — Estrategia (Steps 43-45)
-- [ ] 43. `LondonOrbParams` + parsing en `drift/strategies/london_orb.py` (dataclass, defaults, params opaco). (D054/D067)
-- [ ] 44. `LondonOrbStrategy.on_bar`: estado per-par, define-range 10:00–11:00, lock + filtro ancho (ATR + piso pips), ruptura por cierre M15 ambos sentidos, `Open` (SL=extremo opuesto / TP=1×), `CloseAll` time-stop 18:00, 1 trade/par/día; registrar en registry; sin tocar MT5/DB/reloj. (D051/D067/D068)
-- [ ] 44b. Heartbeat de cierre 18:00 incl. sin ruptura (verificar/ajustar el path del engine, análogo a D066). (Restricción #4)
-- [ ] 45. Unit tests `tests/test_london_orb_strategy.py` (señales aceptadas/rechazadas con reason; long/short; rango fuera de rango y bajo piso; ruptura en ventana de definición; 2ª señal del día; time-stop; heartbeat). (§7.7)
+- [x] 43. `LondonOrbParams` + parsing en `drift/strategies/london_orb.py`. (D067) — `aba10ff`
+- [x] 44. `LondonOrbStrategy.on_bar`: estado per-par, define-range 10:00–11:00, lock + filtro ancho, ruptura por cierre M15 ambos sentidos, `CloseAll` time-stop 18:00, 1 trade/par/día; registrado; sin tocar MT5/DB/reloj. (D067/D068) — `aba10ff`. **Fix de paridad:** ventana keyed en `bar_time.hour` (no boundary) — `dc01bf0`. **Geometría re-anclada** (D070) — `ad9424e`.
+- [x] 44b. Heartbeat de cierre 18:00: el `_handle_close_all` del engine ya es genérico (dispara con `reason=="session_close"` para cualquier estrategia, incl. 0 posiciones). Sin cambios al engine.
+- [x] 45. Unit tests `tests/test_london_orb_strategy.py` (25 tests: long/short, filtros, ventana, time-stop, heartbeat, regresión de boundary parity, invariante R:R). 
 
-### Batch ORB-B — Validación con costos reales (Steps 46-47) — 46 puede arrancar tras 44
-- [ ] 46. Datos M15 ≥2a (GBPJPY/GBPUSD/EURJPY/EURUSD) + backtest unificado (`backtest/engine.py`, mismo `on_bar`); **rankear y podar pares**; **calibrar** `range_atr_min/max` y `range_pip_floor` por par (walk-forward IS/OOS, sin overfit). (D055)
-- [ ] 47. Revalidación de costos: modelar spread de Londres inflado sobre los fills (extender `analyze_spread_cost.py`); confirmar edge con R:R ≥ 1:1 **antes** de demo. Si reward realista ~ spread → volver a 46. (Restricción #2 / L2)
+### Batch ORB-B — Validación con costos reales (Steps 46-47)
+- [x] 46. Datos M15 2a reales de los 4 pares (GBPJPY/EURJPY del Lull; GBPUSD/EURUSD descargados de MT5 demo). Motor generalizado para TP de broker intrabar (`e84eec2`, conserva el midpoint-close del Lull + 11 slow equivalence tests verdes). Runner `backtest/run_orb.py` + walk-forward (`472f8c2`). **Resultado: sin edge** (ver D070). `range_atr_min` inerte (el pip floor ata). 
+- [~] 47. **Superseded por el demo** (D070): el paper en vivo es el test de spread/costo real, en vez de modelarlo en backtest. (El backtest honesto ya da PF<1 sin spread.)
 
-### Batch ORB-C — Config, docs, deploy (Steps 48-50) — 48/49 independientes
-- [ ] 48. Config: bloque `london_orb` en `config.yaml` + `config.example.yaml` (magic_offset 1, alloc 100, risk estándar, params calibrados); `daily_lull` → `enabled: false`; validar (magic único, allocations ≤100%). (D069)
-- [ ] 49. Docs de usuario: `configuration.md` (bloque + params), `commands.md` (`/pause london_orb` etc. genéricos), `getting-started.md` (ventana operativa ahora 05:00–13:00 UTC-5).
-- [ ] 50. Validación e2e en paper: wake 10:00 → define-range → lock 11:00 → ruptura → fill (D046 holgado) → time-stop 18:00 + heartbeat → reset. Acumular trades antes de Phase 3.
+### Batch ORB-C — Config, docs, deploy (Steps 48-50)
+- [x] 48. Config: `config.yaml` real → `daily_lull` `enabled:false`, `london_orb` activo (magic 234001, alloc 100, 4 pares, params neutros). Validado (magic único, allocations ≤100%, instancia OK). `config.example.yaml` ya tenía el bloque (spec). (D069/D070)
+- [~] 49. Docs: `configuration.md` (bloque london_orb — de la sesión spec); `london-orb.md` actualizado con geometría re-anclada + estado paper (D070). `getting-started.md` (ventana 05:00–13:00 UTC-5) pendiente menor.
+- [ ] 50. **Validación e2e en paper (EN CURSO):** restart del bot → wake 10:00 → define-range → lock 11:00 → ruptura → fill → time-stop 18:00 + heartbeat. Objetivo: validar sistema + **fidelidad live-vs-backtest** (no juzgar edge en 1 semana). Decisión tras ~1 semana.
 
 ## Phase 3 — Live
 
