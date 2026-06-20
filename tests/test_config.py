@@ -292,16 +292,16 @@ class TestValidationAllocationPct(unittest.TestCase):
 
 
 class TestValidationMaxOpenTrades(unittest.TestCase):
-    def test_strategy_max_open_trades_exceeds_global_raises(self) -> None:
+    def test_strategy_max_open_trades_above_global_is_allowed(self) -> None:
+        # The global trade cap is no longer enforced (D072): a per-strategy
+        # max_open_trades above risk_global.max_open_trades must NOT raise.
         cfg = _make_yaml_config()
         cfg["strategies"]["daily_lull"]["risk"]["max_open_trades"] = 10
         cfg["risk_global"]["max_open_trades"] = 4
-        with self.assertRaises(ValueError) as ctx:
-            _write_and_load(cfg)
-        self.assertIn("max_open_trades", str(ctx.exception))
-        self.assertIn("risk_global", str(ctx.exception))
+        config = _write_and_load(cfg)
+        self.assertEqual(config.strategies["daily_lull"].risk.max_open_trades, 10)
 
-    def test_strategy_max_open_trades_equal_to_global_passes(self) -> None:
+    def test_strategy_max_open_trades_within_own_range_passes(self) -> None:
         cfg = _make_yaml_config()
         cfg["strategies"]["daily_lull"]["risk"]["max_open_trades"] = 4
         cfg["risk_global"]["max_open_trades"] = 4
@@ -334,6 +334,38 @@ class TestValidationRiskRanges(unittest.TestCase):
     def test_drawdown_above_50_raises(self) -> None:
         cfg = _make_yaml_config()
         cfg["strategies"]["daily_lull"]["risk"]["max_drawdown_percent"] = 51.0
+        with self.assertRaises(ValueError):
+            _write_and_load(cfg)
+
+
+class TestPeriodPnlCaps(unittest.TestCase):
+    def test_defaults_present_when_omitted(self) -> None:
+        cfg = _make_yaml_config()
+        config = _write_and_load(cfg)
+        risk = config.strategies["daily_lull"].risk
+        self.assertEqual(risk.max_daily_loss_pct, 5.0)
+        self.assertEqual(risk.max_daily_profit_pct, 6.0)
+        self.assertEqual(risk.max_weekly_loss_pct, 10.0)
+        self.assertEqual(risk.max_weekly_profit_pct, 12.0)
+
+    def test_zero_is_allowed_means_disabled(self) -> None:
+        cfg = _make_yaml_config()
+        cfg["strategies"]["daily_lull"]["risk"]["max_daily_loss_pct"] = 0.0
+        cfg["strategies"]["daily_lull"]["risk"]["max_weekly_profit_pct"] = 0.0
+        config = _write_and_load(cfg)
+        risk = config.strategies["daily_lull"].risk
+        self.assertEqual(risk.max_daily_loss_pct, 0.0)
+        self.assertEqual(risk.max_weekly_profit_pct, 0.0)
+
+    def test_above_50_raises(self) -> None:
+        cfg = _make_yaml_config()
+        cfg["strategies"]["daily_lull"]["risk"]["max_daily_profit_pct"] = 51.0
+        with self.assertRaises(ValueError):
+            _write_and_load(cfg)
+
+    def test_negative_raises(self) -> None:
+        cfg = _make_yaml_config()
+        cfg["strategies"]["daily_lull"]["risk"]["max_weekly_loss_pct"] = -1.0
         with self.assertRaises(ValueError):
             _write_and_load(cfg)
 

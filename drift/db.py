@@ -727,6 +727,38 @@ def get_stats(conn: sqlite3.Connection, strategy: str | None = None) -> dict:
     }
 
 
+def get_realized_pnl_since(
+    conn: sqlite3.Connection,
+    strategy: str,
+    since_utc_iso: str,
+) -> float:
+    """Sum realized P&L for a strategy's trades closed at/after ``since_utc_iso`` (D072).
+
+    Used by the windowed daily/weekly P&L caps.  ``closed_at`` is stored as a
+    real-UTC ISO 8601 string, so a lexicographic ``>=`` comparison against another
+    UTC ISO string is a correct chronological filter (the caller converts the
+    server-time day/week boundary to UTC before passing it in).  Only closed
+    trades count; returns 0.0 when none match.
+
+    Args:
+        conn: Open SQLite connection.
+        strategy: Strategy name (the ``strategy`` column).
+        since_utc_iso: Inclusive lower bound on ``closed_at``, UTC ISO 8601.
+
+    Returns:
+        Sum of ``profit_loss`` over the window, or 0.0 if no trades match.
+    """
+    row = conn.execute(
+        """
+        SELECT SUM(profit_loss) AS window_pnl
+        FROM trades
+        WHERE strategy = ? AND closed_at IS NOT NULL AND closed_at >= ?
+        """,
+        (strategy, since_utc_iso),
+    ).fetchone()
+    return (row["window_pnl"] or 0.0) if row else 0.0
+
+
 # ---------------------------------------------------------------------------
 # Strategy state CRUD (D056 / D053)
 # ---------------------------------------------------------------------------

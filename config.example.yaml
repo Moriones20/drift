@@ -7,14 +7,17 @@ broker:
   password: "your_password_here"
 
 # ---------------------------------------------------------------------------
-# risk_global — account-wide limits (D053)
-# Caps that apply to all strategies combined.  No single strategy can exceed
-# these limits.  The kill-switch drawdown here pauses ALL strategies at once.
+# risk_global — account-wide limits (D053, D072)
+# Risk is now per-strategy: each strategy pauses ITSELF on its own limits and
+# nothing global stops the others.  max_open_trades and max_drawdown_percent are
+# currently UNUSED (no global trade cap, no global kill switch) — kept only for
+# config compatibility.  Only max_same_currency_direction (correlation) is
+# enforced account-wide (D072).
 # ---------------------------------------------------------------------------
 risk_global:
-  max_open_trades: 4               # Maximum simultaneous open trades across ALL strategies
-  max_drawdown_percent: 10.0       # Kill switch: pause ALL strategies if account drawdown exceeds this %
-  max_same_currency_direction: 2   # Max trades in same direction for one currency (correlation guard)
+  max_open_trades: 4               # UNUSED (D072) — global trade cap removed; kept for compatibility
+  max_drawdown_percent: 10.0       # UNUSED (D072) — global kill switch removed; kept for compatibility
+  max_same_currency_direction: 2   # ENFORCED — max trades same direction for one currency (correlation guard)
 
 # ---------------------------------------------------------------------------
 # strategies — one entry per strategy instance (D054)
@@ -35,11 +38,17 @@ strategies:
     allocation_pct: 100           # Notional capital share (%; sum of all ENABLED must be <= 100)
     pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see D029 / optimization results
 
-    # Per-strategy risk limits (must respect risk_global caps above; see D053)
+    # Per-strategy risk limits (each strategy pauses ITSELF on its own limits; D053/D072)
     risk:
       percent_per_trade: 1.0      # % of this strategy's allocated capital risked per trade
-      max_open_trades: 4          # Max open trades for this strategy (must be <= risk_global.max_open_trades)
+      max_open_trades: 4          # Max open trades for this strategy
       max_drawdown_percent: 10.0  # Pause only this strategy if its own drawdown exceeds this %
+      # Per-strategy daily/weekly P&L caps, % of allocated capital (0 = DISABLED; D072).
+      # Windowed gates: block new opens when hit, auto-reset at the next day/week (no /resume).
+      max_daily_loss_pct: 5.0     # Stop opening for the day after losing this % of allocation
+      max_daily_profit_pct: 6.0   # Stop opening for the day after gaining this % (lock the win)
+      max_weekly_loss_pct: 10.0   # Stop opening for the week after losing this %
+      max_weekly_profit_pct: 12.0 # Stop opening for the week after gaining this %
 
     # Strategy-specific parameters — opaque to the engine; parsed by DailyLullStrategy (D054)
     params:
@@ -74,8 +83,14 @@ strategies:
 
     risk:
       percent_per_trade: 1.0      # % of allocated capital risked per trade
-      max_open_trades: 4          # 4 pairs may break out the same morning (<= risk_global)
+      max_open_trades: 4          # 4 pairs may break out the same morning
       max_drawdown_percent: 10.0  # pause only this strategy if its own drawdown exceeds this %
+      # Per-strategy daily/weekly P&L caps, % of allocated capital (0 = DISABLED; D072).
+      # Windowed gates: block new opens when hit, auto-reset at the next day/week (no /resume).
+      max_daily_loss_pct: 5.0     # stop opening for the day after losing this % of allocation
+      max_daily_profit_pct: 6.0   # stop opening for the day after gaining this %
+      max_weekly_loss_pct: 10.0   # stop opening for the week after losing this %
+      max_weekly_profit_pct: 12.0 # stop opening for the week after gaining this %
 
     # Strategy-specific parameters — opaque to the engine; parsed by LondonOrbStrategy.
     # Range-width values are PLACEHOLDERS pending backtest calibration (Step 46, D067).

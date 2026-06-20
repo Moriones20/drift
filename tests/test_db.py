@@ -624,3 +624,70 @@ class TestResetStrategyPeak:
         ok, reason = check_strategy_drawdown(current_equity, state["peak_equity"], 10.0)
         assert ok is True  # drawdown is 0%, brake would not re-trip
         assert reason == ""
+
+
+# ---------------------------------------------------------------------------
+# get_realized_pnl_since — windowed realized P&L for daily/weekly caps (D072)
+# ---------------------------------------------------------------------------
+
+
+class TestGetRealizedPnlSince:
+    def _insert_closed_trade(
+        self,
+        conn: sqlite3.Connection,
+        strategy: str,
+        profit_loss: float,
+        closed_at: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO trades (strategy, pair, direction, entry_price, stop_loss, take_profit,
+                                position_size, balance_at_open, opened_at, closed_at,
+                                exit_price, profit_loss, close_reason, duration_minutes)
+            VALUES (?, 'EURCHF', 'buy', 0.915, 0.910, 0.920, 0.01, 1000.0,
+                    '2026-01-01T22:00:00+00:00', ?, 0.919, ?, 'take_profit', 30)
+            """,
+            (strategy, closed_at, profit_loss),
+        )
+        conn.commit()
+
+    def test_excludes_before_window_includes_after(self, tmp_path: Path) -> None:
+        # since = 2026-06-10T00:00; one trade closed before (excluded), two after.
+        p = _make_db(tmp_path)
+        since = "2026-06-10T00:00:00+00:00"
+        with db.get_connection(p) as conn:
+            self._insert_closed_trade(conn, "lull", 99.0, "2026-06-09T23:59:00+00:00")  # before
+            self._insert_closed_trade(conn, "lull", 10.0, "2026-06-10T00:00:00+00:00")  # at == in
+            self._insert_closed_trade(conn, "lull", 5.0, "2026-06-11T08:00:00+00:00")  # after
+            total = db.get_realized_pnl_since(conn, "lull", since)
+        assert total == pytest.approx(15.0)  # 10 + 5, the 99 is excluded
+
+    def test_filters_by_strategy(self, tmp_path: Path) -> None:
+        p = _make_db(tmp_path)
+        since = "2026-06-10T00:00:00+00:00"
+        with db.get_connection(p) as conn:
+            self._insert_closed_trade(conn, "lull", 10.0, "2026-06-11T08:00:00+00:00")
+            self._insert_closed_trade(conn, "orb", 999.0, "2026-06-11T08:00:00+00:00")
+            total = db.get_realized_pnl_since(conn, "lull", since)
+        assert total == pytest.approx(10.0)  # other strategy not counted
+
+    def test_no_trades_returns_zero(self, tmp_path: Path) -> None:
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            assert db.get_realized_pnl_since(conn, "lull", "2026-06-10T00:00:00+00:00") == 0.0
+
+    def test_open_trades_excluded(self, tmp_path: Path) -> None:
+        # A trade with closed_at NULL (still open) must not contribute.
+        p = _make_db(tmp_path)
+        with db.get_connection(p) as conn:
+            conn.execute(
+                """
+                INSERT INTO trades (strategy, pair, direction, entry_price, stop_loss,
+                                    take_profit, position_size, balance_at_open, opened_at)
+                VALUES ('lull', 'EURCHF', 'buy', 0.915, 0.910, 0.920, 0.01, 1000.0,
+                        '2026-06-11T08:00:00+00:00')
+                """
+            )
+            conn.commit()
+            total = db.get_realized_pnl_since(conn, "lull", "2026-06-10T00:00:00+00:00")
+        assert total == 0.0

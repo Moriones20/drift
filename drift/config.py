@@ -63,7 +63,13 @@ class SystemConfig:
 
 @dataclass
 class RiskGlobalConfig:
-    """Account-wide risk limits shared across all strategies (D053)."""
+    """Account-wide risk limits shared across all strategies (D053).
+
+    Risk is now per-strategy (D072): ``max_open_trades`` and
+    ``max_drawdown_percent`` are UNUSED by the engine (no global trade cap, no
+    global kill switch) — kept only for config compatibility.  Only
+    ``max_same_currency_direction`` (the correlation guard) is still enforced.
+    """
 
     max_open_trades: int = 4
     max_drawdown_percent: float = 10.0
@@ -72,15 +78,21 @@ class RiskGlobalConfig:
 
 @dataclass
 class StrategyRiskConfig:
-    """Per-strategy risk budget (D053).
+    """Per-strategy risk budget (D053, D072).
 
-    Each strategy has its own risk parameters.  ``max_open_trades`` must be
-    <= ``risk_global.max_open_trades``; validated in ``_validate``.
+    Each strategy has its own risk parameters and pauses ITSELF when it hits any
+    of its own limits.  The daily/weekly P&L caps are windowed gates recomputed
+    on every open attempt (auto-reset when the day/week rolls over, D072); a
+    value of ``0.0`` DISABLES that cap.
     """
 
     percent_per_trade: float = 1.0
     max_open_trades: int = 4
     max_drawdown_percent: float = 10.0
+    max_daily_loss_pct: float = 5.0
+    max_daily_profit_pct: float = 6.0
+    max_weekly_loss_pct: float = 10.0
+    max_weekly_profit_pct: float = 12.0
 
 
 @dataclass
@@ -198,6 +210,12 @@ def _parse_strategy_risk(raw: dict) -> StrategyRiskConfig:
         percent_per_trade=float(raw.get("percent_per_trade", defaults.percent_per_trade)),
         max_open_trades=int(raw.get("max_open_trades", defaults.max_open_trades)),
         max_drawdown_percent=float(raw.get("max_drawdown_percent", defaults.max_drawdown_percent)),
+        max_daily_loss_pct=float(raw.get("max_daily_loss_pct", defaults.max_daily_loss_pct)),
+        max_daily_profit_pct=float(raw.get("max_daily_profit_pct", defaults.max_daily_profit_pct)),
+        max_weekly_loss_pct=float(raw.get("max_weekly_loss_pct", defaults.max_weekly_loss_pct)),
+        max_weekly_profit_pct=float(
+            raw.get("max_weekly_profit_pct", defaults.max_weekly_profit_pct)
+        ),
     )
 
 
@@ -269,15 +287,9 @@ def _validate(config: DriftConfig) -> None:
             )
         seen_magics[effective] = name
 
-    # Per-strategy max_open_trades must not exceed the global cap.
-    global_max = config.risk_global.max_open_trades
-    for name, s in config.strategies.items():
-        if s.risk.max_open_trades > global_max:
-            raise ValueError(
-                f"strategies.{name}.risk.max_open_trades ({s.risk.max_open_trades}) "
-                f"exceeds risk_global.max_open_trades ({global_max}). "
-                f"Per-strategy limit must be <= global limit (D053)."
-            )
+    # NOTE: the old "per-strategy max_open_trades <= risk_global.max_open_trades"
+    # check is intentionally gone (D072): risk is per-strategy and the global trade
+    # cap is no longer enforced.  risk_global is still parsed (correlation guard).
 
     # Per-strategy risk range validations (reuse existing bounds).
     for name, s in config.strategies.items():
@@ -296,6 +308,19 @@ def _validate(config: DriftConfig) -> None:
                 f"strategies.{name}.risk.max_drawdown_percent must be between 1 and 50, "
                 f"got {s.risk.max_drawdown_percent}"
             )
+        # Per-strategy daily/weekly P&L caps: 0 disables; otherwise 0 <= x <= 50 (D072).
+        for field_name in (
+            "max_daily_loss_pct",
+            "max_daily_profit_pct",
+            "max_weekly_loss_pct",
+            "max_weekly_profit_pct",
+        ):
+            value = getattr(s.risk, field_name)
+            if not (0 <= value <= 50):
+                raise ValueError(
+                    f"strategies.{name}.risk.{field_name} must be between 0 and 50 "
+                    f"(0 disables the cap), got {value}"
+                )
 
     # Global risk range validations.
     if not (1 <= config.risk_global.max_open_trades <= 10):

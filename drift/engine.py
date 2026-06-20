@@ -39,6 +39,7 @@ from drift.db import (
     evaluate_strategy_drawdown,
     get_connection,
     get_open_trades,
+    get_realized_pnl_since,
     get_strategy_state,
     get_trade_by_ticket,
     log_event,
@@ -57,7 +58,7 @@ from drift.mt5_client import (
 )
 from drift.risk import (
     calculate_position_size_allocated,
-    check_drawdown,
+    check_period_pnl,
     check_strategy_risk,
 )
 from drift.strategies.base import Decision, Signal, StrategyContext
@@ -603,9 +604,10 @@ class Engine:
     ) -> None:
         """Risk-gate, size and execute an open request (ports _analyse_pair_m15).
 
-        Two-level risk (D053): global drawdown kill switch, per-strategy drawdown
-        brake, then the limit gates (per-strategy + global max trades +
-        correlation).  On any rejection the signal is logged as rejected and
+        Per-strategy risk (D072): per-strategy drawdown brake, per-strategy
+        daily/weekly P&L caps, then the limit gates (per-strategy max trades +
+        global correlation).  There is no global kill switch and no global trade
+        cap.  On any rejection the signal is logged as rejected and
         ``on_order_rejected`` notifies the strategy.  On success the trade is
         logged, the signal is linked, the open is notified and ``on_fill`` fires.
 
@@ -694,17 +696,11 @@ class Engine:
         """
         instance = hosted.instance
         with self._trade_lock, get_connection() as db_conn:
-            # --- Global drawdown kill switch (pauses everything) ---
-            ok, reason = check_drawdown(
-                equity,
-                self.peak_balance_ref[0],
-                self.config.risk_global.max_drawdown_percent,
-            )
-            if not ok:
-                self._trip_global_brake(db_conn, reason, equity)
-                self._reject(db_conn, hosted, signal, f"global {reason}")
-                instance.on_order_rejected(pair, signal, f"global {reason}")
-                return None
+            # Snapshot this strategy's open positions ONCE under the lock; the list
+            # is stable for the lock's duration, so the period caps and the limit
+            # gate reuse it instead of re-querying the broker (D072 efficiency).
+            strategy_positions = get_open_positions(hosted.magic, self.server_offset)
+            floating = sum(p.get("profit", 0.0) for p in strategy_positions)
 
             # --- Per-strategy drawdown brake (pauses only this strategy) ---
             ok, reason, strategy_equity_value, _peak = self._check_strategy_drawdown(
@@ -716,11 +712,20 @@ class Engine:
                 instance.on_order_rejected(pair, signal, reason)
                 return None
 
-            # --- Limit gates: per-strategy + global trade caps + correlation ---
-            strategy_trades = get_open_positions(hosted.magic, self.server_offset)
+            # --- Per-strategy daily/weekly P&L caps (windowed, auto-resetting) ---
+            # NOT a persistent pause: recomputed every open attempt so it clears at
+            # the next day/week rollover without a manual /resume (D072).
+            ok, reason = self._check_period_caps(db_conn, hosted, balance, floating)
+            if not ok:
+                logger.info("%s/%s | %s — open blocked", hosted.name, pair, reason)
+                self._reject(db_conn, hosted, signal, reason)
+                instance.on_order_rejected(pair, signal, reason)
+                return None
+
+            # --- Limit gates: per-strategy max trades + correlation ---
             account_trades = get_open_trades(db_conn)
             ok, reason = check_strategy_risk(
-                strategy_open_trades=strategy_trades,
+                strategy_open_trades=strategy_positions,
                 account_open_trades=account_trades,
                 new_pair=pair,
                 new_direction=signal.action,
@@ -925,6 +930,58 @@ class Engine:
             hosted.risk.max_drawdown_percent,
         )
 
+    def _check_period_caps(
+        self, db_conn, hosted: _HostedStrategy, balance: float, floating: float
+    ) -> tuple[bool, str]:
+        """Evaluate this strategy's daily + weekly P&L caps (D072).
+
+        Windowed gate, NOT a persistent pause: it is recomputed on every open
+        attempt, so it auto-resets when the day/week window rolls over (a daily
+        cap clears at the next day with no manual /resume).
+
+        The window boundaries are computed in MT5 server time (the day starts at
+        00:00 server; the week at the most recent Sunday 00:00 server, today if
+        today is Sunday) and converted to real UTC for the DB query via the
+        project's ``utc = server - server_offset`` convention (D039) — the same
+        conversion used by ``log_signal``.  Window P&L = realized-in-window
+        (closed trades) + ``floating`` (the strategy's current open-position P&L,
+        snapshotted once by the caller).
+
+        Returns ``(ok, reason)`` — ``ok`` is False once either cap trips.
+        """
+        risk = hosted.risk
+        daily_disabled = risk.max_daily_loss_pct == 0 and risk.max_daily_profit_pct == 0
+        weekly_disabled = risk.max_weekly_loss_pct == 0 and risk.max_weekly_profit_pct == 0
+        if daily_disabled and weekly_disabled:
+            return True, ""
+
+        now_server = server_now(self.server_offset)
+        day_start_server = now_server.replace(hour=0, minute=0, second=0, microsecond=0)
+        # weekday(): Monday=0 .. Sunday=6; days since the most recent Sunday.
+        days_since_sunday = (now_server.weekday() + 1) % 7
+        week_start_server = day_start_server - timedelta(days=days_since_sunday)
+
+        # Convert server-time boundaries to real UTC (utc = server - offset, D039).
+        day_start_utc = (day_start_server - self.server_offset).isoformat()
+        week_start_utc = (week_start_server - self.server_offset).isoformat()
+
+        allocated_capital = balance * hosted.allocation_pct / 100.0
+
+        # Daily window ⊆ weekly window; both share the same floating snapshot.
+        windows = (
+            ("daily", day_start_utc, risk.max_daily_loss_pct, risk.max_daily_profit_pct),
+            ("weekly", week_start_utc, risk.max_weekly_loss_pct, risk.max_weekly_profit_pct),
+        )
+        for label, since_utc, loss_pct, profit_pct in windows:
+            window_pnl = get_realized_pnl_since(db_conn, hosted.name, since_utc) + floating
+            ok, reason = check_period_pnl(
+                window_pnl, allocated_capital, loss_pct, profit_pct, label
+            )
+            if not ok:
+                return False, reason
+
+        return True, ""
+
     def _pause_strategy(self, db_conn, hosted: _HostedStrategy, reason: str, equity: float) -> None:
         """Pause one strategy on its own drawdown brake (keeps its positions)."""
         if hosted.paused:
@@ -946,7 +1003,12 @@ class Engine:
         )
 
     def _trip_global_brake(self, db_conn, reason: str, equity: float) -> None:
-        """Trip the account-wide drawdown kill switch (pauses everything)."""
+        """Pause all strategies on an account-wide brake.
+
+        The global drawdown kill switch was removed (D072): risk is per-strategy,
+        so this is no longer called by the per-open gating.  It is retained as the
+        single account-wide pause primitive for any future global safety brake.
+        """
         if self.state.paused:
             return
         self.state.paused = True

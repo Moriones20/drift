@@ -18,15 +18,13 @@ Credenciales para conectarse a MetaTrader 5. Los tres campos son **obligatorios*
 
 ## risk_global
 
-> ⚠️ Esquema multi-estrategia (en implementacion — ver D050-D057)
+> ⚠️ **D072 — todo el riesgo es ahora POR ESTRATEGIA.** Solo `max_same_currency_direction` (correlacion) se sigue enforzando a nivel de cuenta. `max_open_trades` y `max_drawdown_percent` quedan en el archivo por compatibilidad pero **NO se usan** (no hay cap global de trades ni kill switch global). Cada estrategia se frena sola con sus propios limites (ver el bloque `risk` por estrategia).
 
-Limites de riesgo a nivel de **cuenta completa**, validos para todas las estrategias en conjunto. Reemplazan al antiguo bloque `risk:`. Son los topes mas importantes para proteger el capital: ninguna estrategia individual puede saltarselos.
-
-| Campo | Tipo | Default | Rango valido | Descripcion |
+| Campo | Tipo | Default | Estado | Descripcion |
 |---|---|---|---|---|
-| `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente en **toda la cuenta**, sumando todas las estrategias y todos los pares. Cap global: cada estrategia tiene ademas su propio `max_open_trades` que debe ser ≤ este valor. |
-| `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | **Kill switch global.** Si el drawdown de la cuenta desde su pico de balance supera este porcentaje, el bot pausa **TODO** (todas las estrategias) y notifica por Telegram. Requiere `/resume` manual para reactivar. |
-| `max_same_currency_direction` | entero | `2` | — | Maximo de trades en la misma direccion para una misma divisa base o cotizada, **a nivel de cuenta** sin importar que estrategia los abrio. Limita la exposicion correlacionada. La correlacion es riesgo de cuenta, por eso este limite es siempre global (ver D053). |
+| `max_open_trades` | entero | `8` | **UNUSED (D072)** | Antes era el cap global de trades. Removido: cada estrategia usa su propio `max_open_trades`. |
+| `max_drawdown_percent` | decimal | `10.0` | **UNUSED (D072)** | Antes era el kill switch global. Removido: cada estrategia tiene su propio brake de drawdown. |
+| `max_same_currency_direction` | entero | `2` | **activo** | Maximo de trades en la misma direccion para una misma divisa base o cotizada, **a nivel de cuenta** sin importar que estrategia los abrio. Unico freno global que queda — la correlacion es exposicion real de la cuenta unica (ver D053/D072). |
 
 ---
 
@@ -67,8 +65,14 @@ Ejemplo: con un balance de $10,000, una estrategia con `allocation_pct: 60` y `p
 | Campo | Tipo | Default | Rango valido | Descripcion |
 |---|---|---|---|---|
 | `percent_per_trade` | decimal | `1.0` | 0.01 a 5.0 | Porcentaje del **capital asignado** a la estrategia arriesgado por trade (ver formula de sizing arriba). Este parametro paso de global a por-estrategia. |
-| `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente **de esta estrategia**. Debe ser ≤ `risk_global.max_open_trades`. |
-| `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | Brake **por estrategia**: si el drawdown de la curva de equity propia de la estrategia supera este porcentaje, se pausa **solo esa** estrategia (mantiene sus posiciones abiertas, deja de abrir nuevas) y notifica. No afecta a las demas. El kill switch global vive en `risk_global`. |
+| `max_open_trades` | entero | `4` | 1 a 10 | Maximo de trades abiertos simultaneamente **de esta estrategia**. (Ya no hay cap global, D072 — cada estrategia se limita sola.) |
+| `max_drawdown_percent` | decimal | `10.0` | 1.0 a 50.0 | **Kill switch por estrategia:** si el drawdown de la curva de equity propia de la estrategia (desde su peak) supera este porcentaje, se pausa **solo esa** estrategia (mantiene sus posiciones, deja de abrir nuevas) hasta `/resume`. No afecta a las demas. |
+| `max_daily_loss_pct` | decimal | `5.0` | 0 a 50 | **Tope de perdida diaria** (% del capital asignado). Si el P&L del dia de la estrategia (realizado + flotante) cae a `-este%`, deja de abrir por el resto del **dia**. `0` lo desactiva. (D072) |
+| `max_daily_profit_pct` | decimal | `6.0` | 0 a 50 | **Tope de ganancia diaria.** Si el P&L del dia sube a `+este%`, deja de abrir por el resto del dia (asegura la ganancia). `0` lo desactiva. |
+| `max_weekly_loss_pct` | decimal | `10.0` | 0 a 50 | Igual que el diario pero sobre la **semana** (resetea domingo 00:00 server). `0` lo desactiva. |
+| `max_weekly_profit_pct` | decimal | `12.0` | 0 a 50 | Tope de ganancia **semanal**. `0` lo desactiva. |
+
+> Los topes diario/semanal son un **gate que se recalcula en cada intento de apertura** (no una pausa persistente): se **auto-resetean** al cambiar de dia/semana sin necesitar `/resume`. El dia empieza a las 00:00 hora server; la semana, el domingo 00:00 server (ver D072).
 
 ### Bloque `params` por estrategia (daily_lull)
 
