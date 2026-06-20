@@ -118,6 +118,24 @@ class OrbSessionState:
     traded: bool = False  # at most one trade per day per pair
 
 
+def _clear_session(state: OrbSessionState) -> None:
+    """Reset the per-session fields of *state* (everything except ``session_date``).
+
+    Shared by the new-day reset in ``_accumulate_range`` and the 18:00
+    ``_reset_state`` time stop, which differ only in what they set ``session_date``
+    to (the new day's ordinal vs ``None``).
+    """
+    state.high = float("-inf")
+    state.low = float("inf")
+    state.locked = False
+    state.tradeable = False
+    state.range_high = float("nan")
+    state.range_low = float("nan")
+    state.range_atr_ratio = float("nan")
+    state.atr_at_lock = float("nan")
+    state.traded = False
+
+
 # ---------------------------------------------------------------------------
 # Scheduling helpers
 # ---------------------------------------------------------------------------
@@ -264,12 +282,12 @@ class LondonOrbStrategy:
         """
         params = self.params
 
-        # Compute ATR for the range filter (always needed at lock time)
+        # Candle OHLC columns. ATR is computed lazily at the lock bar only (the
+        # single bar that needs it), not on every tick — a large saving when the
+        # backtest replays ~50k bars/pair across the calibration grid.
         m15_high = m15_df["high"]
         m15_low = m15_df["low"]
         m15_close = m15_df["close"]
-        atr_series = _atr(m15_high, m15_low, m15_close, params.atr_period)
-        atr_val = float(atr_series.iloc[-1])
 
         bar_ts = m15_df.index[-1]
         bar_time: datetime = bar_ts.to_pydatetime()
@@ -296,7 +314,7 @@ class LondonOrbStrategy:
                 range_high=state.range_high,
                 range_low=state.range_low,
                 range_atr_ratio=state.range_atr_ratio,
-                atr_value=atr_val,
+                atr_value=state.atr_at_lock,  # NaN before lock, the locked ATR after (logging only)
                 reason=reason,
                 rejection_reason=rejection_reason,
             )
@@ -331,6 +349,7 @@ class LondonOrbStrategy:
         # through to breakout evaluation on this same bar (mirrors the Lull: the
         # lock candle is also a valid breakout candidate).
         if candle_hour == params.range_end_hour and not state.locked:
+            atr_val = float(_atr(m15_high, m15_low, m15_close, params.atr_period).iloc[-1])
             self._lock_range(state, pair, atr_val, params)
             if not state.tradeable:
                 return _base_signal("none", "range_rejected")
@@ -410,15 +429,7 @@ class LondonOrbStrategy:
         if state.session_date != day_ordinal:
             # New day — reset state for this session
             state.session_date = day_ordinal
-            state.high = float("-inf")
-            state.low = float("inf")
-            state.locked = False
-            state.tradeable = False
-            state.range_high = float("nan")
-            state.range_low = float("nan")
-            state.range_atr_ratio = float("nan")
-            state.atr_at_lock = float("nan")
-            state.traded = False
+            _clear_session(state)
             logger.debug("London ORB new session — day_ordinal=%d", day_ordinal)
 
         if bar_high > state.high:
@@ -503,15 +514,7 @@ class LondonOrbStrategy:
     def _reset_state(state: OrbSessionState) -> None:
         """Reset per-pair state at the 18:00 time stop for the next session."""
         state.session_date = None
-        state.high = float("-inf")
-        state.low = float("inf")
-        state.locked = False
-        state.tradeable = False
-        state.range_high = float("nan")
-        state.range_low = float("nan")
-        state.range_atr_ratio = float("nan")
-        state.atr_at_lock = float("nan")
-        state.traded = False
+        _clear_session(state)
 
     # -- lifecycle callbacks ---------------------------------------------------
 
