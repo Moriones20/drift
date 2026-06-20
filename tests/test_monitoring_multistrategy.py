@@ -214,48 +214,17 @@ def test_strategy_already_paused_does_not_refire():
 
 
 # ---------------------------------------------------------------------------
-# Global brake still pauses everything
+# No global kill switch (D072)
 # ---------------------------------------------------------------------------
+# The global drawdown kill switch was removed: all risk is per-strategy now (the
+# per-strategy drawdown brake above, plus the daily/weekly P&L caps tested in
+# test_engine.py / test_risk.py). The monitor's old ``_check_drawdown_pause`` is
+# gone; ``state.paused`` is now only set by a manual global ``/pause``.
 
 
-def test_global_brake_pauses_everything():
-    """The global drawdown brake pauses the whole account (state.paused)."""
-    db_path, conn = tsf._fresh_db()
-    conn.close()
-    config = _two_strategy_config(global_max_dd=10.0)
-
-    state = main.BotState() if hasattr(main, "BotState") else SimpleNamespace(paused=False)
-    bot_app = SimpleNamespace(bot=SimpleNamespace())
-    ctx, _ = _db_ctx(db_path)
-    with (
-        patch("main.get_connection", return_value=ctx),
-        patch.object(main, "_fire_and_forget", lambda c: None),
-    ):
-        # equity 8800 vs peak 10000 = 12% drawdown > 10% limit.
-        ok, _reason = main._check_drawdown_pause(8800.0, 10000.0, config, state, bot_app)
-
-    assert ok is False
-    assert state.paused is True
-
-
-def test_global_brake_uses_risk_global_not_shim():
-    """The global brake reads risk_global.max_drawdown_percent, not config.risk."""
-    db_path, conn = tsf._fresh_db()
-    conn.close()
-    # Global limit 20%; a 12% drawdown should NOT trip it.
-    config = _two_strategy_config(global_max_dd=20.0)
-
-    state = SimpleNamespace(paused=False, stop_requested=False)
-    bot_app = SimpleNamespace(bot=SimpleNamespace())
-    ctx, _ = _db_ctx(db_path)
-    with (
-        patch("main.get_connection", return_value=ctx),
-        patch.object(main, "_fire_and_forget", lambda c: None),
-    ):
-        ok, _reason = main._check_drawdown_pause(8800.0, 10000.0, config, state, bot_app)
-
-    assert ok is True
-    assert state.paused is False
+def test_no_global_drawdown_kill_switch():
+    """The monitor no longer exposes an automatic global drawdown brake (D072)."""
+    assert not hasattr(main, "_check_drawdown_pause")
 
 
 # ---------------------------------------------------------------------------

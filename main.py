@@ -43,9 +43,6 @@ from drift.mt5_client import (
     server_now,
 )
 from drift.report import generate_weekly_report
-from drift.risk import (
-    check_drawdown,
-)
 from drift.telegram_bot import (
     BotState,
     notify_bot_status,
@@ -351,12 +348,10 @@ def _monitoring_tick(
             with get_connection() as db_conn:
                 log_peak_balance(db_conn, peak_balance_ref[0])
 
-        # Global brake (kill switch) — pauses EVERYTHING (state.paused).  Measured
-        # on account equity vs the global equity peak using risk_global (D053);
-        # this no longer reads the config.risk compat shim (C10).
-        drawdown_ok, _ = _check_drawdown_pause(equity, peak_balance_ref[0], config, state, bot_app)
-        if not drawdown_ok:
-            return
+        # No global kill switch (D072): all risk is per-strategy now. The account
+        # equity peak above is still tracked for the weekly report; each strategy's
+        # own drawdown brake and daily/weekly P&L caps stop it independently. A
+        # global /pause (manual, via Telegram) still sets state.paused.
 
         # Per-strategy positions (by effective magic) drive both the per-strategy
         # drawdown brake and the union of tickets used for attributed close
@@ -387,38 +382,6 @@ def _monitoring_tick(
             process_open_trades(all_positions, _MONITOR_TRAILING_CONFIG)
 
     _check_weekly_report(config, balance, peak_balance_ref[0], bot_app)
-
-
-def _check_drawdown_pause(
-    equity: float,
-    peak_equity: float,
-    config: DriftConfig,
-    state: BotState,
-    bot_app,
-) -> tuple[bool, str]:
-    """Global drawdown kill switch — pauses the whole account (state.paused).
-
-    Measured on account equity vs the global equity peak using
-    ``risk_global.max_drawdown_percent`` (D053).  Mirrors the engine's
-    ``_trip_global_brake`` so a brake tripped by either context pauses everything.
-    """
-    ok, reason = check_drawdown(equity, peak_equity, config.risk_global.max_drawdown_percent)
-    if not ok and not state.paused:
-        state.paused = True
-        logger.warning("Drawdown limit reached: %s — bot paused", reason)
-        with get_connection() as db_conn:
-            log_event(db_conn, "drawdown_alert", detail=reason, balance=equity)
-        _fire_and_forget(
-            notify_bot_status(
-                bot_app.bot,
-                config.telegram.chat_id,
-                "drawdown_global",
-                f"{reason}\nAll strategies paused. Open positions stay open — "
-                "review and use /resume when ready.",
-            )
-        )
-        return False, reason
-    return True, ""
 
 
 def _check_strategy_drawdown_pause(
