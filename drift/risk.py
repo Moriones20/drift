@@ -130,10 +130,13 @@ def check_drawdown(
 #     capital_asignado(strategy) = account_balance * (allocation_pct / 100)
 #     risk_usd(trade)            = capital_asignado * (percent_per_trade / 100)
 #
-# Limits live at two levels (see D053):
-#   - max_open_trades:            per-strategy cap AND global account cap.
-#   - max_drawdown_percent:       per-strategy brake (pauses that strategy) AND
-#                                 the existing global brake (kill switch, all).
+# Limits are now per-strategy (D072): each strategy pauses ITSELF on its own
+# limits; nothing global stops the others.
+#   - max_open_trades:            per-strategy cap (global trade cap dropped).
+#   - max_drawdown_percent:       per-strategy brake (pauses that strategy).
+#                                 The global drawdown kill switch is removed.
+#   - max_daily/weekly_*_pct:     per-strategy windowed P&L caps (auto-reset,
+#                                 :func:`check_period_pnl`).
 #   - max_same_currency_direction (correlation): GLOBAL only — correlation is an
 #                                 account-wide risk regardless of who opened it.
 # ---------------------------------------------------------------------------
@@ -175,6 +178,45 @@ def calculate_position_size_allocated(
     return calculate_position_size(balance, effective_risk_percent, stop_loss_pips, pip_value)
 
 
+def check_period_pnl(
+    window_pnl: float,
+    allocated_capital: float,
+    max_loss_pct: float,
+    max_profit_pct: float,
+    period: str,
+) -> tuple[bool, str]:
+    """Gate a strategy on its windowed (daily/weekly) P&L cap (D072).
+
+    Computes ``pnl_pct = window_pnl / allocated_capital * 100`` over the period's
+    window (realized P&L in the window plus current floating P&L, supplied by the
+    caller) and blocks new entries once the strategy hits either side of its own
+    cap.  A cap of ``0`` DISABLES that side.  This is a windowed gate, NOT a
+    persistent pause: the engine recomputes it on every open attempt, so it
+    auto-resets when the day/week window rolls over (D072).
+
+    Args:
+        window_pnl: Strategy P&L over the window (realized-in-window + floating).
+        allocated_capital: Strategy's notional capital allocation.
+        max_loss_pct: Loss cap as a percent of allocated capital (0 disables).
+        max_profit_pct: Profit cap as a percent of allocated capital (0 disables).
+        period: Label for the reason string, e.g. "daily" or "weekly".
+
+    Returns:
+        ``(ok, reason)`` — ``reason`` is empty when ``ok`` is True.
+    """
+    if allocated_capital <= 0:
+        return True, ""
+
+    pnl_pct = window_pnl / allocated_capital * 100
+
+    if max_loss_pct > 0 and pnl_pct <= -max_loss_pct:
+        return False, f"{period} loss {pnl_pct:.1f}% hit -{max_loss_pct:.0f}% cap"
+    if max_profit_pct > 0 and pnl_pct >= max_profit_pct:
+        return False, f"{period} profit {pnl_pct:.1f}% hit +{max_profit_pct:.0f}% cap"
+
+    return True, ""
+
+
 def check_strategy_risk(
     strategy_open_trades: list[dict],
     account_open_trades: list[dict],
@@ -183,17 +225,20 @@ def check_strategy_risk(
     strategy_risk: StrategyRiskConfig,
     risk_global: RiskGlobalConfig,
 ) -> tuple[bool, str]:
-    """Gate a new entry against per-strategy and global limits (D053).
+    """Gate a new entry against per-strategy and global limits (D053, D072).
 
     Checks, in order:
       (a) per-strategy ``max_open_trades`` over the strategy's own positions,
-      (b) global ``max_open_trades`` over ALL account positions,
-      (c) global ``max_same_currency_direction`` correlation over ALL account
+      (b) global ``max_same_currency_direction`` correlation over ALL account
           positions (correlation is account-wide, never per-strategy — D053).
 
-    Drawdown brakes are NOT checked here; the global brake is
-    :func:`check_drawdown` (kill switch) and the per-strategy brake is
-    :func:`check_strategy_drawdown`, both evaluated by the engine separately.
+    The global ``max_open_trades`` cap is NO LONGER enforced (D072): risk is
+    per-strategy and nothing global stops a strategy that is within its own
+    limits.  ``risk_global`` is still passed in for the correlation guard.
+
+    Drawdown and windowed-P&L brakes are NOT checked here; the per-strategy
+    drawdown brake is :func:`check_strategy_drawdown` and the daily/weekly caps
+    are :func:`check_period_pnl`, both evaluated by the engine separately.
 
     Args:
         strategy_open_trades: Open positions belonging to this strategy.
@@ -201,7 +246,7 @@ def check_strategy_risk(
         new_pair: Symbol of the prospective entry (e.g. "EURUSD").
         new_direction: "buy" or "sell".
         strategy_risk: This strategy's risk budget.
-        risk_global: Account-wide risk limits.
+        risk_global: Account-wide risk limits (correlation guard only).
 
     Returns:
         ``(ok, reason)`` — ``reason`` is empty when ``ok`` is True.
@@ -209,10 +254,6 @@ def check_strategy_risk(
     ok, reason = check_max_trades(strategy_open_trades, strategy_risk.max_open_trades)
     if not ok:
         return False, f"strategy {reason}"
-
-    ok, reason = check_max_trades(account_open_trades, risk_global.max_open_trades)
-    if not ok:
-        return False, f"account {reason}"
 
     ok, reason = check_correlation(
         account_open_trades, new_pair, new_direction, risk_global.max_same_currency_direction

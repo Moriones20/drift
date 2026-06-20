@@ -141,7 +141,13 @@ def _make_engine(strategies, *, server_offset=timedelta(hours=3), magics=None):
             magic=magics.get(s.name, 234000),
             allocation_pct=100.0,
             risk=SimpleNamespace(
-                percent_per_trade=1.0, max_open_trades=4, max_drawdown_percent=10.0
+                percent_per_trade=1.0,
+                max_open_trades=4,
+                max_drawdown_percent=10.0,
+                max_daily_loss_pct=5.0,
+                max_daily_profit_pct=6.0,
+                max_weekly_loss_pct=10.0,
+                max_weekly_profit_pct=12.0,
             ),
         )
         for s in strategies
@@ -336,8 +342,8 @@ def test_open_routes_to_open_trade_with_effective_magic():
 
     with (
         mock.patch.object(engine_mod, "get_connection") as gc,
-        mock.patch.object(engine_mod, "check_drawdown", return_value=(True, "")),
         mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
+        mock.patch.object(eng, "_check_period_caps", return_value=(True, "")),
         mock.patch.object(engine_mod, "check_strategy_risk", return_value=(True, "")),
         mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
         mock.patch.object(engine_mod, "get_open_trades", return_value=[]),
@@ -387,8 +393,8 @@ def test_open_releases_trade_lock_during_broker_call():
 
     with (
         mock.patch.object(engine_mod, "get_connection") as gc,
-        mock.patch.object(engine_mod, "check_drawdown", return_value=(True, "")),
         mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
+        mock.patch.object(eng, "_check_period_caps", return_value=(True, "")),
         mock.patch.object(engine_mod, "check_strategy_risk", return_value=(True, "")),
         mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
         mock.patch.object(engine_mod, "get_open_trades", return_value=[]),
@@ -414,8 +420,8 @@ def test_open_rejected_by_risk_calls_on_order_rejected():
 
     with (
         mock.patch.object(engine_mod, "get_connection") as gc,
-        mock.patch.object(engine_mod, "check_drawdown", return_value=(True, "")),
         mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
+        mock.patch.object(eng, "_check_period_caps", return_value=(True, "")),
         mock.patch.object(
             engine_mod, "check_strategy_risk", return_value=(False, "max trades reached (4/4)")
         ),
@@ -432,7 +438,52 @@ def test_open_rejected_by_risk_calls_on_order_rejected():
     assert log_sig.call_args.kwargs.get("rejection_reason")  # logged as rejected
 
 
-def test_open_global_drawdown_trips_kill_switch():
+def test_open_no_global_kill_switch_when_strategy_within_limits():
+    """Deep account drawdown must NOT pause a strategy within its own limits (D072).
+
+    The global drawdown kill switch was removed: gating is per-strategy.  Even
+    with the account equity far below the global peak, a strategy whose own
+    drawdown/period brakes pass opens the trade normally.
+    """
+    sig = _signal(action="buy")
+    strat = FakeStrategy(name="lull", decision=Decision.open(sig))
+    eng = _make_engine([strat])
+    eng.peak_balance_ref = [2000.0]  # account peak; equity 880 is a deep global drawdown
+    hosted = eng.strategies[0]
+
+    fake_mt5 = mock.MagicMock()
+    fake_mt5.symbol_info.return_value = SimpleNamespace(
+        digits=5, volume_step=0.01, volume_min=0.01, volume_max=100.0, trade_tick_value=1.0
+    )
+    fake_mt5.positions_get.return_value = [SimpleNamespace(price_open=1.0)]
+
+    with (
+        mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 880.0, 880.0)),
+        mock.patch.object(eng, "_check_period_caps", return_value=(True, "")),
+        mock.patch.object(engine_mod, "check_strategy_risk", return_value=(True, "")),
+        mock.patch.object(engine_mod, "get_open_positions", return_value=[]),
+        mock.patch.object(engine_mod, "get_open_trades", return_value=[]),
+        mock.patch.object(engine_mod, "calculate_position_size_allocated", return_value=0.05),
+        mock.patch.object(engine_mod, "open_trade", return_value=999) as open_t,
+        mock.patch.object(engine_mod, "log_trade", return_value=1),
+        mock.patch.object(engine_mod, "log_signal"),
+        mock.patch.dict(sys.modules, {"MetaTrader5": fake_mt5}),
+    ):
+        gc.return_value.__enter__.return_value = mock.MagicMock()
+        eng._handle_open(hosted, "EURCHF", Decision.open(sig), balance=1000.0, equity=880.0)
+
+    assert eng.state.paused is False  # no global kill switch
+    assert open_t.called  # the trade opened despite the deep account drawdown
+    assert strat.filled and strat.filled[0][2] == 999
+
+
+def test_open_period_cap_trips_reject_without_persistent_pause():
+    """A daily-loss cap blocks the open but sets NO persistent pause (D072).
+
+    The windowed gate rejects and notifies, yet the strategy's paused flag stays
+    False so the next day (window rolled) the same strategy can open again.
+    """
     sig = _signal(action="buy")
     strat = FakeStrategy(name="lull", decision=Decision.open(sig))
     eng = _make_engine([strat])
@@ -440,19 +491,21 @@ def test_open_global_drawdown_trips_kill_switch():
 
     with (
         mock.patch.object(engine_mod, "get_connection") as gc,
+        mock.patch.object(eng, "_check_strategy_drawdown", return_value=(True, "", 1000.0, 1000.0)),
         mock.patch.object(
-            engine_mod, "check_drawdown", return_value=(False, "drawdown 12% exceeds limit 10%")
+            eng, "_check_period_caps", return_value=(False, "daily loss -6.0% hit -5% cap")
         ),
-        mock.patch.object(engine_mod, "log_event"),
-        mock.patch.object(engine_mod, "log_signal"),
+        mock.patch.object(engine_mod, "log_signal") as log_sig,
         mock.patch.object(engine_mod, "open_trade") as open_t,
     ):
         gc.return_value.__enter__.return_value = mock.MagicMock()
-        eng._handle_open(hosted, "EURCHF", Decision.open(sig), balance=1000.0, equity=880.0)
+        eng._handle_open(hosted, "EURCHF", Decision.open(sig), balance=1000.0, equity=1000.0)
 
-    assert eng.state.paused is True  # global kill switch
-    assert not open_t.called
-    assert strat.rejected
+    assert not open_t.called  # open blocked by the cap
+    assert strat.rejected  # on_order_rejected fired
+    assert "daily loss" in strat.rejected[0][2]
+    assert log_sig.call_args.kwargs.get("rejection_reason")  # logged as rejected
+    assert hosted.paused is False  # NO persistent pause — auto-resets next window
 
 
 def test_close_all_closes_only_strategy_positions():
@@ -799,6 +852,131 @@ def test_pause_log_fires_once_per_tick_not_per_pair():
     # but the pause-notice log fired exactly once (before the loop, not inside)
     pause_logs = [r for r in log_records if "open decisions" in r]
     assert len(pause_logs) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-strategy daily/weekly P&L caps: windowed gate + server->UTC + rollover (D072)
+# ---------------------------------------------------------------------------
+
+
+def _insert_closed_trade(conn, strategy, profit_loss, closed_at):
+    conn.execute(
+        """
+        INSERT INTO trades (strategy, pair, direction, entry_price, stop_loss, take_profit,
+                            position_size, balance_at_open, opened_at, closed_at,
+                            exit_price, profit_loss, close_reason, duration_minutes)
+        VALUES (?, 'EURCHF', 'buy', 0.915, 0.910, 0.920, 0.01, 1000.0,
+                '2026-01-01T22:00:00+00:00', ?, 0.919, ?, 'take_profit', 30)
+        """,
+        (strategy, closed_at, profit_loss),
+    )
+    conn.commit()
+
+
+def test_period_caps_daily_trips_then_clears_next_day(tmp_path):
+    """A daily-loss cap trips today, then a NEW day (window rolled) passes (D072).
+
+    Exercises the real boundary math and the server->UTC conversion: server
+    offset is UTC+3, so a server-time 00:00 boundary converts to 21:00 UTC the
+    previous calendar day.  The gate sets no persistent pause; it auto-resets
+    when the day window advances.
+    """
+    import drift.db as db_mod
+
+    p = tmp_path / "caps.db"
+    db_mod.init_db(p)
+
+    strat = FakeStrategy(name="lull")
+    eng = _make_engine([strat], server_offset=timedelta(hours=3))
+    hosted = eng.strategies[0]
+    # allocation 100% -> allocated_capital = balance (1000). Loss cap 5% -> -50.
+
+    # A -60 loss closed today (2026-06-15 server time): trips the -5% daily cap.
+    # server day_start 2026-06-15T00:00 (+3) -> UTC 2026-06-14T21:00; the trade
+    # closed at 2026-06-15T10:00 server == 2026-06-15T07:00 UTC, inside the window.
+    with db_mod.get_connection(p) as conn:
+        _insert_closed_trade(conn, "lull", -60.0, "2026-06-15T07:00:00+00:00")
+
+    server_today = datetime(2026, 6, 15, 12, 0, tzinfo=_SERVER_TZ)
+    server_tomorrow = datetime(2026, 6, 16, 12, 0, tzinfo=_SERVER_TZ)
+
+    with (
+        mock.patch.object(engine_mod, "server_now", return_value=server_today),
+        db_mod.get_connection(p) as conn,
+    ):
+        ok_today, reason_today = eng._check_period_caps(conn, hosted, balance=1000.0, floating=0.0)
+
+    assert ok_today is False
+    assert "daily loss" in reason_today
+    assert hosted.paused is False  # windowed gate sets NO persistent pause
+
+    # Next day: the -60 trade is now BEFORE the new day's window -> daily clears.
+    # (Weekly window still includes it: same Sunday-anchored week. -6% weekly is
+    # within the 10% weekly loss cap, so the overall gate passes.)
+    with (
+        mock.patch.object(engine_mod, "server_now", return_value=server_tomorrow),
+        db_mod.get_connection(p) as conn,
+    ):
+        ok_next, reason_next = eng._check_period_caps(conn, hosted, balance=1000.0, floating=0.0)
+
+    assert ok_next is True
+    assert reason_next == ""
+
+
+def test_period_caps_floating_counts_toward_daily(tmp_path):
+    """Open-position floating P&L (passed in) counts toward the windowed cap (D072)."""
+    import drift.db as db_mod
+
+    p = tmp_path / "caps2.db"
+    db_mod.init_db(p)
+
+    strat = FakeStrategy(name="lull")
+    eng = _make_engine([strat], server_offset=timedelta(hours=3))
+    hosted = eng.strategies[0]
+
+    # No realized trades today; a floating -60 (snapshotted by the caller) trips -5%.
+    server_now_dt = datetime(2026, 6, 15, 12, 0, tzinfo=_SERVER_TZ)
+
+    with (
+        mock.patch.object(engine_mod, "server_now", return_value=server_now_dt),
+        db_mod.get_connection(p) as conn,
+    ):
+        ok, reason = eng._check_period_caps(conn, hosted, balance=1000.0, floating=-60.0)
+
+    assert ok is False
+    assert "daily loss" in reason
+
+
+def test_period_caps_disabled_when_all_zero(tmp_path):
+    """All four caps at 0 disables the gate entirely (no time/DB work done; D072)."""
+    import drift.db as db_mod
+
+    p = tmp_path / "caps3.db"
+    db_mod.init_db(p)
+
+    strat = FakeStrategy(name="lull")
+    eng = _make_engine([strat], server_offset=timedelta(hours=3))
+    hosted = eng.strategies[0]
+    hosted.risk = SimpleNamespace(
+        percent_per_trade=1.0,
+        max_open_trades=4,
+        max_drawdown_percent=10.0,
+        max_daily_loss_pct=0.0,
+        max_daily_profit_pct=0.0,
+        max_weekly_loss_pct=0.0,
+        max_weekly_profit_pct=0.0,
+    )
+
+    # Fully disabled: it returns before any window/DB work — server_now untouched.
+    with (
+        mock.patch.object(engine_mod, "server_now", side_effect=AssertionError) as sn,
+        db_mod.get_connection(p) as conn,
+    ):
+        ok, reason = eng._check_period_caps(conn, hosted, balance=1000.0, floating=0.0)
+
+    assert ok is True
+    assert reason == ""
+    assert not sn.called
 
 
 if __name__ == "__main__":

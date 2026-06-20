@@ -16,6 +16,7 @@ from drift.risk import (
     check_correlation,
     check_drawdown,
     check_max_trades,
+    check_period_pnl,
     check_strategy_drawdown,
     check_strategy_risk,
     seed_baseline_capital,
@@ -138,19 +139,21 @@ def test_strategy_risk_blocks_on_per_strategy_cap():
     assert reason.startswith("strategy")
 
 
-def test_strategy_risk_blocks_on_global_cap_even_if_strategy_ok():
+def test_strategy_risk_no_global_trade_cap_when_strategy_under_own_cap():
+    # The global trade cap was removed (D072): a full account from OTHER
+    # strategies must NOT block a strategy that is within its own max_open_trades.
     sr = StrategyRiskConfig(max_open_trades=10)
     rg = RiskGlobalConfig(max_open_trades=3, max_same_currency_direction=10)
     strat_trades = [_trade("EURUSD", "buy")]
-    # Account is full from OTHER strategies' positions
+    # Account is "full" (3) from OTHER strategies' positions — no longer enforced.
     account_trades = [
         _trade("EURUSD", "buy"),
         _trade("USDCAD", "sell"),
         _trade("AUDNZD", "buy"),
     ]
     ok, reason = check_strategy_risk(strat_trades, account_trades, "GBPCHF", "buy", sr, rg)
-    assert ok is False
-    assert reason.startswith("account")
+    assert ok is True
+    assert reason == ""
 
 
 def test_strategy_risk_blocks_on_global_correlation():
@@ -282,3 +285,59 @@ def test_seed_baseline_respects_allocation_fraction():
 def test_commission_constant_is_used_in_sizing():
     # Guard against accidental change of the commission constant affecting math.
     assert COMMISSION_PER_LOT == 7.0
+
+
+# ---------------------------------------------------------------------------
+# check_period_pnl — per-strategy daily/weekly P&L caps (D072)
+# ---------------------------------------------------------------------------
+
+
+def test_period_pnl_loss_trips():
+    # -60 on 1000 allocated = -6%, hits the -5% loss cap.
+    ok, reason = check_period_pnl(-60.0, 1000.0, 5.0, 6.0, "daily")
+    assert ok is False
+    assert "daily loss" in reason
+    assert "-5%" in reason
+
+
+def test_period_pnl_profit_trips():
+    # +70 on 1000 allocated = +7%, hits the +6% profit cap.
+    ok, reason = check_period_pnl(70.0, 1000.0, 5.0, 6.0, "weekly")
+    assert ok is False
+    assert "weekly profit" in reason
+    assert "+6%" in reason
+
+
+def test_period_pnl_within_caps_passes():
+    ok, reason = check_period_pnl(30.0, 1000.0, 5.0, 6.0, "daily")
+    assert ok is True
+    assert reason == ""
+
+
+def test_period_pnl_zero_loss_cap_disables_loss_side():
+    # max_loss_pct=0 disables the loss side: a huge loss does NOT trip.
+    ok, _ = check_period_pnl(-500.0, 1000.0, 0.0, 6.0, "daily")
+    assert ok is True
+
+
+def test_period_pnl_zero_profit_cap_disables_profit_side():
+    # max_profit_pct=0 disables the profit side: a huge gain does NOT trip.
+    ok, _ = check_period_pnl(500.0, 1000.0, 5.0, 0.0, "daily")
+    assert ok is True
+
+
+def test_period_pnl_both_zero_disables_both():
+    assert check_period_pnl(-9999.0, 1000.0, 0.0, 0.0, "daily")[0] is True
+    assert check_period_pnl(9999.0, 1000.0, 0.0, 0.0, "daily")[0] is True
+
+
+def test_period_pnl_non_positive_allocated_capital_is_permissive():
+    # Guard: allocated_capital <= 0 returns ok (no division, no cap).
+    assert check_period_pnl(-100.0, 0.0, 5.0, 6.0, "daily")[0] is True
+    assert check_period_pnl(-100.0, -10.0, 5.0, 6.0, "daily")[0] is True
+
+
+def test_period_pnl_loss_at_exact_threshold_trips():
+    # Exactly -5% trips (<= comparison).
+    ok, _ = check_period_pnl(-50.0, 1000.0, 5.0, 6.0, "daily")
+    assert ok is False
