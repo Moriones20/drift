@@ -303,11 +303,13 @@ def test_orb_buy_broker_tp_fill():
     """A BUY breakout exits at the broker TP, filled intrabar at the limit."""
     overrides, h11 = _orb_setup()
     # 11:15 breakout: close 1.10200 > range_high 1.10150 -> BUY queued.
+    # Geometry (breakout-anchored): sl = 1.10200 - 0.00150 = 1.10050
+    #                               tp = 1.10200 + 0.00150 = 1.10350
     overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
-    # 11:30 entry bar: fills at this open (1.10180); stays below TP and above SL.
+    # 11:30 entry bar: fills at open (1.10180); stays below TP (1.10350) and above SL (1.10050).
     overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10220, "low": 1.10170, "close": 1.10200}
-    # 11:45 hits the TP (1.10300) intrabar; open below TP so fill is exactly TP.
-    overrides[h11 + 3 * _M15] = {"open": 1.10250, "high": 1.10320, "low": 1.10240, "close": 1.10300}
+    # 11:45 hits the TP (1.10350) intrabar; open (1.10250) below TP so fill is exactly TP.
+    overrides[h11 + 3 * _M15] = {"open": 1.10250, "high": 1.10360, "low": 1.10240, "close": 1.10340}
 
     result = _run_orb(overrides)
     assert len(result.trades) == 1
@@ -316,9 +318,9 @@ def test_orb_buy_broker_tp_fill():
     assert t.reason == "tp"
     # Entry fills at the 11:30 open.
     assert t.entry_price == pytest.approx(1.10180)
-    # TP = range_high + 1.0 * width = 1.10150 + 0.00150 = 1.10300; open below it,
+    # TP = curr_close + 1.0 * width = 1.10200 + 0.00150 = 1.10350; open below it,
     # so the limit fills exactly at the TP.
-    assert t.exit_price == pytest.approx(1.10300)
+    assert t.exit_price == pytest.approx(1.10350)
     assert t.exit_time == (h11 + 3 * _M15).to_pydatetime()
 
 
@@ -341,13 +343,14 @@ def test_orb_buy_broker_tp_gap_fill_is_better_than_tp():
 
 
 def test_orb_buy_stop_loss_fill():
-    """A BUY that reverses below the range low exits at the SL, intrabar."""
+    """A BUY that reverses below the SL exits at the SL, intrabar."""
     overrides, h11 = _orb_setup()
+    # 11:15 breakout: curr_close=1.10200, sl = curr_close - width = 1.10050
     overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
     # 11:30 entry at open 1.10180.
     overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10220, "low": 1.10170, "close": 1.10200}
-    # 11:45 drops through the SL (range_low 1.10000): low 1.09950 <= SL, open
-    # above SL so fill is exactly the SL (1.10000).
+    # 11:45 drops through the SL (1.10050): low 1.09950 <= SL, open (1.10100)
+    # above SL so fill is exactly the SL (1.10050).
     overrides[h11 + 3 * _M15] = {"open": 1.10100, "high": 1.10110, "low": 1.09950, "close": 1.10000}
 
     result = _run_orb(overrides)
@@ -355,19 +358,21 @@ def test_orb_buy_stop_loss_fill():
     t = result.trades[0]
     assert t.direction == "buy"
     assert t.reason == "sl"
-    assert t.exit_price == pytest.approx(1.10000)  # SL = range_low
+    assert t.exit_price == pytest.approx(1.10050)  # SL = curr_close - width
 
 
 def test_orb_sell_broker_tp_fill():
     """A SELL breakout below the range low exits at the broker TP, intrabar."""
     overrides, h11 = _orb_setup()
     # 11:15 breakout DOWN: close 1.09950 < range_low 1.10000 -> SELL queued.
+    # Geometry (breakout-anchored): sl = curr_close + width = 1.09950 + 0.00150 = 1.10100
+    #                               tp = curr_close - width = 1.09950 - 0.00150 = 1.09800
     overrides[h11 + _M15] = {"open": 1.10000, "high": 1.10010, "low": 1.09940, "close": 1.09950}
-    # 11:30 entry at open 1.09980.
+    # 11:30 entry at open 1.09980; stays above TP (1.09800) and below SL (1.10100).
     overrides[h11 + 2 * _M15] = {"open": 1.09980, "high": 1.09990, "low": 1.09900, "close": 1.09920}
-    # 11:45 hits the SELL TP (range_low - width = 1.10000 - 0.00150 = 1.09850);
-    # low 1.09800 <= TP, open above TP so fill is exactly the TP.
-    overrides[h11 + 3 * _M15] = {"open": 1.09900, "high": 1.09910, "low": 1.09800, "close": 1.09850}
+    # 11:45 hits the SELL TP (curr_close - width = 1.09950 - 0.00150 = 1.09800);
+    # low 1.09790 <= TP, open (1.09900) above TP so fill is exactly the TP.
+    overrides[h11 + 3 * _M15] = {"open": 1.09900, "high": 1.09910, "low": 1.09790, "close": 1.09850}
 
     result = _run_orb(overrides)
     assert len(result.trades) == 1
@@ -375,24 +380,25 @@ def test_orb_sell_broker_tp_fill():
     assert t.direction == "sell"
     assert t.reason == "tp"
     assert t.entry_price == pytest.approx(1.09980)
-    assert t.exit_price == pytest.approx(1.09850)  # TP = range_low - width
+    assert t.exit_price == pytest.approx(1.09800)  # TP = curr_close - width
 
 
 def test_orb_sl_and_tp_same_bar_sl_wins():
     """When SL and TP are both inside one bar, the SL fills first (conservative)."""
     overrides, h11 = _orb_setup()
+    # 11:15 breakout: curr_close=1.10200, sl=1.10050, tp=1.10350
     overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
     # 11:30 entry bar at open 1.10180 — and this SAME bar straddles BOTH the TP
-    # (1.10300, high reaches it) and the SL (1.10000, low reaches it).  The SL
-    # must win: exit reason "sl" at 1.10000, not "tp" at 1.10300.
-    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10320, "low": 1.09950, "close": 1.10100}
+    # (1.10350, high reaches it) and the SL (1.10050, low reaches it).  The SL
+    # must win: exit reason "sl" at 1.10050, not "tp" at 1.10350.
+    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10360, "low": 1.09950, "close": 1.10100}
 
     result = _run_orb(overrides)
     assert len(result.trades) == 1
     t = result.trades[0]
     assert t.direction == "buy"
     assert t.reason == "sl"
-    assert t.exit_price == pytest.approx(1.10000)
+    assert t.exit_price == pytest.approx(1.10050)  # SL = curr_close - width
     assert t.exit_time == (h11 + 2 * _M15).to_pydatetime()
 
 

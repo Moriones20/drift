@@ -221,15 +221,21 @@ def _run(
 
 class TestBuyBreakout:
     def test_buy_breakout_triggers_open(self) -> None:
-        """Close above range_high with a locked range → Decision.open(buy)."""
+        """Close above range_high with a locked range → Decision.open(buy).
+
+        SL/TP are anchored to curr_close (breakout price), not the range boundary,
+        so the distance to SL and the reward are both measured from the fill price.
+        This restores the intended 1:1 R:R regardless of how far price broke out.
+        """
         range_high = 1.2850
         range_low = 1.2800
         state = _locked_state(range_high=range_high, range_low=range_low, atr_val=0.0030)
         # Last bar closes above the range high
+        curr_close = range_high + 0.0010
         m15 = _make_m15_df(
             n=150,
             base_price=range_high,
-            last_close=range_high + 0.0010,
+            last_close=curr_close,
             end_hour=11,
             end_minute=15,
         )
@@ -238,11 +244,11 @@ class TestBuyBreakout:
         sig = _signal_from_decision(decision)
         assert sig.action == "buy"
         assert sig.entry_price > range_high
-        # SL must be at range_low
-        assert abs(sig.sl - range_low) < 1e-8
-        # TP must be range_high + 1.0 × range_width
         range_width = range_high - range_low
-        assert abs(sig.tp - (range_high + _DEFAULT_PARAMS.tp_mult * range_width)) < 1e-8
+        # SL anchored to breakout price: curr_close - range_width
+        assert abs(sig.sl - (curr_close - range_width)) < 1e-8
+        # TP anchored to breakout price: curr_close + tp_mult * range_width
+        assert abs(sig.tp - (curr_close + _DEFAULT_PARAMS.tp_mult * range_width)) < 1e-8
         assert sig.rejection_reason is None
 
 
@@ -253,15 +259,19 @@ class TestBuyBreakout:
 
 class TestSellBreakout:
     def test_sell_breakout_triggers_open(self) -> None:
-        """Close below range_low with a locked range → Decision.open(sell)."""
+        """Close below range_low with a locked range → Decision.open(sell).
+
+        SL/TP are anchored to curr_close (breakout price), not the range boundary.
+        """
         range_high = 1.2850
         range_low = 1.2800
         state = _locked_state(range_high=range_high, range_low=range_low, atr_val=0.0030)
         # Last bar closes below the range low
+        curr_close = range_low - 0.0010
         m15 = _make_m15_df(
             n=150,
             base_price=range_low,
-            last_close=range_low - 0.0010,
+            last_close=curr_close,
             end_hour=11,
             end_minute=15,
         )
@@ -270,12 +280,76 @@ class TestSellBreakout:
         sig = _signal_from_decision(decision)
         assert sig.action == "sell"
         assert sig.entry_price < range_low
-        # SL must be at range_high
-        assert abs(sig.sl - range_high) < 1e-8
-        # TP must be range_low - 1.0 × range_width
         range_width = range_high - range_low
-        assert abs(sig.tp - (range_low - _DEFAULT_PARAMS.tp_mult * range_width)) < 1e-8
+        # SL anchored to breakout price: curr_close + range_width
+        assert abs(sig.sl - (curr_close + range_width)) < 1e-8
+        # TP anchored to breakout price: curr_close - tp_mult * range_width
+        assert abs(sig.tp - (curr_close - _DEFAULT_PARAMS.tp_mult * range_width)) < 1e-8
         assert sig.rejection_reason is None
+
+
+# ---------------------------------------------------------------------------
+# Test 2b — R:R geometry invariant (breakout-anchored SL/TP)
+# ---------------------------------------------------------------------------
+
+
+class TestRRGeometry:
+    """Verify the R:R invariant after re-anchoring SL/TP to the breakout price.
+
+    Invariant (both directions):
+      abs(tp - curr_close) == tp_mult * range_width   (reward distance)
+      abs(curr_close - sl) == range_width             (risk distance)
+
+    This ensures a realized 1:1 R:R when tp_mult==1.0 regardless of how far
+    curr_close is from the range boundary.
+    """
+
+    def test_buy_rr_invariant(self) -> None:
+        range_high = 1.2850
+        range_low = 1.2800
+        range_width = range_high - range_low
+        # Simulate a larger breakout (5 pips past range_high, not 1)
+        curr_close = range_high + 0.0005
+        state = _locked_state(range_high=range_high, range_low=range_low, atr_val=0.0030)
+        m15 = _make_m15_df(
+            n=150, base_price=range_high, last_close=curr_close, end_hour=11, end_minute=30
+        )
+        decision = _run(_DEFAULT_PAIR, m15, state)
+        assert decision.kind == "open"
+        sig = _signal_from_decision(decision)
+        assert sig.action == "buy"
+        risk = abs(sig.entry_price - sig.sl)
+        reward = abs(sig.tp - sig.entry_price)
+        assert abs(risk - range_width) < 1e-8, f"risk {risk} != range_width {range_width}"
+        assert abs(reward - _DEFAULT_PARAMS.tp_mult * range_width) < 1e-8, (
+            f"reward {reward} != tp_mult*range_width {_DEFAULT_PARAMS.tp_mult * range_width}"
+        )
+        assert abs(reward / risk - _DEFAULT_PARAMS.tp_mult) < 1e-8, (
+            f"R:R {reward / risk:.4f} != tp_mult {_DEFAULT_PARAMS.tp_mult}"
+        )
+
+    def test_sell_rr_invariant(self) -> None:
+        range_high = 1.2850
+        range_low = 1.2800
+        range_width = range_high - range_low
+        curr_close = range_low - 0.0005
+        state = _locked_state(range_high=range_high, range_low=range_low, atr_val=0.0030)
+        m15 = _make_m15_df(
+            n=150, base_price=range_low, last_close=curr_close, end_hour=11, end_minute=30
+        )
+        decision = _run(_DEFAULT_PAIR, m15, state)
+        assert decision.kind == "open"
+        sig = _signal_from_decision(decision)
+        assert sig.action == "sell"
+        risk = abs(sig.sl - sig.entry_price)
+        reward = abs(sig.entry_price - sig.tp)
+        assert abs(risk - range_width) < 1e-8, f"risk {risk} != range_width {range_width}"
+        assert abs(reward - _DEFAULT_PARAMS.tp_mult * range_width) < 1e-8, (
+            f"reward {reward} != tp_mult*range_width {_DEFAULT_PARAMS.tp_mult * range_width}"
+        )
+        assert abs(reward / risk - _DEFAULT_PARAMS.tp_mult) < 1e-8, (
+            f"R:R {reward / risk:.4f} != tp_mult {_DEFAULT_PARAMS.tp_mult}"
+        )
 
 
 # ---------------------------------------------------------------------------

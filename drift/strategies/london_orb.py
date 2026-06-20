@@ -353,8 +353,8 @@ class LondonOrbStrategy:
 
         # BUY breakout: close above range_high
         if curr_close > range_high:
-            sl = range_low
-            tp = range_high + params.tp_mult * range_width
+            sl = curr_close - range_width
+            tp = curr_close + params.tp_mult * range_width
             reason = f"orb_buy breakout={curr_close:.5f} range=[{range_low:.5f},{range_high:.5f}]"
             logger.info(
                 "%s | action=buy entry=%.5f sl=%.5f tp=%.5f range_width=%.5f",
@@ -371,8 +371,8 @@ class LondonOrbStrategy:
 
         # SELL breakout: close below range_low
         if curr_close < range_low:
-            sl = range_high
-            tp = range_low - params.tp_mult * range_width
+            sl = curr_close + range_width
+            tp = curr_close - params.tp_mult * range_width
             reason = f"orb_sell breakout={curr_close:.5f} range=[{range_low:.5f},{range_high:.5f}]"
             logger.info(
                 "%s | action=sell entry=%.5f sl=%.5f tp=%.5f range_width=%.5f",
