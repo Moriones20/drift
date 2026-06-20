@@ -139,7 +139,7 @@ Diseño: **D067–D069**, `ROADMAP.md` Phase 2.8, `docs/knowledge/london-orb.md`
 ### Batch ORB-C — Config, docs, deploy (Steps 48-50)
 - [x] 48. Config: `config.yaml` real → `daily_lull` `enabled:false`, `london_orb` activo (magic 234001, alloc 100, 4 pares, params neutros). Validado (magic único, allocations ≤100%, instancia OK). `config.example.yaml` ya tenía el bloque (spec). (D069/D070)
 - [~] 49. Docs: `configuration.md` (bloque london_orb — de la sesión spec); `london-orb.md` actualizado con geometría re-anclada + estado paper (D070). `getting-started.md` (ventana 05:00–13:00 UTC-5) pendiente menor.
-- [ ] 50. **Validación e2e en paper (EN CURSO):** restart del bot → wake 10:00 → define-range → lock 11:00 → ruptura → fill → time-stop 18:00 + heartbeat. Objetivo: validar sistema + **fidelidad live-vs-backtest** (no juzgar edge en 1 semana). Decisión tras ~1 semana.
+- [ ] 50. **Validación e2e en paper — DOS estrategias en paralelo, ~2 semanas (EN CURSO, D071):** `daily_lull` + `london_orb` activas, independientes (global max_open 8 = 4+4, alloc 50/50). Primera corrida real multi-estrategia → valida el aislamiento de riesgo (D052/D053) en vivo. Objetivo: sistema + **fidelidad live-vs-backtest**, NO P&L. Lull se observa con D066 (su fallo R:R<spread es estructural, no se arregla observando). **Revisión ~2026-07-06:** por estrategia, archivar vs rediseñar (Lull R:R) / filtro tendencia (ORB).
 
 ## Phase 3 — Live
 

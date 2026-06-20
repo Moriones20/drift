@@ -995,3 +995,21 @@ Esto da R:R = `tp_mult`:1 exacto desde el precio de señal, sin importar cuánto
 **Pendiente tras la semana:** decidir archivar (cabeza fría — sin edge) vs un último intento principista (filtro de tendencia H1/H4, la única palanca que no viola R:R ni es overfitting). NO bajar `tp_mult` < 1 (violaría R:R ≥ 1:1) ni añadir filtros sobre señal floja (overfitting, prioridad #6).
 
 Relacionado: [[D067]], [[D068]], [[D069]], [[D043]], [[D046]], [[D055]], `drift/strategies/london_orb.py`, `backtest/run_orb.py`, `config.yaml`. Commits: `ad9424e` (geometría), `e84eec2` (broker TP en motor), `472f8c2` (runner). Implementa: Phase 2.8 Steps 46/48; Step 50 en curso (paper).
+
+---
+
+### D071 — Las dos estrategias en paper en paralelo, independientes, 2 semanas de observación
+
+**Decisión (2026-06-20).** En vez de archivar nada todavía, correr **`daily_lull` y `london_orb` simultáneamente en demo ~2 semanas**, cada una **independiente**, y observar. Es la primera corrida real de dos estrategias sobre la plataforma multi-estrategia (D050) — y por sí misma valida que el aislamiento de riesgo de D052/D053 funciona en vivo.
+
+**Independencia de trades (el pedido central).** El cap de trades es de dos niveles (D053: global + por estrategia). Para que cada estrategia tenga sus propios trades sin competir por un pool compartido, `risk_global.max_open_trades` sube **4 → 8** (= 4 lull + 4 orb); cada estrategia mantiene su `max_open_trades: 4`. Allocations **50/50** (suma 100, válido) → presupuesto notional propio y freno de drawdown propio (10% c/u) por estrategia. La correlación (`max_same_currency_direction`) **queda global** — es exposición real de cuenta, no de estrategia. En la práctica las ventanas **no se solapan** (Lull 21:00–02:00, ORB 10:00–18:00 server), así que nunca sostienen posiciones a la vez; el global 8 es garantía explícita de independencia, no una necesidad de slots.
+
+**Marco honesto (importante).** Ninguna de las dos corre como apuesta de edge:
+- **Daily Lull:** su fallo es **estructural** (TP=midpoint < spread de la franja ilíquida; [[D043]]/[[D046]]) y **2 semanas de observación NO lo arreglan** — se espera otra vez pocos/ningún trade (spread-guarded). Lo que cambió es la **observabilidad** ([[D066]]: el cierre de sesión ahora siempre notifica), así que por fin se *ve* su comportamiento nítido en vez del silencio que lo ocultaba. Arreglar su R:R sería rediseño (otra sesión), no config.
+- **London ORB:** sin edge en backtest ([[D070]]); corre como validación de **sistema + fidelidad live-vs-backtest**, no de P&L.
+
+**Asignación flexible.** El usuario está cómodo re-asignando presupuesto si el demo baja (no es una optimización fina; 50/50 es el default de "dos independientes").
+
+**Revisión ~2026-07-06** (≈2 semanas de sesiones): decidir por estrategia — Lull (archivar vs rediseñar R:R), ORB (archivar vs filtro de tendencia H1/H4). Criterio: fidelidad de ejecución y comportamiento estructural observado, **no** el P&L de 2 semanas (ruido — el "1W/6L" del Lull ya enseñó que el conteo corto engaña).
+
+Relacionado: [[D070]], [[D069]], [[D053]], [[D066]], [[D046]], `config.yaml`. Cambio solo de config (gitignored); sin código.
