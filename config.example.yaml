@@ -23,11 +23,16 @@ risk_global:
 # their config is preserved (useful for A/B testing and controlled restarts).
 # ---------------------------------------------------------------------------
 strategies:
+  # --- Daily Lull Scalper (#1) — PAUSED/DISABLED, pivoted away from (D069) ---------
+  # Failed in live demo: TP at range midpoint gave reward <= illiquid-band spread, so
+  # the D046 spread guard abandoned every order (PF 0.01, no trades). Config preserved
+  # for A/B / future re-evaluation; enabled:false is now allowed because london_orb is
+  # the >=1 enabled strategy. Disabled allocations do NOT count toward the <=100% sum.
   daily_lull:
-    enabled: true
+    enabled: false                # was true; disabled after the live post-mortem (D069)
     magic_offset: 0               # Effective MT5 magic = system.magic_number + magic_offset
                                   # daily_lull uses offset 0 → magic 234000 (unchanged, D052)
-    allocation_pct: 100           # Notional capital share (%; sum of all enabled must be <= 100)
+    allocation_pct: 100           # Notional capital share (%; sum of all ENABLED must be <= 100)
     pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]  # USDJPY dropped — see D029 / optimization results
 
     # Per-strategy risk limits (must respect risk_global caps above; see D053)
@@ -56,6 +61,40 @@ strategies:
       m15_rsi_period: 14           # RSI period on M15 bars
       m15_atr_period: 14           # ATR period on M15 bars
       h4_adx_period: 14            # ADX period on H4 bars (regime filter)
+
+  # --- London Opening-Range Breakout (#2) — ACTIVE (D067-D069) ---------------------
+  # Momentum breakout of the London open's first-hour range. Inverts every failure
+  # mode of daily_lull: liquid hours, directional, TP >> spread, R:R 1:1. Reasons in
+  # MT5 server time, never re-localizes. See docs/knowledge/london-orb.md.
+  london_orb:
+    enabled: true
+    magic_offset: 1               # → effective magic 234001 (unique vs daily_lull's 234000; D052/D069)
+    allocation_pct: 100           # all notional capital pivots here (D069)
+    pairs: [GBPJPY, GBPUSD, EURJPY, EURUSD]  # London movers; backtest ranks & prunes (Step 46)
+
+    risk:
+      percent_per_trade: 1.0      # % of allocated capital risked per trade
+      max_open_trades: 4          # 4 pairs may break out the same morning (<= risk_global)
+      max_drawdown_percent: 10.0  # pause only this strategy if its own drawdown exceeds this %
+
+    # Strategy-specific parameters — opaque to the engine; parsed by LondonOrbStrategy.
+    # Range-width values are PLACEHOLDERS pending backtest calibration (Step 46, D067).
+    params:
+      # Opening range window (MT5 server time; fixed 10:00 anchor, DST drift accepted — D068)
+      range_start_hour: 10         # begin measuring the range at 10:00 server (= 02:00 Bogotá, verano)
+      range_end_hour: 11           # lock the range at 11:00 server (= 03:00 Bogotá), then look for breakouts
+      time_stop_hour: 18           # close all open trades at 18:00 server (= 10:00 Bogotá); no overnight
+      # Range quality filter — the structural reward >> spread guarantee (lesson L1)
+      range_atr_min: 0.5           # PLACEHOLDER — min range width in ATR units (calibrate)
+      range_atr_max: 2.0           # PLACEHOLDER — max range width in ATR units (calibrate)
+      range_pip_floor:             # PLACEHOLDER — absolute min range width in pips, per pair (calibrate)
+        GBPJPY: 18
+        GBPUSD: 10
+        EURJPY: 12
+        EURUSD: 8
+      # Trade geometry
+      tp_mult: 1.0                 # TP = tp_mult × range width beyond the breakout → R:R 1:1
+      atr_period: 14               # ATR period on M15 bars (range-width filter)
 
 telegram:
   bot_token: "your_bot_token_here"   # Get from @BotFather

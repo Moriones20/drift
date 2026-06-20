@@ -106,9 +106,28 @@ El bloque `params` es opaco para el motor: contiene los parametros propios de la
 | `m15_atr_period` | entero | `14` | Periodo del ATR calculado sobre barras M15. Se usa para dimensionar el rango, el SL y el TP. |
 | `h4_adx_period` | entero | `14` | Periodo del ADX calculado sobre barras H4. Filtra sesiones donde hay una tendencia fuerte en curso (ADX > `adx_max_threshold`). |
 
+### Bloque `params` por estrategia (london_orb)
+
+> ⚠️ Estrategia **#2, activa** (D067-D069). El `daily_lull` (#1) quedo `enabled: false` tras su post-mortem en vivo; `london_orb` toma el 100% del capital. Guia completa: `docs/knowledge/london-orb.md`. Valores de ancho de rango **pendientes de calibracion** (backtest, Phase 2.8 Step 46).
+
+`london_orb` opera la **ruptura del rango de la apertura de Londres**: define el rango de la primera hora (10:00-11:00 hora servidor), entra cuando una vela M15 **cierra** mas alla del extremo, con SL en el extremo opuesto y TP a 1x el ancho del rango (R:R 1:1), flat a las 18:00. Solo usa ATR. Horas en hora servidor MT5 (anclaje fijo 10:00, ver D068).
+
+| Campo | Tipo | Default | Descripcion |
+|---|---|---|---|
+| `range_start_hour` | entero | `10` | Hora servidor de inicio de la ventana de definicion del rango (= 02:00 Bogota, verano). |
+| `range_end_hour` | entero | `11` | Hora servidor de lock del rango; desde aqui se buscan rupturas. |
+| `time_stop_hour` | entero | `18` | Hora servidor de cierre forzado de todos los trades (= 10:00 Bogota, verano). Sin holds overnight. |
+| `range_atr_min` | decimal | *(calibrar)* | Ancho minimo del rango como multiplo del ATR. |
+| `range_atr_max` | decimal | *(calibrar)* | Ancho maximo del rango como multiplo del ATR. |
+| `range_pip_floor` | mapa par→pips | *(calibrar)* | Piso absoluto del ancho del rango en pips, por par. Garantia estructural de que el TP nunca colapse al tamano del spread. |
+| `tp_mult` | decimal | `1.0` | TP como multiplo del ancho del rango (R:R = `tp_mult`:1). |
+| `atr_period` | entero | `14` | Periodo del ATR M15 para el filtro de ancho. |
+
+**Ventana operativa en hora local (UTC-5):** **02:00-10:00 Bogota (verano; +1h invierno)** — la madrugada, distinta de la del Daily Lull (13:00-18:00, tarde). Si el PC se enciende despues de las 03:00 local, se pierde la definicion de rango y no se opera ese dia. Operar de madrugada en maquina de casa refuerza la necesidad de VPS (leccion L5).
+
 ### Ejemplo completo
 
-Con el Daily Lull como unica estrategia (asignacion 100%, offset 0):
+Tras el pivote (D069): `daily_lull` desactivado, `london_orb` activo al 100% (offset 1). Las estrategias desactivadas no cuentan en la suma de allocations:
 
 ```yaml
 risk_global:
@@ -117,14 +136,14 @@ risk_global:
   max_same_currency_direction: 2
 
 strategies:
-  daily_lull:
-    enabled: true
+  daily_lull:                  # #1 — desactivado tras el post-mortem (D069); config preservada
+    enabled: false
     magic_offset: 0            # magic efectivo = 234000 (base + offset)
-    allocation_pct: 100        # suma de todas las estrategias debe ser <= 100
+    allocation_pct: 100        # ignorado mientras enabled:false (no cuenta en la suma)
     pairs: [AUDNZD, EURCHF, EURJPY, GBPJPY, EURGBP]
     risk:
       percent_per_trade: 1.0
-      max_open_trades: 4       # debe ser <= risk_global.max_open_trades
+      max_open_trades: 4
       max_drawdown_percent: 10.0
     params:
       rsi_oversold: 35.0
@@ -139,6 +158,29 @@ strategies:
       m15_rsi_period: 14
       m15_atr_period: 14
       h4_adx_period: 14
+
+  london_orb:                  # #2 — activo (D067-D069)
+    enabled: true
+    magic_offset: 1            # magic efectivo = 234001 (unico vs daily_lull)
+    allocation_pct: 100        # suma de ENABLED debe ser <= 100
+    pairs: [GBPJPY, GBPUSD, EURJPY, EURUSD]
+    risk:
+      percent_per_trade: 1.0
+      max_open_trades: 4       # debe ser <= risk_global.max_open_trades
+      max_drawdown_percent: 10.0
+    params:
+      range_start_hour: 10
+      range_end_hour: 11
+      time_stop_hour: 18
+      range_atr_min: 0.5       # placeholder — calibrar (Step 46)
+      range_atr_max: 2.0       # placeholder — calibrar
+      range_pip_floor:         # placeholder — calibrar por par
+        GBPJPY: 18
+        GBPUSD: 10
+        EURJPY: 12
+        EURUSD: 8
+      tp_mult: 1.0
+      atr_period: 14
 ```
 
 ---

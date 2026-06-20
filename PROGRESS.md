@@ -118,6 +118,29 @@ Orden: 37 primero (helper canónico, todos dependen); 38/39 tras 37; 40/41/42 in
 - **Reset del peak global en `/resume` global** — diferido (D063): el peak global se almacena event-based (`peak_balance` + `MAX` en `get_stats`); bajarlo limpio necesita su propio diseño (tabla con columna directa o evento `peak_reset`). El freno global conserva su rigidez hasta entonces.
 - **Re-seed del baseline al cambiar `allocation_pct`** (D062): cambiar la asignación deja el baseline obsoleto; poner `baseline_capital` a NULL fuerza el recálculo. Sin automatizar.
 
+## Phase 2.8 — Estrategia #2: London Opening-Range Breakout (`london_orb`)
+
+Diseño: **D067–D069**, `ROADMAP.md` Phase 2.8, `docs/knowledge/london-orb.md`, `docs/knowledge/strategy-framework.md` §7/§9. Primera estrategia nueva sobre el framework (la #2). Pivota el capital fuera del Daily Lull (pausado/desactivado, D069). Origen: post-mortem del Lull en vivo (auditoría 2026-06-19, memoria `daily-lull-live-lessons`).
+
+> **En cada sesión: leer PROGRESS.md primero.** El framework ya existe (Phase 2.6/2.7) — esto es añadir una estrategia siguiendo el checklist de `strategy-framework.md` §7. Restricciones no negociables (§9): R:R ≥ 1:1 que sobreviva al spread real · backtest con costos de ejecución · time-stop que respete la duración del trade ganador · heartbeat en todo camino silencioso · riesgo aislado (magic_offset 1, allocation ≤100%).
+
+> **Estado tras la orquestación (2026-06-19/20, `/orchestrate` en rama `feat/london-orb`):** estrategia implementada y backtesteada. **HALLAZGO: sin edge en backtest** (portfolio PF 0.82, ningún par OOS PF ≥ 1.2; la señal cruda es ≈ moneda al aire una vez la geometría es honesta). Re-anclada la geometría al precio de ruptura (D070). Desplegada en **paper como validación de sistema + fidelidad live-vs-backtest, NO de edge** (decisión del usuario; ver D070). Tras ~1 semana: archivar vs filtro de tendencia H1/H4. Status detallado: `docs/plans/london-orb.status.md`.
+
+### Batch ORB-A — Estrategia (Steps 43-45)
+- [x] 43. `LondonOrbParams` + parsing en `drift/strategies/london_orb.py`. (D067) — `aba10ff`
+- [x] 44. `LondonOrbStrategy.on_bar`: estado per-par, define-range 10:00–11:00, lock + filtro ancho, ruptura por cierre M15 ambos sentidos, `CloseAll` time-stop 18:00, 1 trade/par/día; registrado; sin tocar MT5/DB/reloj. (D067/D068) — `aba10ff`. **Fix de paridad:** ventana keyed en `bar_time.hour` (no boundary) — `dc01bf0`. **Geometría re-anclada** (D070) — `ad9424e`.
+- [x] 44b. Heartbeat de cierre 18:00: el `_handle_close_all` del engine ya es genérico (dispara con `reason=="session_close"` para cualquier estrategia, incl. 0 posiciones). Sin cambios al engine.
+- [x] 45. Unit tests `tests/test_london_orb_strategy.py` (25 tests: long/short, filtros, ventana, time-stop, heartbeat, regresión de boundary parity, invariante R:R). 
+
+### Batch ORB-B — Validación con costos reales (Steps 46-47)
+- [x] 46. Datos M15 2a reales de los 4 pares (GBPJPY/EURJPY del Lull; GBPUSD/EURUSD descargados de MT5 demo). Motor generalizado para TP de broker intrabar (`e84eec2`, conserva el midpoint-close del Lull + 11 slow equivalence tests verdes). Runner `backtest/run_orb.py` + walk-forward (`472f8c2`). **Resultado: sin edge** (ver D070). `range_atr_min` inerte (el pip floor ata). 
+- [~] 47. **Superseded por el demo** (D070): el paper en vivo es el test de spread/costo real, en vez de modelarlo en backtest. (El backtest honesto ya da PF<1 sin spread.)
+
+### Batch ORB-C — Config, docs, deploy (Steps 48-50)
+- [x] 48. Config: `config.yaml` real → `daily_lull` `enabled:false`, `london_orb` activo (magic 234001, alloc 100, 4 pares, params neutros). Validado (magic único, allocations ≤100%, instancia OK). `config.example.yaml` ya tenía el bloque (spec). (D069/D070)
+- [~] 49. Docs: `configuration.md` (bloque london_orb — de la sesión spec); `london-orb.md` actualizado con geometría re-anclada + estado paper (D070) + horarios Bogotá corregidos (02:00–10:00, no 05:00–13:00). `getting-started.md` (ventana de la #2) pendiente menor.
+- [ ] 50. **Validación e2e en paper — DOS estrategias en paralelo, ~2 semanas (EN CURSO, D071):** `daily_lull` + `london_orb` activas, independientes (global max_open 8 = 4+4, alloc 50/50). Primera corrida real multi-estrategia → valida el aislamiento de riesgo (D052/D053) en vivo. Objetivo: sistema + **fidelidad live-vs-backtest**, NO P&L. Lull se observa con D066 (su fallo R:R<spread es estructural, no se arregla observando). **Revisión ~2026-07-06:** por estrategia, archivar vs rediseñar (Lull R:R) / filtro tendencia (ORB).
+
 ## Phase 3 — Live
 
 ### Session 8: Go Live (Steps 22-26)

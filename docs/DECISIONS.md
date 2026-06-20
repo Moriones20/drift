@@ -919,3 +919,97 @@ Relacionado: [[D041]], [[D047]], [[D058]], `drift/mt5_client.py`, `drift/engine.
 **No es la causa raíz de los síntomas.** Los negativos y la ausencia de trades del Daily Lull son estructurales (TP=midpoint < spread de la franja ilíquida; [[D043]]/[[D046]] ya medían el edge en +3-5% anual). D066 solo restaura la señal de vida; la decisión de pausar el Daily Lull y pivotar a una estrategia nueva se toma por separado.
 
 Relacionado: [[D046]], [[D043]], [[D057]], [[D061]], `drift/engine.py`, `tests/test_engine.py`, `docs/user/commands.md`.
+
+---
+
+### D067 — Estrategia #2: London Opening-Range Breakout (`london_orb`)
+
+**Contexto.** El Daily Lull (estrategia #1) corrió ~2 semanas en demo (jun-2026), dio PF 0.01 / 1W-6L y terminó sin abrir trades. Auditoría 2026-06-19: **una sola causa raíz** — el TP en el midpoint del rango daba un reward (6–25 pips) ≤ spread de la franja ilíquida 23:00–02:00 server (spreads JPY 5–20 pips), así que el spread guard [[D046]] abandonaba toda orden. El Lull queda pausado ([[D069]]); se pivota a una estrategia nueva diseñada para **invertir cada modo de falla del Lull** (ver §9 de `strategy-framework.md` y la memoria `daily-lull-live-lessons`). Sesión `/spec` 2026-06-19.
+
+**Decisión.** La estrategia #2 es **London Opening-Range Breakout** — `name: london_orb`. Mean reversion → **momentum direccional**; franja ilíquida → **apertura de Londres (líquida)**; TP midpoint → **TP = múltiplo del spread**. Tesis (pitch): *"capturar el impulso direccional de la apertura de Londres rompiendo el rango de la primera hora."*
+
+Mecánica (tickea en M15, igual que el Lull; razona en hora server):
+- **Rango:** high/low de las 4 velas M15 entre **10:00–11:00 server** (apertura de Londres; ver [[D068]] para el anclaje horario).
+- **Gatillo:** *cierre* de M15 más allá del extremo del rango (no la mecha) → entra en el sentido de la ruptura. **Ambos sentidos**, sin filtro de tendencia (simplicidad; revisable en optimización).
+- **Geometría (R:R 1:1):** SL en el **extremo opuesto** del rango (riesgo = ancho del rango), TP = **1× ancho** más allá de la ruptura. Simétrica, un parámetro menos; el SL lejos evita los stop-outs por re-test de la ruptura.
+- **Filtro de ancho de rango:** sólo operar si el rango está en `[range_atr_min, range_atr_max]` × ATR-de-primera-hora **y** por encima de un **piso absoluto en pips por par** (`range_pip_floor`). Este filtro **es** la garantía estructural reward≫spread — la lección L1 codificada como gate, no como esperanza: un piso de rango asegura que el TP nunca colapse al tamaño del spread.
+- **Una operación por par por día**, sin re-entrada tras stop.
+- **Time-stop:** flat a las **18:00 server** (fin de Londres); ver [[D068]]. Sin holds overnight.
+- **Pares:** GBPJPY, GBPUSD, EURJPY, EURUSD (movers de Londres con buen ratio rango/spread). El backtest **rankea y poda** (como el Lull descartó USDJPY, D029) — los 4 son candidatos, no un compromiso.
+- **Indicadores:** sólo ATR (reusa `drift/indicators.py`). Sin EMA (no hay filtro de tendencia).
+
+**Por qué ORB y no trend-following/NY.** ORB es la **inversión más limpia y verificable** del post-mortem (líquido + direccional + target grande); es crisp y backtesteable (1–2 params, poca superficie de overfit); y **reutiliza el esqueleto define-range/lock/ventana** ya construido y depurado en el Lull (mismo andamiaje, gatillo opuesto). Trend-following H1 (la tesis "más robusta" de D029) se descartó por ser más vago, más params y validación más lenta; NY momentum es la misma idea en otra franja, reservada como variante futura. Refuerza la tesis original de Drift de que lo direccional es lo robusto para retail.
+
+**Por qué R:R 1:1 (no 2:1).** Con SL en el extremo opuesto el SL queda lejos → menos stop-outs por el re-test clásico de la ruptura. El reward (30–50 pips típicos) deja el spread (0.7–3 pips en horas de Londres) en <10% del edge, así que [[D046]] prácticamente nunca rechazará — exactamente lo que el Lull no lograba. La optimización puede empujar el TP con datos después.
+
+**Riesgo conocido — cesta correlacionada.** Los 4 pares comparten GBP/EUR/JPY/USD; el guard global `max_same_currency_direction` ([[D053]]) puede bloquear entradas simultáneas en el mismo sentido. Es control de riesgo correcto, no un bug.
+
+Relacionado: [[D046]], [[D043]], [[D066]], [[D029]], [[D051]], [[D068]], [[D069]], `strategy-framework.md` §7/§9, `docs/knowledge/london-orb.md`. Implementa: Phase 2.8 (Steps 43–50).
+
+---
+
+### D068 — Anclaje horario de `london_orb`: 10:00 server fijo (drift de DST aceptado), Lun-Vie, time-stop 18:00
+
+**Decisión (2026-06-19).** La ventana de `london_orb` se ancla a **hora server fija**, sin re-localizar — consistente con la regla del contrato "la estrategia razona en hora server, nunca re-localiza" (ver `strategy-framework.md` §2.1):
+- **Rango 10:00–11:00 server**, time-stop **18:00 server**.
+- **Opera Lun-Vie** (a diferencia del Lull, que salta el viernes por su franja asiática): la mañana de Londres es sesión líquida normal todos los días hábiles, y al quedar flat a las 18:00 no hay riesgo de gap de fin de semana.
+
+**Drift de DST — aceptado y acotado.** El server está anclado a **NY DST** (GMT+2 invierno / GMT+3 verano, transiciones US: ~Mar 8 / Nov 1; ver [[D041]]) y Londres a **EU DST** (transiciones ~Mar 29 / Oct 25). Hay ~4 semanas/año (mediados de marzo y fines de octubre) donde el calendario US y el EU están desfasados y la apertura real de Londres cae a las **11:00 server** en vez de 10:00; esas semanas el rango 10:00–11:00 capturaría la hora previa a la apertura. Se acepta el desfase **fijo a 10:00 server** en lugar de computar la apertura real de Londres, porque la alternativa introduce la **única pieza de lógica fuera de hora-server**, rompiendo la regla del contrato. Es un error acotado (~4 sem/año, 1h) y documentado; se revisa sólo si el backtest muestra que esas semanas rinden mal.
+
+**Filtro de noticias — diferido a Phase 3.** El primer viernes hay NFP (13:30 server), que puede pegar mid-trade; y la apertura de Londres trae data del UK. Igual que el Lull difirió el filtro de holidays japoneses, el filtro de calendario económico se difiere a Phase 3 (se evalúa con el journal). El SL fijo en el extremo del rango protege mientras tanto.
+
+Relacionado: [[D041]], [[D067]], [[D058]], `drift/strategies/london_orb.py`. Implementa: Phase 2.8.
+
+---
+
+### D069 — Pivote operativo: Daily Lull `enabled: false`, `london_orb` allocation 100%, magic_offset 1
+
+**Decisión (2026-06-19).** Al añadir `london_orb`, se pivota el capital notional fuera del Lull:
+- **Daily Lull → `enabled: false`** en `config.yaml`. Ahora **sí se puede** desactivarlo (la config exige ≥1 estrategia *enabled*, y `london_orb` la satisface) — antes no, por ser la única (ver memoria `daily-lull-live-lessons`). `enabled: false` preserva su config para A/B o re-evaluación futura ([[D054]]); sus posiciones demo vivas, si quedaran, se conservan bajo su SL/TP server-side (la pausa/desactivación **no** cierra a mercado, [[D053]]).
+- **`london_orb`: `allocation_pct: 100`** (todo el presupuesto notional al edge nuevo), **`magic_offset: 1`** → magic efectivo **234001** (único, no colisiona con el 234000 del Lull; `_validate` lo verifica, [[D052]]).
+- **Riesgo por estrategia estándar:** `percent_per_trade: 1.0`, `max_open_trades: 4`, `max_drawdown_percent: 10.0` (prioridad #1 supervivencia; 4 pares ⇒ hasta 4 trades simultáneos, cap coincide).
+
+**Nota de re-seed.** Al cambiar de estrategia activa, `london_orb` siembra su `baseline_capital` en la primera computación post-deploy ([[D062]]); su curva de drawdown arranca limpia desde el deploy (intencional). Si en el futuro se reactiva el Lull, habrá que re-balancear allocations a ≤100% y re-seedear (poner `baseline_capital` a NULL fuerza el recálculo, [[D062]]).
+
+Relacionado: [[D052]], [[D053]], [[D054]], [[D062]], [[D067]], `config.yaml`, `config.example.yaml`. Implementa: Phase 2.8 Step 48.
+
+---
+
+### D070 — London ORB: geometría re-anclada al precio de ruptura; sin edge en backtest; a paper como validación de fidelidad (no de edge)
+
+**Contexto (sesión de implementación 2026-06-19/20, `/orchestrate`).** Al backtestear `london_orb` (motor unificado, mismo `on_bar`, datos M15 reales 2a de los 4 pares) con la geometría original de [[D067]] (SL=extremo opuesto, TP=`range_high + ancho`), el resultado fue **sin edge**: portfolio PF 0.88, win rate ~61%, ningún par con OOS PF ≥ 1.2. Diagnóstico verificado: la entrada llena en el *open de la vela siguiente* (ya pasada `range_high`) mientras el TP está anclado al extremo del rango → el **payoff realizado era ~0.55, no el 1:1 diseñado** (la lección [[D043]]/L1 resurgiendo). El win rate alto era un espejismo: SL lejano + TP minúsculo = ganar seguido y poco, perder raro y mucho.
+
+**Decisión 1 — re-anclar la geometría al precio de ruptura.** SL/TP se miden desde `curr_close` (el cierre de la vela de ruptura) con `range_width` como unidad, no desde los extremos del rango:
+- BUY: `sl = curr_close - range_width`; `tp = curr_close + tp_mult * range_width`.
+- SELL: `sl = curr_close + range_width`; `tp = curr_close - tp_mult * range_width`.
+
+Esto da R:R = `tp_mult`:1 exacto desde el precio de señal, sin importar cuánto sobre-corrió la ruptura. Re-backtest: el payoff realizado subió a **0.77–0.85** (geometría honesta), **pero el win rate cayó a ~50% y el portfolio PF a 0.82** — al quitar el sesgo de la geometría vieja se ve que **la señal cruda de ruptura del opening-range M15 en estos 4 pares es ≈ una moneda al aire con payoff < 1: no hay edge**. (Hallazgo lateral: `range_atr_min` es **inerte** — el `range_pip_floor` por par es siempre el filtro que ata.)
+
+**Decisión 2 — desplegar a paper como validación de SISTEMA + FIDELIDAD, no como apuesta de edge.** El usuario optó por verlo ~1 semana en demo antes de archivar. Marco explícito acordado para no auto-engañarse:
+- **Una semana NO juzga el edge** (~10-20 trades vs 358 del backtest en 2a; es ruido — el propio "1W/6L" del Lull era demasiado chico, el veredicto real fue estructural).
+- **Lo que paper SÍ valida:** (a) el sistema end-to-end bajo la estrategia #2 (era el Step 50 igual): motor, contrato, fills, heartbeat 18:00, atribución por magic; (b) **fidelidad live-vs-backtest**: si los fills de ORB en horas líquidas de Londres coinciden con el backtest (a diferencia del Lull, que divergió feo), aprendemos que **el backtest es confiable para estrategias de hora líquida** — meta-conocimiento para la estrategia #3. El demo **es** el test de spread real → reemplaza el Step 47 (modelar spread en backtest).
+- **Asimetría a tener presente:** la lección del Lull es que el backtest fue *optimista* (live salió peor). Un backtest honesto que ya da PF 0.82 sugiere live ≤ 0.82, no mejor. Por eso el criterio es fidelidad de ejecución, no P&L: una semana buena sería suerte-ruido, una mala confirma.
+
+**Config (Step 48):** `daily_lull` → `enabled: false` ([[D069]]); `london_orb` `enabled: true`, `magic_offset: 1` (magic 234001), `allocation_pct: 100`, 4 pares (se conservan los 4 para más muestras de fills), `range_atr_max: 2.0`, pip floors GBPJPY=18/GBPUSD=10/EURJPY=12/EURUSD=8, `tp_mult: 1.0`. Validado (magic único, allocations ≤100%). Step 47 (spread en backtest) **superseded** por el demo como test de spread real.
+
+**Pendiente tras la semana:** decidir archivar (cabeza fría — sin edge) vs un último intento principista (filtro de tendencia H1/H4, la única palanca que no viola R:R ni es overfitting). NO bajar `tp_mult` < 1 (violaría R:R ≥ 1:1) ni añadir filtros sobre señal floja (overfitting, prioridad #6).
+
+Relacionado: [[D067]], [[D068]], [[D069]], [[D043]], [[D046]], [[D055]], `drift/strategies/london_orb.py`, `backtest/run_orb.py`, `config.yaml`. Commits: `ad9424e` (geometría), `e84eec2` (broker TP en motor), `472f8c2` (runner). Implementa: Phase 2.8 Steps 46/48; Step 50 en curso (paper).
+
+---
+
+### D071 — Las dos estrategias en paper en paralelo, independientes, 2 semanas de observación
+
+**Decisión (2026-06-20).** En vez de archivar nada todavía, correr **`daily_lull` y `london_orb` simultáneamente en demo ~2 semanas**, cada una **independiente**, y observar. Es la primera corrida real de dos estrategias sobre la plataforma multi-estrategia (D050) — y por sí misma valida que el aislamiento de riesgo de D052/D053 funciona en vivo.
+
+**Independencia de trades (el pedido central).** El cap de trades es de dos niveles (D053: global + por estrategia). Para que cada estrategia tenga sus propios trades sin competir por un pool compartido, `risk_global.max_open_trades` sube **4 → 8** (= 4 lull + 4 orb); cada estrategia mantiene su `max_open_trades: 4`. Allocations **50/50** (suma 100, válido) → presupuesto notional propio y freno de drawdown propio (10% c/u) por estrategia. La correlación (`max_same_currency_direction`) **queda global** — es exposición real de cuenta, no de estrategia. En la práctica las ventanas **no se solapan** (Lull 21:00–02:00, ORB 10:00–18:00 server), así que nunca sostienen posiciones a la vez; el global 8 es garantía explícita de independencia, no una necesidad de slots.
+
+**Marco honesto (importante).** Ninguna de las dos corre como apuesta de edge:
+- **Daily Lull:** su fallo es **estructural** (TP=midpoint < spread de la franja ilíquida; [[D043]]/[[D046]]) y **2 semanas de observación NO lo arreglan** — se espera otra vez pocos/ningún trade (spread-guarded). Lo que cambió es la **observabilidad** ([[D066]]: el cierre de sesión ahora siempre notifica), así que por fin se *ve* su comportamiento nítido en vez del silencio que lo ocultaba. Arreglar su R:R sería rediseño (otra sesión), no config.
+- **London ORB:** sin edge en backtest ([[D070]]); corre como validación de **sistema + fidelidad live-vs-backtest**, no de P&L.
+
+**Asignación flexible.** El usuario está cómodo re-asignando presupuesto si el demo baja (no es una optimización fina; 50/50 es el default de "dos independientes").
+
+**Revisión ~2026-07-06** (≈2 semanas de sesiones): decidir por estrategia — Lull (archivar vs rediseñar R:R), ORB (archivar vs filtro de tendencia H1/H4). Criterio: fidelidad de ejecución y comportamiento estructural observado, **no** el P&L de 2 semanas (ruido — el "1W/6L" del Lull ya enseñó que el conteo corto engaña).
+
+Relacionado: [[D070]], [[D069]], [[D053]], [[D066]], [[D046]], `config.yaml`. Cambio solo de config (gitignored); sin código.

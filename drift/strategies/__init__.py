@@ -21,9 +21,11 @@ from drift.strategies.base import (
 # Import concrete strategy modules so they register themselves in
 # STRATEGY_REGISTRY at package import time (D054).
 from drift.strategies.daily_lull import DailyLullStrategy  # noqa: E402
+from drift.strategies.london_orb import LondonOrbStrategy  # noqa: E402
 
 __all__ = [
     "DailyLullStrategy",
+    "LondonOrbStrategy",
     "STRATEGY_REGISTRY",
     "Decision",
     "MarketData",

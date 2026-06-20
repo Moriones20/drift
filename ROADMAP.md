@@ -183,6 +183,33 @@ Orden de implementación (37 primero — todos dependen del helper canónico; 38
 41. **Limpieza** — mover `_pip_multiplier`/`_pip_value` de `main.py` a un módulo compartido y reapuntar el import del engine (#11); borrar `closed_bars` de `engine.py` (solo lo usan tests → reapuntar a `EngineMarketData`) (#10); borrar `check_all_risk` y `StrategyConfig` (sin uso); la notificación "SESSION CLOSED" solo se envía si se cerró ≥1 posición (#7). Tests/ruff. (#7, #10, #11)
 42. **Reintentos de orden fuera del lock** (`drift/engine.py`) — sacar los reintentos de `open_trade` (~75s con sleeps) de dentro de `_trade_lock` para no bloquear el thread de monitoreo (detección de cierres / drawdown) ese tiempo: sizing/gating bajo lock → soltar → ejecución+retries → re-lock para registrar. Concurrencia delicada, test propio. (#8)
 
+## Phase 2.8 — Estrategia #2: London Opening-Range Breakout (`london_orb`)
+
+Objetivo: implementar la **primera estrategia nueva sobre el framework** (la #2), diseñada para invertir cada modo de falla del Daily Lull (D067–D069). Es la primera prueba real de que la abstracción `Strategy.on_bar` aguanta una estrategia con timing/lógica distintos (HC3). El Lull se pausa/desactiva y pivota todo el capital notional a `london_orb` (D069). Fuente de verdad del diseño: **D067–D069**, `docs/knowledge/london-orb.md`, y `docs/knowledge/strategy-framework.md` §7 (checklist) / §9 (lecciones).
+
+**Tesis:** momentum direccional en la apertura de Londres — define el rango de la primera hora (10:00–11:00 server) y opera la ruptura por cierre M15, R:R 1:1, flat a las 18:00. Líquido, target grande vs spread, sin franja ilíquida ni rollover. Ver D067.
+
+**Restricciones de diseño (no negociables, salen del post-mortem del Lull — §9):**
+- R:R ≥ 1:1 que sobreviva al spread+slippage **reales** del par/hora, no al fill sin costo del backtest.
+- Backtest que modele costos de ejecución; revalidar el edge con spread inflado antes de demo.
+- Time-stop que respete la duración del trade ganador (18:00 da 5–7h de runway).
+- Heartbeat en todo camino silencioso (el cierre de las 18:00 siempre notifica, incl. días sin ruptura).
+- Riesgo aislado: magic_offset único (1), allocation ≤ 100%, drawdown propio.
+
+Orden de implementación (43–44 secuenciales; 45 tras 44; 46 puede arrancar tras 44; 47 tras 46; 48/49 independientes; 50 al final):
+
+43. **`LondonOrbParams` + parsing** (`drift/strategies/london_orb.py`) — dataclass de params con defaults y parseo del dict `params` crudo (`range_start_hour`, `range_end_hour`, `range_atr_min/max`, `range_pip_floor` por par, `tp_mult`, `time_stop_hour`, `atr_period`). Opaco para el motor (D054/D067).
+44. **`LondonOrbStrategy.on_bar`** (`drift/strategies/london_orb.py`) — estado per-par (rango high/low, locked, traded), define-range 10:00–11:00, lock + filtro de ancho (ATR × `[min,max]` + piso en pips), gatillo por cierre M15 en ambos sentidos, `Open(signal)` con SL=extremo opuesto / TP=1× ancho, `CloseAll` al time-stop 18:00 con **heartbeat** (notifica incl. sin ruptura), 1 trade/par/día. **Sin tocar MT5/DB/reloj** (todo por `market`/`ctx`). Registrar en el registry. (D051/D067/D068)
+44b. **Heartbeat de cierre de sesión** — verificar que el motor emite la notificación de cierre a las 18:00 también sin posiciones (análogo a D066 del Lull); ajustar si el wording/condición del engine es específico del Lull. (Restricción #4)
+45. **Unit tests de `on_bar`** (`tests/test_london_orb_strategy.py`) — señales aceptadas y rechazadas con su `reason`/`rejection_reason`: ruptura long/short, rango fuera de `[min,max]`, rango bajo el piso de pips, ruptura dentro de la ventana de definición (ignorada), 2ª señal del día (ignorada), time-stop cierra, heartbeat sin ruptura. (strategy-framework §7.7)
+46. **Datos + backtest unificado** — descargar M15 ≥2a de GBPJPY/GBPUSD/EURJPY/EURUSD; correr `backtest/engine.py` (mismo `on_bar`, D055); **rankear y podar pares**; **calibrar** `range_atr_min/max` y `range_pip_floor` por par (sin overfit — walk-forward IS/OOS como `validate_oos.py`). PF/Sharpe/DD sobre la curva de equity.
+47. **Revalidación de costos de ejecución** — modelar el spread de la hora de Londres (inflado) sobre los fills del backtest (extender `analyze_spread_cost.py`) y confirmar que el edge sobrevive con R:R ≥ 1:1 **antes** de demo. Restricción #2 / lección L2. Si el reward realista ~ spread, no hay edge → volver a 46.
+48. **Config** — añadir el bloque `london_orb` en `config.yaml` y `config.example.yaml` (magic_offset 1, allocation 100, risk estándar, params calibrados); `daily_lull` → `enabled: false`; validar (magic único, suma allocations ≤100%). (D069)
+49. **Docs de usuario** — `configuration.md` (bloque + params de `london_orb`); `commands.md` (confirmar que `/pause london_orb` · `/resume london_orb` · `/strategies` funcionan genéricos, D057); `getting-started.md` si cambia la ventana operativa visible (ORB: 02:00–10:00 UTC-5 verano — madrugada — no la tarde del Lull).
+50. **Validación end-to-end en paper** — desplegar en demo; verificar el ciclo: wake 10:00 → define-range → lock 11:00 (filtro ATR/pips) → ruptura → fill con D046 holgado → time-stop 18:00 + heartbeat → reset. Acumular trades antes de Phase 3 (go-live).
+
+**Paralelismo:** Steps 43→44→45 son secuenciales (mismo archivo + tests). Step 46 (datos+backtest) puede arrancar en cuanto exista `on_bar` (44) y corre en paralelo con 45. Steps 48 y 49 son independientes una vez calibrados los params (47).
+
 ## Phase 3 — Live
 
 22. Migrar a VPS Windows
@@ -197,7 +224,8 @@ Orden de implementación (37 primero — todos dependen del helper canónico; 38
 - **Filtro de noticias:** integrar calendario económico para evitar operar durante eventos de alto impacto (si el journal muestra que es necesario)
 - **Más pares:** expandir pool de pares basado en datos de demo/live
 - **Dashboard web:** interfaz visual para monitoreo (opcional, Telegram puede ser suficiente)
-- **Segunda estrategia concreta:** diseñar e implementar la estrategia #2 (p.ej. trend-following 24/5 en H1) sobre el framework de la Phase 2.5 — primera prueba real de que la abstracción aguanta timing heterogéneo (HC3)
+- ~~**Segunda estrategia concreta:** diseñar e implementar la estrategia #2 sobre el framework — primera prueba real de que la abstracción aguanta timing heterogéneo (HC3)~~ → realizada como **Phase 2.8** (London ORB, D067; sesión `/spec` 2026-06-19). Trend-following 24/5 en H1 queda como candidata #3.
+- **NY Opening-Range Breakout:** misma mecánica que `london_orb` en la sesión de NY (13:00–17:00 server); reservada como variante futura si el ORB de Londres valida (D067)
 - **Portfolio backtest:** simular varias estrategias sobre una misma curva de equity (cap global de trades + correlación + drawdown de cuenta compartidos); diferido hasta que exista la estrategia #2 (D055)
 - ~~**Multi-estrategia:** correr varias estrategias en paralelo con capital asignado~~ → promovido a Phase 2.6 (D050)
 
