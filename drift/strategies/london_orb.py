@@ -175,6 +175,9 @@ class LondonOrbStrategy:
     name = "london_orb"
     timeframes = frozenset({"M15"})
     params_cls = LondonOrbParams  # used by engine._instantiate to resolve params (D054)
+    # The backtest engine models this strategy's TP as a real broker limit order
+    # filled intrabar (D067 R:R 1:1), not the Lull's next-open midpoint close.
+    backtest_exit_model = "broker_tp"
 
     def __init__(self, pairs: list[str], params: LondonOrbParams) -> None:
         self.pairs = list(pairs)

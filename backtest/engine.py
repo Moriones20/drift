@@ -18,12 +18,19 @@ produce equivalent results (guarded by ``tests/test_backtest_engine.py``):
   * Market entry (``self.buy``/``self.sell`` with no ``tp``) fills at the
     **next bar's open** (Backtesting.py processes queued orders at the start of
     the following bar).
-  * The strategy attaches an SL only; the take-profit (range midpoint) is
-    realised by ``lull_engine`` as a manual ``position.close()`` when the bar
-    close crosses the midpoint — which also fills at the **next bar's open**.
-    The engine reproduces that midpoint-close-on-next-open exit using the
-    ``signal.tp`` level, NOT as an intrabar broker TP (that would be the live
-    executor's model and would diverge — see the equivalence test docstring).
+  * The take-profit is modelled per strategy via ``backtest_exit_model``
+    (``getattr(strategy, "backtest_exit_model", "midpoint_close")``):
+      - ``"midpoint_close"`` (default → the Daily Lull): the strategy attaches an
+        SL only; the take-profit (range midpoint) is realised by ``lull_engine``
+        as a manual ``position.close()`` when the bar close crosses the midpoint
+        — which also fills at the **next bar's open**.  The engine reproduces
+        that midpoint-close-on-next-open exit using the ``signal.tp`` level, NOT
+        as an intrabar broker TP (that would be the live executor's model and
+        would diverge — see the equivalence test docstring).
+      - ``"broker_tp"`` (the London ORB): ``signal.tp`` is a real broker LIMIT
+        order filled **intrabar**, symmetric to the SL (``_tp_fill_price``).  If
+        the SL and TP are both hit in the same bar the SL fills first
+        (conservative; intrabar order is unknown).
   * The SL is a broker stop checked **intrabar** against high/low; on the entry
     bar too (Backtesting.py reprocesses the freshly attached SL in the same
     bar).  A gap through the stop fills at the worse of open/stop.
@@ -61,7 +68,7 @@ from backtest._results import compute_metrics
 from drift.indicators import adx as _adx
 from drift.indicators import atr as _atr
 from drift.indicators import rsi as _rsi
-from drift.strategies.base import MarketData, Signal, StrategyContext
+from drift.strategies.base import MarketData, Signal, Strategy, StrategyContext
 from drift.strategies.daily_lull import DailyLullParams, DailyLullStrategy
 
 # Backtesting.py's ``_FULL_EQUITY`` sentinel: ``self.buy()`` with no size uses a
@@ -163,7 +170,7 @@ class _OpenPosition:
     entry_bar: int
     entry_price: float
     sl: float
-    tp: float  # range midpoint exit level
+    tp: float  # exit level: range midpoint (midpoint_close) or broker limit (broker_tp)
 
 
 @dataclass
@@ -252,30 +259,73 @@ class BacktestResult:
     metrics: dict = field(default_factory=dict)
 
 
-def _first_evaluable_index(strategy: DailyLullStrategy, m15: pd.DataFrame, h4: pd.DataFrame) -> int:
+def _first_evaluable_index(strategy: Strategy, m15: pd.DataFrame, h4: pd.DataFrame) -> int:
     """Return the first M15 positional index whose indicators are all valid.
 
-    ``lull_engine`` drops the warm-up rows where RSI/ATR/H4-ADX are NaN before
-    running, so its first evaluated bar is the first fully-warmed one.  We mirror
-    that so both engines evaluate the same set of bars.  Computed once over the
-    full series with the strategy's own indicator helpers (same module the live
-    ``on_bar`` uses), then forward-filled H4 ADX onto the M15 grid exactly like
-    ``daily_lull._evaluate`` / ``lull_engine.prepare_lull_data``.
+    The engine drops the warm-up rows where the strategy's indicators are NaN
+    before evaluating, so its first evaluated bar is the first fully-warmed one.
+    Computed once over the full series with the strategy's own indicator helpers
+    (the same module the live ``on_bar`` uses).
+
+    The set of warm-up indicators depends on the strategy:
+
+    - The Daily Lull reads M15 RSI/ATR AND a forward-filled H4 ADX, so its first
+      evaluable bar needs all three valid (mirrors ``lull_engine``).  Detected by
+      the strategy exposing an ``h4_adx_period`` param.
+    - An M15-only strategy (the London ORB) reads only its M15 ATR, so its
+      warm-up start only needs that ATR valid — H4 is not required.
     """
     p = strategy.params
-    rsi_series = _rsi(m15["close"], p.m15_rsi_period)
-    atr_series = _atr(m15["high"], m15["low"], m15["close"], p.m15_atr_period)
-    h4_adx = _adx(h4["high"], h4["low"], h4["close"], p.h4_adx_period).shift(1)
-    h4_on_m15 = h4_adx.resample("15min").last().ffill().reindex(m15.index, method="ffill")
-
-    valid = (
-        (~rsi_series.isna()) & (~atr_series.isna()) & (atr_series > 0) & (~h4_on_m15.isna())
-    ).to_numpy()
+    uses_h4 = hasattr(p, "h4_adx_period")
+    # Every strategy needs a valid M15 ATR; the Lull additionally needs M15 RSI
+    # and the forward-filled H4 ADX.  Resolve the M15 ATR period from whichever
+    # name the strategy uses (the Lull: ``m15_atr_period``; the ORB: ``atr_period``).
+    atr_period = p.m15_atr_period if uses_h4 else p.atr_period
+    atr_series = _atr(m15["high"], m15["low"], m15["close"], atr_period)
+    valid = (~atr_series.isna()) & (atr_series > 0)
+    if uses_h4:
+        rsi_series = _rsi(m15["close"], p.m15_rsi_period)
+        h4_adx = _adx(h4["high"], h4["low"], h4["close"], p.h4_adx_period).shift(1)
+        h4_on_m15 = h4_adx.resample("15min").last().ffill().reindex(m15.index, method="ffill")
+        valid &= (~rsi_series.isna()) & (~h4_on_m15.isna())
+    valid = valid.to_numpy()
     return int(np.argmax(valid)) if valid.any() else len(m15)
 
 
+def _active_hours(strategy: Strategy) -> set[int] | None:
+    """Return the set of server-clock hours the engine must evaluate, or None.
+
+    A pure performance shortcut: outside these hours the strategy provably does
+    nothing AND holds no position (every position is time-stopped within the
+    window), so the engine can skip the expensive ``on_bar`` call without
+    changing results.  A wrong set would change results, never just speed, so the
+    rule is correctness-first: return None whenever a safe set cannot be derived,
+    and the caller then evaluates EVERY bar (no skip).
+
+    Derivation is strategy-specific and read from the strategy's own params:
+
+    - The Daily Lull: the range-definition window
+      (``session_start_hour`` .. ``+ range_definition_hours - 1``), the
+      lock/trade hours 23/00/01, and the ``session_end_hour`` time stop.  This is
+      the exact set the engine used before this generalization, so the Lull's
+      speed and results are unchanged.
+    - The London ORB: the whole active window
+      ``[range_start_hour .. time_stop_hour]`` inclusive (range definition, lock,
+      trading and the 18:00 time stop).
+    - Any other strategy: None (no skip) — correctness over speed.
+    """
+    p = strategy.params
+    if hasattr(p, "session_start_hour") and hasattr(p, "range_definition_hours"):
+        hours = set(range(p.session_start_hour, p.session_start_hour + p.range_definition_hours))
+        hours |= {23, 0, 1, p.session_end_hour}
+        return {h % 24 for h in hours}
+    if hasattr(p, "range_start_hour") and hasattr(p, "time_stop_hour"):
+        return {h % 24 for h in range(p.range_start_hour, p.time_stop_hour + 1)}
+    return None
+
+
 def run_backtest(
-    strategy: DailyLullStrategy,
+    strategy: Strategy,
     m15: pd.DataFrame,
     h4: pd.DataFrame,
     pair: str,
@@ -329,16 +379,18 @@ def run_backtest(
     hours = index.hour.to_numpy()
     n = len(m15)
 
-    # Hours at which on_bar can change session state or act: the range-definition
-    # window (start_hour .. start_hour + range_hours - 1), the lock/trade hours
-    # 23/00/01, and the time-stop hour.  Outside these hours the Lull is always
-    # flat (every position is time-stopped at 02:00) and on_bar mutates no state,
-    # so we skip the (expensive) on_bar call without changing results.  Computed
-    # from the strategy's own params, not hard-coded, so non-default windows work.
-    p = strategy.params
-    active_hours = set(range(p.session_start_hour, p.session_start_hour + p.range_definition_hours))
-    active_hours |= {23, 0, 1, p.session_end_hour}
-    active_hours = {h % 24 for h in active_hours}
+    # Hours at which on_bar can change state or act: outside these hours the
+    # strategy provably does nothing AND holds no position, so we skip the
+    # (expensive) on_bar call without changing results.  Derived from the
+    # strategy's own params (see _active_hours); None means "no safe set known",
+    # in which case we never skip (correctness over speed).
+    active_hours = _active_hours(strategy)
+
+    # The exit model for the strategy's take-profit.  The Lull's TP is the range
+    # midpoint, realised as a next-open close when bar_close crosses it
+    # ("midpoint_close", the default — UNCHANGED).  The ORB's TP is a real broker
+    # limit order filled intrabar ("broker_tp"), symmetric to the SL.
+    exit_model = getattr(strategy, "backtest_exit_model", "midpoint_close")
 
     cash_balance = cash
     position: _OpenPosition | None = None
@@ -372,12 +424,32 @@ def run_backtest(
                 position = None
             pending = None
 
-        # --- 2. Intrabar SL check on any open position (entry bar included) ---
+        # --- 2. Intrabar SL (always) and broker TP (broker_tp model only) ---
+        # The SL is a broker stop checked intrabar against high/low on every bar
+        # including the entry bar.  Under the "broker_tp" model the TP is a broker
+        # limit, also checked intrabar on the same bar it is hit.  When BOTH the
+        # SL and the TP fall inside the same bar the intrabar order is unknown, so
+        # the SL fills FIRST (conservative; matches Backtesting.py's pessimistic
+        # default).  Under "midpoint_close" the TP is NOT an intrabar broker order
+        # (it is the next-open midpoint close handled in step 6), so only the SL
+        # is checked here — the Lull's behaviour is byte-identical.
         if position is not None:
             sl_price = _sl_fill_price(position, bar_open, bar_high, bar_low)
+            tp_price = (
+                _tp_fill_price(position, bar_open, bar_high, bar_low)
+                if exit_model == "broker_tp"
+                else None
+            )
             if sl_price is not None:
+                # SL wins same-bar precedence: closed at the stop, TP ignored.
                 trade, cash_balance = _close_position(
                     position, sl_price, bar_time, "sl", cash_balance, commission, pair
+                )
+                trades.append(trade)
+                position = None
+            elif tp_price is not None:
+                trade, cash_balance = _close_position(
+                    position, tp_price, bar_time, "tp", cash_balance, commission, pair
                 )
                 trades.append(trade)
                 position = None
@@ -392,9 +464,10 @@ def run_backtest(
         if i < start or i < 1:
             continue
 
-        # Skip on_bar for hours where the Lull provably does nothing and holds
-        # no position (see active_hours above): a pure performance shortcut.
-        if hours[i] not in active_hours and position is None:
+        # Skip on_bar for hours where the strategy provably does nothing and
+        # holds no position (see _active_hours): a pure performance shortcut.
+        # When active_hours is None no safe skip set is known, so never skip.
+        if active_hours is not None and hours[i] not in active_hours and position is None:
             continue
 
         # --- 5. Drive the live on_bar for this closed M15 bar ---
@@ -416,8 +489,11 @@ def run_backtest(
             pending = _PendingMarket(kind="open", signal=decision.signal)
             continue
 
-        # noop / close while flat: check the midpoint exit for an open position.
-        if position is not None:
+        # noop / close while flat: for the midpoint-close model, check the
+        # midpoint exit for an open position (next-open close when bar_close
+        # crosses the midpoint).  Under broker_tp the TP already filled intrabar
+        # in step 2, so there is nothing to do here.
+        if exit_model == "midpoint_close" and position is not None:
             mid = position.tp
             crossed = (position.direction == "buy" and bar_close >= mid) or (
                 position.direction == "sell" and bar_close <= mid
@@ -490,6 +566,29 @@ def _sl_fill_price(position: _OpenPosition, bar_open: float, bar_high: float, ba
     else:
         if bar_high >= sl:
             return max(bar_open, sl)
+    return None
+
+
+def _tp_fill_price(position: _OpenPosition, bar_open: float, bar_high: float, bar_low: float):
+    """Return the broker-TP fill price if the limit is hit this bar, else None.
+
+    Symmetric to :func:`_sl_fill_price`, but a take-profit limit fills at the
+    BETTER of open/tp on a gap (the opposite of the stop, which fills at the
+    worse): a long TP is hit when ``high >= tp`` and fills at ``max(open, tp)``
+    (a gap-up opens already past the limit, an even better fill); a short TP is
+    hit when ``low <= tp`` and fills at ``min(open, tp)``.  Used only by the
+    ``broker_tp`` exit model (the ORB); the Lull's midpoint TP never reaches
+    here.
+    """
+    tp = position.tp
+    if math.isnan(tp):
+        return None
+    if position.direction == "buy":
+        if bar_high >= tp:
+            return max(bar_open, tp)
+    else:
+        if bar_low <= tp:
+            return min(bar_open, tp)
     return None
 
 

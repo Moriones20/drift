@@ -188,3 +188,242 @@ def test_equivalence_on_real_data_when_available(symbol):
     result = run_backtest(strategy, m15, h4, symbol, cash=CASH, commission=COMMISSION)
 
     _assert_equivalent(stats, result)
+
+
+# ===========================================================================
+# London ORB engine tests (broker_tp exit model)
+# ===========================================================================
+#
+# These tests drive the live ``LondonOrbStrategy.on_bar`` over a small,
+# deterministic synthetic M15 series and assert the exact fill prices the
+# engine produces under the ``broker_tp`` exit model: a real broker limit TP
+# filled intrabar (symmetric to the SL), with the SL winning when both are hit
+# in the same bar.  They exercise a BUY and a SELL, an SL fill, a broker-TP
+# fill (including a gap-through fill BETTER than the TP), the SL+TP same-bar
+# precedence (SL wins), and the 18:00 time stop.
+
+import pandas as pd  # noqa: E402
+
+from drift.strategies.london_orb import LondonOrbParams, LondonOrbStrategy  # noqa: E402
+
+ORB_PAIR = "EURUSD"  # pip_multiplier 10000, base price ~1.10
+# Filler-bar geometry: every bar is a 10-pip-range doji at the base price, so
+# the M15 ATR(14) converges to 0.0010 immediately and no filler bar ever breaks
+# a range (high/low stay inside any locked range we build).
+_BASE = 1.10000
+_FILLER_HALF = 0.00050  # half of the 10-pip filler range
+_M15 = pd.Timedelta(minutes=15)
+
+
+def _orb_strategy() -> LondonOrbStrategy:
+    """An ORB strategy with default params and no pip floor (floor 0)."""
+    return LondonOrbStrategy([ORB_PAIR], LondonOrbParams())
+
+
+def _filler_bar() -> dict:
+    """A benign 10-pip doji centred on the base price (never breaks a range)."""
+    return {
+        "open": _BASE,
+        "high": _BASE + _FILLER_HALF,
+        "low": _BASE - _FILLER_HALF,
+        "close": _BASE,
+    }
+
+
+def _build_m15(day_overrides: dict[pd.Timestamp, dict], n_days: int = 3) -> pd.DataFrame:
+    """Build ``n_days`` of 96 M15 bars/day, applying per-timestamp OHLC overrides.
+
+    The index is a tz-aware (UTC-labelled, reasoned over as server time)
+    DatetimeIndex.  Day 0 starts at 2024-01-01 (a Monday); every slot defaults to
+    a filler doji and is replaced by ``day_overrides[timestamp]`` when present.
+    """
+    start = pd.Timestamp("2024-01-01 00:00", tz="UTC")  # Monday
+    rows = []
+    idx = []
+    for d in range(n_days):
+        for slot in range(96):
+            ts = start + pd.Timedelta(days=d) + slot * _M15
+            bar = day_overrides.get(ts, _filler_bar())
+            rows.append(bar)
+            idx.append(ts)
+    df = pd.DataFrame(rows, index=pd.DatetimeIndex(idx))
+    df["volume"] = 1.0
+    return df
+
+
+def _empty_h4() -> pd.DataFrame:
+    """An empty H4 frame: the ORB never reads H4, so it is never accessed."""
+    return pd.DataFrame(
+        {"open": [], "high": [], "low": [], "close": [], "volume": []},
+        index=pd.DatetimeIndex([], tz="UTC"),
+    )
+
+
+def _range_bars(day: int) -> dict[pd.Timestamp, dict]:
+    """Range-definition bars for 10:00-10:45 of ``day``: high 1.1015, low 1.1000.
+
+    Width 15 pips; ATR is 0.0010, so the ratio is 1.5 (inside the default
+    [0.5, 2.0] window) and the range locks tradeable.  range_high=1.10150,
+    range_low=1.10000.
+    """
+    base_day = pd.Timestamp("2024-01-01 00:00", tz="UTC") + pd.Timedelta(days=day)
+    h10 = base_day + pd.Timedelta(hours=10)
+    out: dict[pd.Timestamp, dict] = {}
+    # Four 10:xx bars whose combined high/low define the range.
+    out[h10] = {"open": 1.10050, "high": 1.10150, "low": 1.10050, "close": 1.10100}
+    out[h10 + _M15] = {"open": 1.10100, "high": 1.10120, "low": 1.10000, "close": 1.10050}
+    out[h10 + 2 * _M15] = {"open": 1.10050, "high": 1.10100, "low": 1.10030, "close": 1.10080}
+    out[h10 + 3 * _M15] = {"open": 1.10080, "high": 1.10130, "low": 1.10060, "close": 1.10100}
+    return out
+
+
+def _run_orb(day_overrides: dict[pd.Timestamp, dict]) -> object:
+    """Run the ORB backtest over a 3-day synthetic series with the given bars."""
+    m15 = _build_m15(day_overrides)
+    h4 = _empty_h4()
+    return run_backtest(_orb_strategy(), m15, h4, ORB_PAIR, cash=CASH, commission=COMMISSION)
+
+
+def _orb_setup(day: int = 1) -> tuple[dict[pd.Timestamp, dict], pd.Timestamp]:
+    """Common ORB scenario start: the locked range plus an inside-range 11:00 bar.
+
+    Returns the per-timestamp overrides (range bars 10:00-10:45 + a non-breakout
+    11:00 lock candle) and the 11:00 timestamp, from which each test adds only the
+    bars that differ.  range_high=1.10150, range_low=1.10000, width 0.00150.
+    """
+    base_day = pd.Timestamp("2024-01-01 00:00", tz="UTC") + pd.Timedelta(days=day)
+    h11 = base_day + pd.Timedelta(hours=11)
+    overrides = _range_bars(day)
+    # 11:00 lock candle stays inside the range (no breakout here).
+    overrides[h11] = {"open": 1.10100, "high": 1.10140, "low": 1.10090, "close": 1.10120}
+    return overrides, h11
+
+
+def test_orb_buy_broker_tp_fill():
+    """A BUY breakout exits at the broker TP, filled intrabar at the limit."""
+    overrides, h11 = _orb_setup()
+    # 11:15 breakout: close 1.10200 > range_high 1.10150 -> BUY queued.
+    overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
+    # 11:30 entry bar: fills at this open (1.10180); stays below TP and above SL.
+    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10220, "low": 1.10170, "close": 1.10200}
+    # 11:45 hits the TP (1.10300) intrabar; open below TP so fill is exactly TP.
+    overrides[h11 + 3 * _M15] = {"open": 1.10250, "high": 1.10320, "low": 1.10240, "close": 1.10300}
+
+    result = _run_orb(overrides)
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.direction == "buy"
+    assert t.reason == "tp"
+    # Entry fills at the 11:30 open.
+    assert t.entry_price == pytest.approx(1.10180)
+    # TP = range_high + 1.0 * width = 1.10150 + 0.00150 = 1.10300; open below it,
+    # so the limit fills exactly at the TP.
+    assert t.exit_price == pytest.approx(1.10300)
+    assert t.exit_time == (h11 + 3 * _M15).to_pydatetime()
+
+
+def test_orb_buy_broker_tp_gap_fill_is_better_than_tp():
+    """A gap-up through the TP fills BETTER than the limit (at the bar open)."""
+    overrides, h11 = _orb_setup()
+    overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
+    # 11:30 entry at open 1.10180, no exit this bar.
+    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10220, "low": 1.10170, "close": 1.10200}
+    # 11:45 gaps UP straight past the TP (1.10300): open 1.10350 > tp -> fill at
+    # the better price max(open, tp) = 1.10350.
+    overrides[h11 + 3 * _M15] = {"open": 1.10350, "high": 1.10400, "low": 1.10340, "close": 1.10380}
+
+    result = _run_orb(overrides)
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.direction == "buy"
+    assert t.reason == "tp"
+    assert t.exit_price == pytest.approx(1.10350)  # better than the 1.10300 TP
+
+
+def test_orb_buy_stop_loss_fill():
+    """A BUY that reverses below the range low exits at the SL, intrabar."""
+    overrides, h11 = _orb_setup()
+    overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
+    # 11:30 entry at open 1.10180.
+    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10220, "low": 1.10170, "close": 1.10200}
+    # 11:45 drops through the SL (range_low 1.10000): low 1.09950 <= SL, open
+    # above SL so fill is exactly the SL (1.10000).
+    overrides[h11 + 3 * _M15] = {"open": 1.10100, "high": 1.10110, "low": 1.09950, "close": 1.10000}
+
+    result = _run_orb(overrides)
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.direction == "buy"
+    assert t.reason == "sl"
+    assert t.exit_price == pytest.approx(1.10000)  # SL = range_low
+
+
+def test_orb_sell_broker_tp_fill():
+    """A SELL breakout below the range low exits at the broker TP, intrabar."""
+    overrides, h11 = _orb_setup()
+    # 11:15 breakout DOWN: close 1.09950 < range_low 1.10000 -> SELL queued.
+    overrides[h11 + _M15] = {"open": 1.10000, "high": 1.10010, "low": 1.09940, "close": 1.09950}
+    # 11:30 entry at open 1.09980.
+    overrides[h11 + 2 * _M15] = {"open": 1.09980, "high": 1.09990, "low": 1.09900, "close": 1.09920}
+    # 11:45 hits the SELL TP (range_low - width = 1.10000 - 0.00150 = 1.09850);
+    # low 1.09800 <= TP, open above TP so fill is exactly the TP.
+    overrides[h11 + 3 * _M15] = {"open": 1.09900, "high": 1.09910, "low": 1.09800, "close": 1.09850}
+
+    result = _run_orb(overrides)
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.direction == "sell"
+    assert t.reason == "tp"
+    assert t.entry_price == pytest.approx(1.09980)
+    assert t.exit_price == pytest.approx(1.09850)  # TP = range_low - width
+
+
+def test_orb_sl_and_tp_same_bar_sl_wins():
+    """When SL and TP are both inside one bar, the SL fills first (conservative)."""
+    overrides, h11 = _orb_setup()
+    overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
+    # 11:30 entry bar at open 1.10180 — and this SAME bar straddles BOTH the TP
+    # (1.10300, high reaches it) and the SL (1.10000, low reaches it).  The SL
+    # must win: exit reason "sl" at 1.10000, not "tp" at 1.10300.
+    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10320, "low": 1.09950, "close": 1.10100}
+
+    result = _run_orb(overrides)
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.direction == "buy"
+    assert t.reason == "sl"
+    assert t.exit_price == pytest.approx(1.10000)
+    assert t.exit_time == (h11 + 2 * _M15).to_pydatetime()
+
+
+def test_orb_time_stop_at_1800():
+    """An open position with no SL/TP touch is force-closed at the 18:00 stop."""
+    overrides, h11 = _orb_setup()
+    base_day = pd.Timestamp("2024-01-01 00:00", tz="UTC") + pd.Timedelta(days=1)
+    # 11:15 breakout BUY, entry at the 11:30 open.
+    overrides[h11 + _M15] = {"open": 1.10160, "high": 1.10210, "low": 1.10150, "close": 1.10200}
+    overrides[h11 + 2 * _M15] = {"open": 1.10180, "high": 1.10220, "low": 1.10170, "close": 1.10200}
+    # All bars from 11:45 until 18:00 stay strictly between SL (1.10000) and TP
+    # (1.10300): the filler doji (1.0995-1.1005) would dip below the SL, so hold
+    # the price flat at 1.10200 across the rest of the session.
+    held = {"open": 1.10200, "high": 1.10220, "low": 1.10180, "close": 1.10200}
+    t = h11 + 3 * _M15
+    stop_bar = base_day + pd.Timedelta(hours=18)
+    # Cover through 18:15 too: the time-stop close fills at the 18:15 open.
+    while t <= stop_bar + _M15:
+        overrides[t] = dict(held)
+        t += _M15
+
+    result = _run_orb(overrides)
+    assert len(result.trades) == 1
+    tr = result.trades[0]
+    assert tr.direction == "buy"
+    assert tr.reason == "time_stop"
+    # close_all at 18:00 fills at the NEXT bar's open (18:15 open = 1.10200).
+    assert tr.exit_price == pytest.approx(1.10200)
+    assert tr.exit_time == (stop_bar + _M15).to_pydatetime()
+
+
+def test_orb_uses_broker_tp_exit_model():
+    """The ORB strategy declares the broker-TP exit model the engine selects on."""
+    assert getattr(LondonOrbStrategy, "backtest_exit_model", None) == "broker_tp"
