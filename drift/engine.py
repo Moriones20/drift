@@ -1001,17 +1001,24 @@ class Engine:
         # until the next one — so use the calm "session_closed" status, never the
         # alarming "BOT STOPPED" (D057).
         #
-        # For the routine session_close at 02:00, only fire the notification when
-        # at least one position was actually closed — quiet nights with no open
-        # trades should not generate noise (#7).
+        # For the routine session_close at 02:00, always fire the notification —
+        # even on a quiet night with no open trades.  The earlier "stay silent when
+        # closed == 0" rule (#7) made the 02:00 heartbeat invisible: an operator
+        # could not tell a healthy bot with no setups from a hung/dead one, and in
+        # production that ambiguity hid days of non-trading (D066).  The wording for
+        # a no-trade night is kept calm so it reads as a liveness ping, not noise.
         closed = len(positions)
         if decision.reason == "session_close":
             if closed == 0:
-                return
-            detail = (
-                f"{hosted.name} — session closed, "
-                f"{closed} position(s) closed, sleeping until next session"
-            )
+                detail = (
+                    f"{hosted.name} — session closed, no trades this session, "
+                    f"sleeping until next session"
+                )
+            else:
+                detail = (
+                    f"{hosted.name} — session closed, "
+                    f"{closed} position(s) closed, sleeping until next session"
+                )
         else:
             detail = f"{hosted.name}: {decision.reason or 'positions closed'}"
         self._fire_and_forget(

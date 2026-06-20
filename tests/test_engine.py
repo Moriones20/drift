@@ -608,8 +608,12 @@ def test_close_all_session_close_uses_calm_status():
     assert status == "session_closed"  # not "stopped"
 
 
-def test_close_all_session_close_silent_when_no_positions():
-    """session_close with zero open positions must NOT fire a notification (#7)."""
+def test_close_all_session_close_heartbeat_when_no_positions():
+    """session_close with zero open positions still fires a calm heartbeat (D066).
+
+    The earlier rule stayed silent on quiet nights (#7); that hid days of
+    non-trading in production, so the 02:00 close now always pings for liveness.
+    """
     strat = FakeStrategy(name="lull", decision=Decision.close_all("session_close"))
     eng = _make_engine([strat])
     hosted = eng.strategies[0]
@@ -625,7 +629,10 @@ def test_close_all_session_close_silent_when_no_positions():
         gc.return_value.__enter__.return_value = mock.MagicMock()
         eng._handle_close_all(hosted, Decision.close_all("session_close"))
 
-    assert len(notifies) == 0  # quiet night — no noise
+    assert len(notifies) == 1
+    status, detail = notifies[0]
+    assert status == "session_closed"
+    assert "no trades" in detail
 
 
 def test_session_start_notification_on_first_wake_after_gap():

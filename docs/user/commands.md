@@ -171,7 +171,7 @@ Ademas de los comandos, el bot envia notificaciones de forma automatica en los s
 |---|---|
 | Inicio del bot | "BOT ONLINE" (cohete): el proceso arranco. Muestra el balance y que estrategias quedaron activas. Distinto del inicio de sesion. |
 | Inicio de sesion | Aviso calmo ("SESSION OPEN", icono luna) cuando la estrategia entra en su ventana (21:00 hora servidor) y empieza a vigilar setups. Una sola notificacion por estrategia por sesion. NO es un arranque del bot. |
-| Cierre de sesion | Aviso calmo ("SESSION CLOSED", icono dormir) cuando la estrategia cierra la sesion al time-stop (02:00 hora servidor); indica cuantas posiciones cerro y que duerme hasta la proxima sesion. Una sola notificacion por estrategia por cierre (no una por par). NO es un BOT STOPPED: el bot sigue vivo. |
+| Cierre de sesion | Aviso calmo ("SESSION CLOSED", icono dormir) cuando la estrategia cierra la sesion al time-stop (02:00 hora servidor). Indica cuantas posiciones cerro, o "no trades this session" si la noche fue tranquila, y que duerme hasta la proxima sesion. Se envia **siempre** a las 02:00 como heartbeat de vida, incluso sin trades (D066). Una sola notificacion por estrategia por cierre (no una por par). NO es un BOT STOPPED: el bot sigue vivo. |
 | Trade abierto | Par, direccion, precio de entrada, SL, TP, tamaño en lotes y riesgo en USD. |
 | Trade cerrado | Par, direccion, precio de entrada y salida, P&L, motivo de cierre y duracion. |
 | Freno por drawdown | Alarma (icono 🚨), no una pausa calma. "ACCOUNT HALTED — DRAWDOWN" cuando el kill switch global frena toda la cuenta; "STRATEGY HALTED — DRAWDOWN" cuando solo se frena una estrategia (las demas siguen). Indica como reanudar (/resume o /resume <estrategia>). |

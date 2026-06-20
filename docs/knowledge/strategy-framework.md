@@ -234,6 +234,44 @@ El Daily Lull es la instancia #1 y el patrón a copiar. Su lógica de estrategia
 
 ---
 
+## 9. Lecciones del Daily Lull en vivo (leer ANTES de diseñar una estrategia nueva)
+
+El Daily Lull corrió ~2 semanas en demo (jun-2026) con resultado **consistentemente negativo** (PF 0.01, 1W/6L) y terminó **sin abrir trades varios días seguidos**. La auditoría (2026-06-19) encontró una **única causa raíz** con varias consecuencias. No son bugs del motor — son lecciones de diseño de estrategia que la próxima estrategia debe respetar desde el día cero.
+
+### L1 — El reward (TP) debe sobrevivir al spread + slippage REALES, no a los del backtest
+
+Causa raíz de todo. El Daily Lull pone el **TP en el punto medio del rango**, lo que da un reward minúsculo (6–25 pips) y un **R:R estructuralmente < 1:1** (riesgo 2.5× ATR vs reward 0.5–2.0× ATR). En la franja del *daily lull* (23:00–02:00 server) el spread se ensancha por baja liquidez, y para cuando la orden se ejecuta el **fill ya llegó al TP o lo pasó**:
+
+```
+06-16 EURGBP  fill=0.86462 = TP exacto       → reward_left = 0.000
+06-17 AUDNZD  fill=1.21722 > TP 1.21613       → reward_left negativo (entrás perdiendo)
+```
+
+- **Síntoma "sin trades":** el spread guard [[D046]] (correcto) abandona toda orden cuyo reward-tras-spread < 50% → ninguna entra.
+- **Síntoma "negativos":** las pocas que entraban las cortaba el time-stop de las 02:00 antes de que la reversión completara → muerte por mil cortes.
+
+**Regla para la estrategia nueva:** dimensioná el TP contra el **spread+slippage del par y la hora reales**, no contra el fill sin costo del backtest. Si el reward esperado es del orden del spread, la estrategia no tiene edge en vivo aunque el backtest lo muestre. Preferí **horarios líquidos**, **pares de spread bajo**, o **TPs más grandes** (R:R ≥ 1:1). El backtest **debe** modelar el costo de ejecución (ver el aviso de D055/§6: el backtest llena sin spread; [[D046]] es justo lo que esa brecha mide).
+
+### L2 — El backtest sobreestima el edge si no modela el costo de ejecución
+
+D043/D046 ya habían medido que el edge del Daily Lull caía de **+8.75% bruto** a **+3-5% anual** con spread realista, y que **47% de los trades** caían en la ventana rollover. El vivo confirmó el extremo pesimista. **Desconfía de un backtest sin costos de ejecución**; revalidá el edge con spread inflado en las horas/pares objetivo antes de ir a demo, y a demo antes de real.
+
+### L3 — Un time-stop duro puede matar la tesis de la estrategia
+
+El cierre forzado a las 02:00 corta las mean-reversion antes de que reviertan: entradas a las 01:00 server tienen 1h para funcionar. Si tu estrategia necesita tiempo para que la tesis se cumpla, **el time-stop tiene que dar ese tiempo** (o no tener time-stop). Cruzá la duración típica del trade ganador (backtest) contra la ventana disponible.
+
+### L4 — Toda decisión silenciosa necesita un heartbeat observable
+
+El guard `if closed == 0: return` silenciaba el "SESSION CLOSED" en noches sin trades, haciendo **indistinguible** "bot sano sin setups" de "bot colgado". Corregido en [[D066]]: el cierre de sesión **siempre** notifica. **Regla:** ningún camino normal del bot (cierre de sesión, skip de entrada por N días) debe quedar 100% mudo; siempre dejá una señal de vida (Telegram calmo o, como mínimo, log).
+
+### L5 — La estabilidad del entorno importa tanto como el código
+
+Parte del "no veo mensajes" eran fallas de red del entorno (`getaddrinfo failed` a Telegram, `IPC timeout` de MT5 corriendo en máquina de casa), no solo el bug L4. **Ir a VPS (Phase 3) antes de confiar en la operación 24/5.** Las notificaciones que fallan en red **no se reintentan** hoy.
+
+> **TL;DR para la estrategia nueva:** R:R ≥ 1:1 que sobreviva al spread real del par/hora · backtest con costos de ejecución · time-stop que respete la duración del trade ganador · heartbeat en todo camino silencioso · VPS para 24/5. Estas lecciones salen de la auditoría 2026-06-19 y de [[D043]]/[[D046]]/[[D066]].
+
+---
+
 ## Referencias
 
 - **Decisiones:** D050 (pivote), D051 (contrato + motor), D052 (magic), D053 (riesgo dos niveles), D054 (config), D055 (backtest), D056 (DB), D057 (Telegram) — `docs/DECISIONS.md`.
