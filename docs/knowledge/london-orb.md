@@ -61,13 +61,15 @@ Con `range_width = range_high − range_low` y `curr_close` = cierre de la vela 
 
 Las horas están en **hora server MT5 (GMT+2 invierno / GMT+3 verano, anclado al cierre de NY; ver D041)**. La estrategia razona en hora server y **nunca re-localiza** (regla del contrato). Anclaje **fijo a 10:00 server** — ver D068 para el drift de DST aceptado.
 
-| Hora servidor | UTC real (aprox.) | Local (UTC-5) | Qué pasa |
-|---|---|---|---|
-| 10:00 | 07:00–08:00 | 05:00 | Apertura de Londres; empieza a medir el rango |
-| 11:00 | 08:00–09:00 | 06:00 | Lockea el rango; empieza a buscar rupturas |
-| 18:00 | 15:00–16:00 | 13:00 | Cierra todo + heartbeat — fin de la sesión operativa |
+Conversión: **Bogotá = hora server − 8** (verano GMT+3) / **− 7** (invierno GMT+2). La tabla muestra el valor de verano (actual); en invierno sumar 1h.
 
-**Importante para operación:** la ventana activa en hora local es **05:00–13:00 (UTC-5)** — muy distinta de la del Lull (13:00–18:00). Si el PC se enciende después de las 06:00 local se pierde la definición de rango y la sesión no opera ese día.
+| Hora servidor | UTC real (aprox.) | Local (UTC-5, verano) | Qué pasa |
+|---|---|---|---|
+| 10:00 | 07:00 | 02:00 | Apertura de Londres; empieza a medir el rango |
+| 11:00 | 08:00 | 03:00 | Lockea el rango; empieza a buscar rupturas |
+| 18:00 | 15:00 | 10:00 | Cierra todo + heartbeat — fin de la sesión operativa |
+
+**Importante para operación:** la ventana activa en hora local es **02:00–10:00 (UTC-5, verano)** — la **madrugada** de Bogotá, muy distinta de la del Lull (13:00–18:00, tarde). Si el PC se enciende después de las 03:00 local se pierde la definición de rango y la sesión no opera ese día. ⚠️ Operar de madrugada en una máquina de casa es justo el escenario de la lección L5 (caídas de red nocturnas) — refuerza la necesidad de VPS antes de confiar en 24/5.
 
 > ⚠️ **Drift de DST (D068).** ~4 semanas/año (mediados de marzo, fines de octubre) el calendario US y EU están desfasados y la apertura real de Londres cae a las 11:00 server; esas semanas el rango 10:00–11:00 captura la hora previa. Aceptado y acotado; se revisa si el backtest muestra que esas semanas rinden mal.
 

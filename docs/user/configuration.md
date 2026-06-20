@@ -114,16 +114,16 @@ El bloque `params` es opaco para el motor: contiene los parametros propios de la
 
 | Campo | Tipo | Default | Descripcion |
 |---|---|---|---|
-| `range_start_hour` | entero | `10` | Hora servidor de inicio de la ventana de definicion del rango (= 05:00 Bogota). |
+| `range_start_hour` | entero | `10` | Hora servidor de inicio de la ventana de definicion del rango (= 02:00 Bogota, verano). |
 | `range_end_hour` | entero | `11` | Hora servidor de lock del rango; desde aqui se buscan rupturas. |
-| `time_stop_hour` | entero | `18` | Hora servidor de cierre forzado de todos los trades (= 13:00 Bogota). Sin holds overnight. |
+| `time_stop_hour` | entero | `18` | Hora servidor de cierre forzado de todos los trades (= 10:00 Bogota, verano). Sin holds overnight. |
 | `range_atr_min` | decimal | *(calibrar)* | Ancho minimo del rango como multiplo del ATR. |
 | `range_atr_max` | decimal | *(calibrar)* | Ancho maximo del rango como multiplo del ATR. |
 | `range_pip_floor` | mapa par→pips | *(calibrar)* | Piso absoluto del ancho del rango en pips, por par. Garantia estructural de que el TP nunca colapse al tamano del spread. |
 | `tp_mult` | decimal | `1.0` | TP como multiplo del ancho del rango (R:R = `tp_mult`:1). |
 | `atr_period` | entero | `14` | Periodo del ATR M15 para el filtro de ancho. |
 
-**Ventana operativa en hora local (UTC-5):** **05:00-13:00 Bogota** — distinta de la del Daily Lull (13:00-18:00). Si el PC se enciende despues de las 06:00 local, se pierde la definicion de rango y no se opera ese dia.
+**Ventana operativa en hora local (UTC-5):** **02:00-10:00 Bogota (verano; +1h invierno)** — la madrugada, distinta de la del Daily Lull (13:00-18:00, tarde). Si el PC se enciende despues de las 03:00 local, se pierde la definicion de rango y no se opera ese dia. Operar de madrugada en maquina de casa refuerza la necesidad de VPS (leccion L5).
 
 ### Ejemplo completo
 

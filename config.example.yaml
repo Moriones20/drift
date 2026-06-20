@@ -81,9 +81,9 @@ strategies:
     # Range-width values are PLACEHOLDERS pending backtest calibration (Step 46, D067).
     params:
       # Opening range window (MT5 server time; fixed 10:00 anchor, DST drift accepted — D068)
-      range_start_hour: 10         # begin measuring the range at 10:00 server (= 05:00 Bogotá)
-      range_end_hour: 11           # lock the range at 11:00 server, then look for breakouts
-      time_stop_hour: 18           # close all open trades at 18:00 server (= 13:00 Bogotá); no overnight
+      range_start_hour: 10         # begin measuring the range at 10:00 server (= 02:00 Bogotá, verano)
+      range_end_hour: 11           # lock the range at 11:00 server (= 03:00 Bogotá), then look for breakouts
+      time_stop_hour: 18           # close all open trades at 18:00 server (= 10:00 Bogotá); no overnight
       # Range quality filter — the structural reward >> spread guarantee (lesson L1)
       range_atr_min: 0.5           # PLACEHOLDER — min range width in ATR units (calibrate)
       range_atr_max: 2.0           # PLACEHOLDER — max range width in ATR units (calibrate)
